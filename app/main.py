@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 import logging
 import os
 from pathlib import Path
-
 # Router-Imports
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
     router as custom_analysis_router,
@@ -15,7 +14,6 @@ from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
 from app.core.backend_crypto_tracker.api.routes import token_routes
 from app.core.backend_crypto_tracker.api.routes import transaction_routes
 from app.core.backend_crypto_tracker.api.routes import scanner_routes
-
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
 from app.core.backend_crypto_tracker.processor.database.models.manager import DatabaseManager
@@ -26,7 +24,6 @@ logger = get_logger(__name__)
 # Frontend-Verzeichnisse konfigurieren
 BASE_DIR = Path(__file__).resolve().parent  # app/
 FRONTEND_DIR = BASE_DIR / "crypto-token-analysis-dashboard"  # app/crypto-token-analysis-dashboard
-
 # For regular Next.js build (not export)
 BUILD_DIR = FRONTEND_DIR / ".next" / "standalone"  # Next.js standalone build
 STATIC_DIR = FRONTEND_DIR / ".next" / "static"     # Next.js static files
@@ -34,8 +31,10 @@ PUBLIC_DIR = FRONTEND_DIR / "public"               # Next.js public files
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Lifecycle manager for FastAPI application."""
     logger.info("Starting Low-Cap Token Analyzer")
     
+    # Initialisiere die Datenbank
     try:
         db_manager = DatabaseManager()
         await db_manager.initialize()
@@ -47,6 +46,9 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down Low-Cap Token Analyzer")
 
+# ------------------------------------------------------------------
+# FastAPI-Instanz
+# ------------------------------------------------------------------
 app = FastAPI(
     title="Low-Cap Token Analyzer",
     description="Enterprise-grade low-cap cryptocurrency token analysis system",
@@ -54,7 +56,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Verbesserte CORS-Konfiguration
+# ------------------------------------------------------------------
+# CORS (Anpassen für Production)
+# ------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -66,13 +70,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API-Routen
+# ------------------------------------------------------------------
+# API Routes (mount first to prevent conflicts)
+# ------------------------------------------------------------------
 app.include_router(custom_analysis_router, prefix="/api/v1")
 app.include_router(token_routes.router, prefix="/api/v1")
 app.include_router(transaction_routes.router, prefix="/api/v1")
 app.include_router(scanner_routes.router, prefix="/api/v1")
 
-# Health-Check
+# ------------------------------------------------------------------
+# API-Health-Check
+# ------------------------------------------------------------------
 @app.get("/health")
 async def health_check():
     return {
@@ -89,7 +97,9 @@ async def health_check():
         }
     }
 
+# ------------------------------------------------------------------
 # Fehlende API-Routen hinzufügen
+# ------------------------------------------------------------------
 @app.get("/assets")
 async def get_assets():
     # Implementieren Sie Ihre Logik hier
@@ -110,7 +120,9 @@ async def get_settings():
     # Implementieren Sie Ihre Logik hier
     return {"settings": {}}
 
+# ------------------------------------------------------------------
 # Statische Dateien für Next.js
+# ------------------------------------------------------------------
 if BUILD_DIR.exists():
     app.mount("/_next", StaticFiles(directory=BUILD_DIR / "_next"), name="next-static")
     
@@ -121,12 +133,8 @@ if PUBLIC_DIR.exists():
     app.mount("/public", StaticFiles(directory=PUBLIC_DIR), name="public")
 
 # ------------------------------------------------------------------
-# Option 1: Serve Next.js as separate service (Recommended)
-# ------------------------------------------------------------------
-# For production, it's better to run Next.js separately and use a reverse proxy
-# This is just a development/simple deployment solution
-
 # Angepasster 404-Handler
+# ------------------------------------------------------------------
 @app.exception_handler(404)
 async def not_found_handler(request: Request, exc: Exception):
     if request.url.path.startswith("/api/"):
@@ -134,6 +142,9 @@ async def not_found_handler(request: Request, exc: Exception):
             status_code=404,
             content={"error": "API endpoint not found"}
         )
+    
+    # Fallback-HTML für Nicht-API-Routen
+    return HTMLResponse(
         content=f"""
         <html>
             <head>
@@ -199,6 +210,46 @@ npm run start
                 
                 <h3>Alternative: Static Export (Limited)</h3>
                 <p>If you need static export, you must implement <code>generateStaticParams()</code> for dynamic routes.</p>
+            </body>
+        </html>
+        """,
+        status_code=200
+    )
+
+# ------------------------------------------------------------------
+# Fallback-Route
+# ------------------------------------------------------------------
+@app.get("/", response_class=HTMLResponse)
+async def serve_frontend_fallback(request: Request):
+    return HTMLResponse(
+        content="""
+        <html>
+            <head>
+                <title>Low-Cap Token Analyzer</title>
+                <style>
+                    body {
+                        font-family: system-ui, sans-serif;
+                        max-width: 800px;
+                        margin: 0 auto;
+                        padding: 2rem;
+                        line-height: 1.6;
+                    }
+                    .status { 
+                        background: #f0f9ff;
+                        border: 1px solid #0ea5e9;
+                        border-radius: 0.5rem;
+                        padding: 1rem;
+                        margin: 1rem 0;
+                    }
+                </style>
+            </head>
+            <body>
+                <h1>🚀 Low-Cap Token Analyzer</h1>
+                <div class="status">
+                    <strong>Status:</strong> Backend API is running<br>
+                    <strong>Health Check:</strong> <a href="/health">/health</a><br>
+                    <strong>API Documentation:</strong> <a href="/docs">/docs</a>
+                </div>
             </body>
         </html>
         """,
