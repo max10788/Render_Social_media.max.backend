@@ -3,10 +3,14 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
 import logging
 import os
 from pathlib import Path
+
 # Router-Imports
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
     router as custom_analysis_router,
@@ -28,6 +32,9 @@ FRONTEND_DIR = BASE_DIR / "crypto-token-analysis-dashboard"  # app/crypto-token-
 BUILD_DIR = FRONTEND_DIR / ".next" / "standalone"  # Next.js standalone build
 STATIC_DIR = FRONTEND_DIR / ".next" / "static"     # Next.js static files
 PUBLIC_DIR = FRONTEND_DIR / "public"               # Next.js public files
+
+# Rate Limiter konfigurieren
+limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -56,6 +63,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Rate Limiter hinzufügen
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # ------------------------------------------------------------------
 # CORS (Anpassen für Production)
 # ------------------------------------------------------------------
@@ -68,6 +79,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=600,
 )
 
 # ------------------------------------------------------------------
@@ -100,23 +113,27 @@ async def health_check():
 # ------------------------------------------------------------------
 # Fehlende API-Routen hinzufügen
 # ------------------------------------------------------------------
-@app.get("/assets")
-async def get_assets():
+@app.get("/api/assets")
+@limiter.limit("100/minute")
+async def get_assets(request: Request):
     # Implementieren Sie Ihre Logik hier
     return {"assets": []}
 
-@app.get("/config")
-async def get_config():
+@app.get("/api/config")
+@limiter.limit("100/minute")
+async def get_config(request: Request):
     # Implementieren Sie Ihre Logik hier
     return {"config": {}}
 
-@app.get("/analytics")
-async def get_analytics():
+@app.get("/api/analytics")
+@limiter.limit("100/minute")
+async def get_analytics(request: Request):
     # Implementieren Sie Ihre Logik hier
     return {"analytics": {}}
 
-@app.get("/settings")
-async def get_settings():
+@app.get("/api/settings")
+@limiter.limit("100/minute")
+async def get_settings(request: Request):
     # Implementieren Sie Ihre Logik hier
     return {"settings": {}}
 
@@ -269,3 +286,15 @@ async def global_exception_handler(request: Request, exc: Exception):
             "detail": str(exc) if app.debug else "An unexpected error occurred",
         },
     )
+
+# ------------------------------------------------------------------
+# Datenbankkonfiguration für Render
+# ------------------------------------------------------------------
+# Wenn die Anwendung auf Render läuft, verwenden wir die Umgebungsvariablen
+if os.environ.get("RENDER"):
+    # Datenbankkonfiguration mit Umgebungsvariablen aktualisieren
+    database_config.db_host = os.environ.get("DATABASE_HOST", database_config.db_host)
+    database_config.db_port = int(os.environ.get("DATABASE_PORT", database_config.db_port))
+    database_config.db_name = os.environ.get("DATABASE_NAME", database_config.db_name)
+    database_config.db_user = os.environ.get("DATABASE_USER", database_config.db_user)
+    database_config.db_password = os.environ.get("DATABASE_PASSWORD", database_config.db_password)
