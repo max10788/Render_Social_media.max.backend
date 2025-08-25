@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 import logging
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 # Router-Imports
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
@@ -105,23 +106,78 @@ async def health_check():
 # ------------------------------------------------------------------
 @app.get("/api/assets")
 async def get_assets():
-    # Implementieren Sie Ihre Logik hier
-    return {"assets": []}
+    """Get available assets for analysis"""
+    try:
+        # Implementieren Sie Ihre Logik hier
+        # Dies ist nur ein Platzhalter
+        return {
+            "assets": [
+                {"id": "bitcoin", "name": "Bitcoin", "symbol": "BTC"},
+                {"id": "ethereum", "name": "Ethereum", "symbol": "ETH"},
+                {"id": "solana", "name": "Solana", "symbol": "SOL"},
+            ],
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching assets: {e}")
+        return {"assets": [], "status": "error", "message": str(e)}
 
 @app.get("/api/config")
 async def get_config():
-    # Implementieren Sie Ihre Logik hier
-    return {"config": {}}
+    """Get system configuration"""
+    try:
+        # Implementieren Sie Ihre Logik hier
+        # Dies ist nur ein Platzhalter
+        return {
+            "config": {
+                "minScore": 60,
+                "maxAnalysesPerHour": 50,
+                "cacheTTL": 3600,
+                "supportedChains": ["ethereum", "solana", "sui"]
+            },
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching config: {e}")
+        return {"config": {}, "status": "error", "message": str(e)}
 
 @app.get("/api/analytics")
 async def get_analytics():
-    # Implementieren Sie Ihre Logik hier
-    return {"analytics": {}}
+    """Get analytics data"""
+    try:
+        # Implementieren Sie Ihre Logik hier
+        # Dies ist nur ein Platzhalter
+        return {
+            "analytics": {
+                "totalAnalyses": 1250,
+                "successfulAnalyses": 1180,
+                "failedAnalyses": 70,
+                "averageScore": 72.5
+            },
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching analytics: {e}")
+        return {"analytics": {}, "status": "error", "message": str(e)}
 
 @app.get("/api/settings")
 async def get_settings():
-    # Implementieren Sie Ihre Logik hier
-    return {"settings": {}}
+    """Get user settings"""
+    try:
+        # Implementieren Sie Ihre Logik hier
+        # Dies ist nur ein Platzhalter
+        return {
+            "settings": {
+                "theme": "dark",
+                "notifications": True,
+                "autoRefresh": True,
+                "refreshInterval": 30
+            },
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching settings: {e}")
+        return {"settings": {}, "status": "error", "message": str(e)}
 
 # ------------------------------------------------------------------
 # Statische Dateien für Next.js
@@ -143,7 +199,7 @@ async def not_found_handler(request: Request, exc: Exception):
     if request.url.path.startswith("/api/"):
         return JSONResponse(
             status_code=404,
-            content={"error": "API endpoint not found"}
+            content={"error": "API endpoint not found", "path": request.url.path}
         )
     
     # Fallback-HTML für Nicht-API-Routen
