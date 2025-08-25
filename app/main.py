@@ -3,9 +3,6 @@ from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
 import logging
 import os
@@ -33,9 +30,6 @@ BUILD_DIR = FRONTEND_DIR / ".next" / "standalone"  # Next.js standalone build
 STATIC_DIR = FRONTEND_DIR / ".next" / "static"     # Next.js static files
 PUBLIC_DIR = FRONTEND_DIR / "public"               # Next.js public files
 
-# Rate Limiter konfigurieren
-limiter = Limiter(key_func=get_remote_address)
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI application."""
@@ -62,10 +56,6 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-
-# Rate Limiter hinzufügen
-app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ------------------------------------------------------------------
 # CORS (Anpassen für Production)
@@ -114,26 +104,22 @@ async def health_check():
 # Fehlende API-Routen hinzufügen
 # ------------------------------------------------------------------
 @app.get("/api/assets")
-@limiter.limit("100/minute")
-async def get_assets(request: Request):
+async def get_assets():
     # Implementieren Sie Ihre Logik hier
     return {"assets": []}
 
 @app.get("/api/config")
-@limiter.limit("100/minute")
-async def get_config(request: Request):
+async def get_config():
     # Implementieren Sie Ihre Logik hier
     return {"config": {}}
 
 @app.get("/api/analytics")
-@limiter.limit("100/minute")
-async def get_analytics(request: Request):
+async def get_analytics():
     # Implementieren Sie Ihre Logik hier
     return {"analytics": {}}
 
 @app.get("/api/settings")
-@limiter.limit("100/minute")
-async def get_settings(request: Request):
+async def get_settings():
     # Implementieren Sie Ihre Logik hier
     return {"settings": {}}
 
