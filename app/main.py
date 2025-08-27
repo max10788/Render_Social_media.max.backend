@@ -8,6 +8,7 @@ import logging
 import os
 from pathlib import Path
 from urllib.parse import urlparse
+from flask_cors import CORS
 
 # Router-Imports
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
