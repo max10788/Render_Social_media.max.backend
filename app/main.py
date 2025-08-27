@@ -8,7 +8,6 @@ import logging
 import os
 from pathlib import Path
 from urllib.parse import urlparse
-from flask_cors import CORS
 
 # Router-Imports
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
@@ -17,6 +16,7 @@ from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
 from app.core.backend_crypto_tracker.api.routes import token_routes
 from app.core.backend_crypto_tracker.api.routes import transaction_routes
 from app.core.backend_crypto_tracker.api.routes import scanner_routes
+
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
 from app.core.backend_crypto_tracker.processor.database.models.manager import DatabaseManager
@@ -27,7 +27,6 @@ logger = get_logger(__name__)
 # Frontend-Verzeichnisse konfigurieren
 BASE_DIR = Path(__file__).resolve().parent  # app/
 FRONTEND_DIR = BASE_DIR / "crypto-token-analysis-dashboard"  # app/crypto-token-analysis-dashboard
-# For regular Next.js build (not export)
 BUILD_DIR = FRONTEND_DIR / ".next" / "standalone"  # Next.js standalone build
 STATIC_DIR = FRONTEND_DIR / ".next" / "static"     # Next.js static files
 PUBLIC_DIR = FRONTEND_DIR / "public"               # Next.js public files
@@ -60,10 +59,8 @@ app = FastAPI(
 )
 
 # ------------------------------------------------------------------
-# CORS (Anpassen für Production)
+# CORS-Konfiguration (Nur FastAPI-Middleware)
 # ------------------------------------------------------------------
-CORS(app, resources={r"/api/*": {"origins": "https://render-social-media-max-frontend.onrender.com"}})
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
