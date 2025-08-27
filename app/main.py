@@ -61,6 +61,8 @@ app = FastAPI(
 # ------------------------------------------------------------------
 # CORS (Anpassen für Production)
 # ------------------------------------------------------------------
+CORS(app, resources={r"/api/*": {"origins": "https://render-social-media-max-frontend.onrender.com"}})
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
