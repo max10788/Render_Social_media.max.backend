@@ -196,14 +196,14 @@ async def get_assets():
     """Get available assets for analysis"""
     try:
         return [
-            {"id": "bitcoin", "name": "Bitcoin", "symbol": "BTC"},
-            {"id": "ethereum", "name": "Ethereum", "symbol": "ETH"},
-            {"id": "solana", "name": "Solana", "symbol": "SOL"},
+            {"id": "bitcoin", "name": "Bitcoin", "symbol": "BTC", "exchanges": ["Binance", "Coinbase", "Kraken"]},
+            {"id": "ethereum", "name": "Ethereum", "symbol": "ETH", "exchanges": ["Binance", "Coinbase", "Kraken"]},
+            {"id": "solana", "name": "Solana", "symbol": "SOL", "exchanges": ["Binance", "FTX", "Kraken"]},
         ]
     except Exception as e:
         logger.error(f"Error fetching assets: {e}")
         return []
-
+        
 @app.get("/api/exchanges", response_model=List[ExchangeInfo])
 async def get_exchanges():
     """Get available exchanges"""
