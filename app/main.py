@@ -8,6 +8,8 @@ import logging
 import os
 from pathlib import Path
 from urllib.parse import urlparse
+from typing import Dict, Any, List
+from pydantic import BaseModel
 
 # Router-Imports
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
@@ -30,6 +32,91 @@ FRONTEND_DIR = BASE_DIR / "crypto-token-analysis-dashboard"  # app/crypto-token-
 BUILD_DIR = FRONTEND_DIR / ".next" / "standalone"  # Next.js standalone build
 STATIC_DIR = FRONTEND_DIR / ".next" / "static"     # Next.js static files
 PUBLIC_DIR = FRONTEND_DIR / "public"               # Next.js public files
+
+# Pydantic-Modelle für die neuen Endpunkte
+class AssetInfo(BaseModel):
+    id: str
+    name: str
+    symbol: str
+
+class ExchangeInfo(BaseModel):
+    id: str
+    name: str
+    trading_pairs: int
+
+class BlockchainInfo(BaseModel):
+    id: str
+    name: str
+    block_time: float
+
+class SystemConfig(BaseModel):
+    minScore: int
+    maxAnalysesPerHour: int
+    cacheTTL: int
+    supportedChains: List[str]
+
+class AssetPriceRequest(BaseModel):
+    assets: List[str]
+    base_currency: str = "USD"
+
+class AssetPriceResponse(BaseModel):
+    prices: Dict[str, float]
+    timestamp: int
+
+class VolatilityRequest(BaseModel):
+    asset: str
+    timeframe: str = "1d"
+
+class VolatilityResponse(BaseModel):
+    volatility: float
+    timeframe: str
+
+class CorrelationRequest(BaseModel):
+    assets: List[str]
+    timeframe: str = "1d"
+
+class CorrelationResponse(BaseModel):
+    correlation_matrix: Dict[str, Dict[str, float]]
+    timeframe: str
+
+class OptionPricingRequest(BaseModel):
+    underlying: str
+    strike: float
+    maturity: str
+    option_type: str  # "call" or "put"
+
+class OptionPricingResponse(BaseModel):
+    price: float
+    greeks: Dict[str, float]
+
+class ImpliedVolatilityRequest(BaseModel):
+    underlying: str
+    strike: float
+    maturity: str
+    option_type: str
+    market_price: float
+
+class ImpliedVolatilityResponse(BaseModel):
+    implied_volatility: float
+
+class RiskMetricsRequest(BaseModel):
+    assets: List[str]
+    timeframe: str = "1d"
+    confidence_level: float = 0.95
+
+class RiskMetricsResponse(BaseModel):
+    var: float
+    expected_shortfall: float
+    beta: Dict[str, float]
+
+class SimulationProgress(BaseModel):
+    simulation_id: str
+    status: str  # "pending", "running", "completed", "failed"
+    progress: float
+    message: str
+
+class SimulationStatusResponse(BaseModel):
+    simulations: List[SimulationProgress]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -102,51 +189,65 @@ async def health_check():
     }
 
 # ------------------------------------------------------------------
-# Fehlende API-Routen hinzufügen
+# System Information Endpoints
 # ------------------------------------------------------------------
-@app.get("/api/assets")
+@app.get("/api/assets", response_model=List[AssetInfo])
 async def get_assets():
     """Get available assets for analysis"""
     try:
-        # Implementieren Sie Ihre Logik hier
-        # Dies ist nur ein Platzhalter
-        return {
-            "assets": [
-                {"id": "bitcoin", "name": "Bitcoin", "symbol": "BTC"},
-                {"id": "ethereum", "name": "Ethereum", "symbol": "ETH"},
-                {"id": "solana", "name": "Solana", "symbol": "SOL"},
-            ],
-            "status": "success"
-        }
+        return [
+            {"id": "bitcoin", "name": "Bitcoin", "symbol": "BTC"},
+            {"id": "ethereum", "name": "Ethereum", "symbol": "ETH"},
+            {"id": "solana", "name": "Solana", "symbol": "SOL"},
+        ]
     except Exception as e:
         logger.error(f"Error fetching assets: {e}")
-        return {"assets": [], "status": "error", "message": str(e)}
+        return []
 
-@app.get("/api/config")
+@app.get("/api/exchanges", response_model=List[ExchangeInfo])
+async def get_exchanges():
+    """Get available exchanges"""
+    try:
+        return [
+            {"id": "binance", "name": "Binance", "trading_pairs": 1500},
+            {"id": "coinbase", "name": "Coinbase", "trading_pairs": 200},
+            {"id": "kraken", "name": "Kraken", "trading_pairs": 300},
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching exchanges: {e}")
+        return []
+
+@app.get("/api/blockchains", response_model=List[BlockchainInfo])
+async def get_blockchains():
+    """Get available blockchains"""
+    try:
+        return [
+            {"id": "ethereum", "name": "Ethereum", "block_time": 13.5},
+            {"id": "solana", "name": "Solana", "block_time": 0.4},
+            {"id": "bitcoin", "name": "Bitcoin", "block_time": 600},
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching blockchains: {e}")
+        return []
+
+@app.get("/api/config", response_model=SystemConfig)
 async def get_config():
     """Get system configuration"""
     try:
-        # Implementieren Sie Ihre Logik hier
-        # Dies ist nur ein Platzhalter
         return {
-            "config": {
-                "minScore": 60,
-                "maxAnalysesPerHour": 50,
-                "cacheTTL": 3600,
-                "supportedChains": ["ethereum", "solana", "sui"]
-            },
-            "status": "success"
+            "minScore": 60,
+            "maxAnalysesPerHour": 50,
+            "cacheTTL": 3600,
+            "supportedChains": ["ethereum", "solana", "sui"]
         }
     except Exception as e:
         logger.error(f"Error fetching config: {e}")
-        return {"config": {}, "status": "error", "message": str(e)}
+        return {"minScore": 0, "maxAnalysesPerHour": 0, "cacheTTL": 0, "supportedChains": []}
 
 @app.get("/api/analytics")
 async def get_analytics():
     """Get analytics data"""
     try:
-        # Implementieren Sie Ihre Logik hier
-        # Dies ist nur ein Platzhalter
         return {
             "analytics": {
                 "totalAnalyses": 1250,
@@ -164,8 +265,6 @@ async def get_analytics():
 async def get_settings():
     """Get user settings"""
     try:
-        # Implementieren Sie Ihre Logik hier
-        # Dies ist nur ein Platzhalter
         return {
             "settings": {
                 "theme": "dark",
@@ -178,6 +277,183 @@ async def get_settings():
     except Exception as e:
         logger.error(f"Error fetching settings: {e}")
         return {"settings": {}, "status": "error", "message": str(e)}
+
+# ------------------------------------------------------------------
+# Asset Prices Endpoints
+# ------------------------------------------------------------------
+@app.post("/api/asset_prices", response_model=AssetPriceResponse)
+async def get_asset_prices(request: AssetPriceRequest):
+    """Get asset prices"""
+    try:
+        # Placeholder-Implementierung
+        prices = {asset: 50000.0 if asset == "bitcoin" else 3000.0 for asset in request.assets}
+        return {"prices": prices, "timestamp": 1625097600}
+    except Exception as e:
+        logger.error(f"Error fetching asset prices: {e}")
+        return {"prices": {}, "timestamp": 0}
+
+# ------------------------------------------------------------------
+# Volatility Endpoints
+# ------------------------------------------------------------------
+@app.post("/api/volatility", response_model=VolatilityResponse)
+async def get_volatility(request: VolatilityRequest):
+    """Get volatility data"""
+    try:
+        # Placeholder-Implementierung
+        return {"volatility": 0.5, "timeframe": request.timeframe}
+    except Exception as e:
+        logger.error(f"Error calculating volatility: {e}")
+        return {"volatility": 0.0, "timeframe": request.timeframe}
+
+# ------------------------------------------------------------------
+# Correlation Endpoints
+# ------------------------------------------------------------------
+@app.post("/api/correlation", response_model=CorrelationResponse)
+async def get_correlation(request: CorrelationRequest):
+    """Get correlation data"""
+    try:
+        # Placeholder-Implementierung
+        correlation_matrix = {}
+        for asset1 in request.assets:
+            correlation_matrix[asset1] = {}
+            for asset2 in request.assets:
+                correlation_matrix[asset1][asset2] = 1.0 if asset1 == asset2 else 0.5
+        
+        return {"correlation_matrix": correlation_matrix, "timeframe": request.timeframe}
+    except Exception as e:
+        logger.error(f"Error calculating correlation: {e}")
+        return {"correlation_matrix": {}, "timeframe": request.timeframe}
+
+# ------------------------------------------------------------------
+# Option Pricing Endpoints
+# ------------------------------------------------------------------
+@app.post("/api/price_option/start", response_model=Dict[str, str])
+async def start_option_pricing(request: OptionPricingRequest):
+    """Start option pricing simulation"""
+    try:
+        # Placeholder-Implementierung
+        simulation_id = f"sim_{request.underlying}_{hash(request)}"
+        return {"simulation_id": simulation_id}
+    except Exception as e:
+        logger.error(f"Error starting option pricing: {e}")
+        return {"simulation_id": ""}
+
+@app.get("/api/price_option/status/{simulation_id}", response_model=SimulationProgress)
+async def get_option_pricing_status(simulation_id: str):
+    """Get option pricing simulation status"""
+    try:
+        # Placeholder-Implementierung
+        return {
+            "simulation_id": simulation_id,
+            "status": "completed",
+            "progress": 1.0,
+            "message": "Simulation completed successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching option pricing status: {e}")
+        return {
+            "simulation_id": simulation_id,
+            "status": "failed",
+            "progress": 0.0,
+            "message": str(e)
+        }
+
+@app.get("/api/price_option/result/{simulation_id}", response_model=OptionPricingResponse)
+async def get_option_pricing_result(simulation_id: str):
+    """Get option pricing result"""
+    try:
+        # Placeholder-Implementierung
+        return {
+            "price": 100.0,
+            "greeks": {
+                "delta": 0.5,
+                "gamma": 0.1,
+                "theta": -0.05,
+                "vega": 0.2,
+                "rho": 0.01
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error fetching option pricing result: {e}")
+        return {"price": 0.0, "greeks": {}}
+
+@app.post("/api/price_option", response_model=OptionPricingResponse)
+async def price_option(request: OptionPricingRequest):
+    """Price option directly"""
+    try:
+        # Placeholder-Implementierung
+        return {
+            "price": 100.0,
+            "greeks": {
+                "delta": 0.5,
+                "gamma": 0.1,
+                "theta": -0.05,
+                "vega": 0.2,
+                "rho": 0.01
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error pricing option: {e}")
+        return {"price": 0.0, "greeks": {}}
+
+# ------------------------------------------------------------------
+# Implied Volatility Endpoints
+# ------------------------------------------------------------------
+@app.post("/api/implied_volatility", response_model=ImpliedVolatilityResponse)
+async def calculate_implied_volatility(request: ImpliedVolatilityRequest):
+    """Calculate implied volatility"""
+    try:
+        # Placeholder-Implementierung
+        return {"implied_volatility": 0.2}
+    except Exception as e:
+        logger.error(f"Error calculating implied volatility: {e}")
+        return {"implied_volatility": 0.0}
+
+# ------------------------------------------------------------------
+# Risk Metrics Endpoints
+# ------------------------------------------------------------------
+@app.post("/api/risk_metrics", response_model=RiskMetricsResponse)
+async def calculate_risk_metrics(request: RiskMetricsRequest):
+    """Calculate risk metrics"""
+    try:
+        # Placeholder-Implementierung
+        beta = {asset: 1.0 for asset in request.assets}
+        return {
+            "var": 1000.0,
+            "expected_shortfall": 1500.0,
+            "beta": beta
+        }
+    except Exception as e:
+        logger.error(f"Error calculating risk metrics: {e}")
+        return {"var": 0.0, "expected_shortfall": 0.0, "beta": {}}
+
+# ------------------------------------------------------------------
+# Simulation Status Endpoints
+# ------------------------------------------------------------------
+@app.get("/api/simulations", response_model=SimulationStatusResponse)
+async def get_all_simulations():
+    """Get all simulations"""
+    try:
+        # Placeholder-Implementierung
+        return {
+            "simulations": [
+                {
+                    "simulation_id": "sim_1",
+                    "status": "completed",
+                    "progress": 1.0,
+                    "message": "Simulation completed successfully"
+                },
+                {
+                    "simulation_id": "sim_2",
+                    "status": "running",
+                    "progress": 0.5,
+                    "message": "Simulation in progress"
+                }
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error fetching simulations: {e}")
+        return {"simulations": []}
 
 # ------------------------------------------------------------------
 # Statische Dateien für Next.js
