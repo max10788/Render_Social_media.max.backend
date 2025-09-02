@@ -18,6 +18,7 @@ from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
 from app.core.backend_crypto_tracker.api.routes import token_routes
 from app.core.backend_crypto_tracker.api.routes import transaction_routes
 from app.core.backend_crypto_tracker.api.routes import scanner_routes
+from app.core.backend_crypto_tracker.api.routes.frontend_routes import router as frontend_router
 
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
@@ -164,6 +165,7 @@ app.include_router(custom_analysis_router, prefix="/api/v1")
 app.include_router(token_routes.router, prefix="/api/v1")
 app.include_router(transaction_routes.router, prefix="/api/v1")
 app.include_router(scanner_routes.router, prefix="/api/v1")
+app.include_router(frontend_router)
 
 # ------------------------------------------------------------------
 # API-Health-Check
