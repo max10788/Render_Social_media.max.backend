@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request, Response
+# app/main.py
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -10,6 +11,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 from typing import Dict, Any, List
 from pydantic import BaseModel
+import json
+import asyncio
+import time
 
 # Router-Imports
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
@@ -119,6 +123,29 @@ class SimulationProgress(BaseModel):
 class SimulationStatusResponse(BaseModel):
     simulations: List[SimulationProgress]
 
+# WebSocket Connection Manager
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"WebSocket connection established. Total connections: {len(self.active_connections)}")
+
+    async def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        logger.info(f"WebSocket connection closed. Total connections: {len(self.active_connections)}")
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except Exception as e:
+                logger.error(f"Error broadcasting message: {e}")
+
+manager = ConnectionManager()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI application."""
@@ -149,7 +176,6 @@ app = FastAPI(
 # ------------------------------------------------------------------
 # CORS-Konfiguration (Nur FastAPI-Middleware)
 # ------------------------------------------------------------------
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://render-social-media-max-frontend-1.onrender.com"],
@@ -168,6 +194,35 @@ app.include_router(scanner_routes.router, prefix="/api/v1")
 app.include_router(frontend_router)
 
 # ------------------------------------------------------------------
+# WebSocket Endpoint
+# ------------------------------------------------------------------
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Wait for messages from client
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            logger.info(f"Received WebSocket message: {message}")
+            
+            # Process message and send response
+            response = {
+                "type": "response",
+                "message": f"Received: {message.get('type', 'unknown')}",
+                "timestamp": time.time()
+            }
+            
+            await websocket.send_text(json.dumps(response))
+            
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        manager.disconnect(websocket)
+
+# ------------------------------------------------------------------
 # API-Health-Check
 # ------------------------------------------------------------------
 @app.get("/health")
@@ -178,6 +233,7 @@ async def health_check():
         "services": {
             "token_analyzer": "active",
             "blockchain_tracking": "active",
+            "websocket": "active"
         },
         "database": {
             "host": database_config.db_host,
@@ -214,7 +270,7 @@ async def get_exchanges():
     except Exception as e:
         logger.error(f"Error fetching exchanges: {e}")
         return []
-
+        
 @app.get("/api/blockchains", response_model=List[BlockchainInfo])
 async def get_blockchains():
     """Get available blockchains"""
@@ -227,7 +283,7 @@ async def get_blockchains():
     except Exception as e:
         logger.error(f"Error fetching blockchains: {e}")
         return []
-
+        
 @app.get("/api/config", response_model=SystemConfig)
 async def get_config():
     """Get system configuration"""
@@ -241,7 +297,7 @@ async def get_config():
     except Exception as e:
         logger.error(f"Error fetching config: {e}")
         return {"minScore": 0, "maxAnalysesPerHour": 0, "cacheTTL": 0, "supportedChains": []}
-
+        
 @app.get("/api/analytics")
 async def get_analytics():
     """Get analytics data"""
@@ -258,7 +314,7 @@ async def get_analytics():
     except Exception as e:
         logger.error(f"Error fetching analytics: {e}")
         return {"analytics": {}, "status": "error", "message": str(e)}
-
+        
 @app.get("/api/settings")
 async def get_settings():
     """Get user settings"""
