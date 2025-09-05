@@ -648,6 +648,46 @@ async def serve_frontend_fallback(request: Request):
 # ------------------------------------------------------------------
 # Globaler Exception-Handler
 # ------------------------------------------------------------------
+
+@app.get("/api/tokens/statistics")
+async def get_tokens_statistics():
+    """Get token statistics"""
+    try:
+        return {
+            "statistics": {
+                "totalTokens": 1250,
+                "activeTokens": 1180,
+                "newTokens24h": 25,
+                "topGainers": [
+                    {"symbol": "TOKEN1", "change": 25.5},
+                    {"symbol": "TOKEN2", "change": 18.3},
+                    {"symbol": "TOKEN3", "change": 15.7}
+                ]
+            },
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching token statistics: {e}")
+        return {"statistics": {}, "status": "error", "message": str(e)}
+
+@app.get("/api/tokens/trending")
+async def get_tokens_trending(limit: int = 5):
+    """Get trending tokens"""
+    try:
+        return {
+            "tokens": [
+                {"symbol": "TOKEN1", "name": "Token One", "price": 0.025, "change24h": 25.5, "volume": 1250000},
+                {"symbol": "TOKEN2", "name": "Token Two", "price": 0.045, "change24h": 18.3, "volume": 980000},
+                {"symbol": "TOKEN3", "name": "Token Three", "price": 0.075, "change24h": 15.7, "volume": 750000},
+                {"symbol": "TOKEN4", "name": "Token Four", "price": 0.015, "change24h": 12.5, "volume": 620000},
+                {"symbol": "TOKEN5", "name": "Token Five", "price": 0.035, "change24h": 10.3, "volume": 510000}
+            ][:limit],
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching trending tokens: {e}")
+        return {"tokens": [], "status": "error", "message": str(e)}
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
