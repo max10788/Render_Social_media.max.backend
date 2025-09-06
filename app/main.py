@@ -14,7 +14,6 @@ from pydantic import BaseModel
 import json
 import asyncio
 import time
-
 # Router-Imports
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
     router as custom_analysis_router,
@@ -23,129 +22,103 @@ from app.core.backend_crypto_tracker.api.routes import token_routes
 from app.core.backend_crypto_tracker.api.routes import transaction_routes
 from app.core.backend_crypto_tracker.api.routes import scanner_routes
 from app.core.backend_crypto_tracker.api.routes.frontend_routes import router as frontend_router
-
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
 from app.core.backend_crypto_tracker.processor.database.models.manager import DatabaseManager
 from app.core.backend_crypto_tracker.utils.logger import get_logger
-
 logger = get_logger(__name__)
-
 # Frontend-Verzeichnisse konfigurieren
 BASE_DIR = Path(__file__).resolve().parent  # app/
 FRONTEND_DIR = BASE_DIR / "crypto-token-analysis-dashboard"  # app/crypto-token-analysis-dashboard
 BUILD_DIR = FRONTEND_DIR / ".next" / "standalone"  # Next.js standalone build
 STATIC_DIR = FRONTEND_DIR / ".next" / "static"     # Next.js static files
 PUBLIC_DIR = FRONTEND_DIR / "public"               # Next.js public files
-
 # Pydantic-Modelle für die neuen Endpunkte
 class AssetInfo(BaseModel):
     id: str
     name: str
     symbol: str
-
 class ExchangeInfo(BaseModel):
     id: str
     name: str
     trading_pairs: int
-
 class BlockchainInfo(BaseModel):
     id: str
     name: str
     block_time: float
-
 class SystemConfig(BaseModel):
     minScore: int
     maxAnalysesPerHour: int
     cacheTTL: int
     supportedChains: List[str]
-
 class AssetPriceRequest(BaseModel):
     assets: List[str]
     base_currency: str = "USD"
-
 class AssetPriceResponse(BaseModel):
     prices: Dict[str, float]
     timestamp: int
-
 class VolatilityRequest(BaseModel):
     asset: str
     timeframe: str = "1d"
-
 class VolatilityResponse(BaseModel):
     volatility: float
     timeframe: str
-
 class CorrelationRequest(BaseModel):
     assets: List[str]
     timeframe: str = "1d"
-
 class CorrelationResponse(BaseModel):
     correlation_matrix: Dict[str, Dict[str, float]]
     timeframe: str
-
 class OptionPricingRequest(BaseModel):
     underlying: str
     strike: float
     maturity: str
     option_type: str  # "call" or "put"
-
 class OptionPricingResponse(BaseModel):
     price: float
     greeks: Dict[str, float]
-
 class ImpliedVolatilityRequest(BaseModel):
     underlying: str
     strike: float
     maturity: str
     option_type: str
     market_price: float
-
 class ImpliedVolatilityResponse(BaseModel):
     implied_volatility: float
-
 class RiskMetricsRequest(BaseModel):
     assets: List[str]
     timeframe: str = "1d"
     confidence_level: float = 0.95
-
 class RiskMetricsResponse(BaseModel):
     var: float
     expected_shortfall: float
     beta: Dict[str, float]
-
 class SimulationProgress(BaseModel):
     simulation_id: str
     status: str  # "pending", "running", "completed", "failed"
     progress: float
     message: str
-
 class SimulationStatusResponse(BaseModel):
     simulations: List[SimulationProgress]
-
 # WebSocket Connection Manager
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
-
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
         logger.info(f"WebSocket connection established. Total connections: {len(self.active_connections)}")
-
     async def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
         logger.info(f"WebSocket connection closed. Total connections: {len(self.active_connections)}")
-
     async def broadcast(self, message: str):
         for connection in self.active_connections:
             try:
                 await connection.send_text(message)
             except Exception as e:
                 logger.error(f"Error broadcasting message: {e}")
-
 manager = ConnectionManager()
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI application."""
@@ -162,7 +135,6 @@ async def lifespan(app: FastAPI):
     
     yield
     logger.info("Shutting down Low-Cap Token Analyzer")
-
 # ------------------------------------------------------------------
 # FastAPI-Instanz
 # ------------------------------------------------------------------
@@ -172,18 +144,16 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
-
 # ------------------------------------------------------------------
 # CORS-Konfiguration (Nur FastAPI-Middleware)
 # ------------------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://render-social-media-max-frontend-1.onrender.com"],
+    allow_origins=["*"],  # In der Produktion sollten Sie dies auf spezifische Domains beschränken
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # ------------------------------------------------------------------
 # API Routes (mount first to prevent conflicts)
 # ------------------------------------------------------------------
@@ -192,7 +162,6 @@ app.include_router(token_routes.router, prefix="/api/v1")
 app.include_router(transaction_routes.router, prefix="/api/v1")
 app.include_router(scanner_routes.router, prefix="/api/v1")
 app.include_router(frontend_router)
-
 # ------------------------------------------------------------------
 # WebSocket Endpoint
 # ------------------------------------------------------------------
@@ -200,28 +169,50 @@ app.include_router(frontend_router)
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
+        # Sende eine Bestätigung, dass die Verbindung hergestellt wurde
+        await websocket.send_text(json.dumps({
+            "type": "connection_established",
+            "message": "WebSocket connection established",
+            "timestamp": time.time()
+        }))
+        
         while True:
             # Wait for messages from client
             data = await websocket.receive_text()
-            message = json.loads(data)
-            logger.info(f"Received WebSocket message: {message}")
-            
-            # Process message and send response
-            response = {
-                "type": "response",
-                "message": f"Received: {message.get('type', 'unknown')}",
-                "timestamp": time.time()
-            }
-            
-            await websocket.send_text(json.dumps(response))
+            try:
+                message = json.loads(data)
+                logger.info(f"Received WebSocket message: {message}")
+                
+                # Process message and send response
+                response = {
+                    "type": "response",
+                    "message": f"Received: {message.get('type', 'unknown')}",
+                    "timestamp": time.time()
+                }
+                
+                await websocket.send_text(json.dumps(response))
+            except json.JSONDecodeError:
+                error_response = {
+                    "type": "error",
+                    "message": "Invalid JSON format",
+                    "timestamp": time.time()
+                }
+                await websocket.send_text(json.dumps(error_response))
             
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
+        try:
+            await websocket.send_text(json.dumps({
+                "type": "error",
+                "message": str(e),
+                "timestamp": time.time()
+            }))
+        except:
+            pass
     finally:
         manager.disconnect(websocket)
-
 # ------------------------------------------------------------------
 # API-Health-Check
 # ------------------------------------------------------------------
@@ -242,6 +233,24 @@ async def health_check():
         }
     }
 
+# NEU: API-Health-Check mit /api/health Pfad
+@app.get("/api/health")
+async def api_health_check():
+    """API health check endpoint"""
+    return {
+        "status": "healthy",
+        "version": "1.0.0",
+        "services": {
+            "token_analyzer": "active",
+            "blockchain_tracking": "active",
+            "websocket": "active"
+        },
+        "database": {
+            "host": database_config.db_host,
+            "database": database_config.db_name,
+            "schema": database_config.schema_name,
+        }
+    }
 # ------------------------------------------------------------------
 # System Information Endpoints
 # ------------------------------------------------------------------
@@ -331,7 +340,47 @@ async def get_settings():
     except Exception as e:
         logger.error(f"Error fetching settings: {e}")
         return {"settings": {}, "status": "error", "message": str(e)}
+# ------------------------------------------------------------------
+# Token Endpoints
+# ------------------------------------------------------------------
+@app.get("/api/tokens/statistics")
+async def get_tokens_statistics():
+    """Get token statistics"""
+    try:
+        return {
+            "statistics": {
+                "totalTokens": 1250,
+                "activeTokens": 1180,
+                "newTokens24h": 25,
+                "topGainers": [
+                    {"symbol": "TOKEN1", "change": 25.5},
+                    {"symbol": "TOKEN2", "change": 18.3},
+                    {"symbol": "TOKEN3", "change": 15.7}
+                ]
+            },
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching token statistics: {e}")
+        return {"statistics": {}, "status": "error", "message": str(e)}
 
+@app.get("/api/tokens/trending")
+async def get_tokens_trending(limit: int = 5):
+    """Get trending tokens"""
+    try:
+        return {
+            "tokens": [
+                {"symbol": "TOKEN1", "name": "Token One", "price": 0.025, "change24h": 25.5, "volume": 1250000},
+                {"symbol": "TOKEN2", "name": "Token Two", "price": 0.045, "change24h": 18.3, "volume": 980000},
+                {"symbol": "TOKEN3", "name": "Token Three", "price": 0.075, "change24h": 15.7, "volume": 750000},
+                {"symbol": "TOKEN4", "name": "Token Four", "price": 0.015, "change24h": 12.5, "volume": 620000},
+                {"symbol": "TOKEN5", "name": "Token Five", "price": 0.035, "change24h": 10.3, "volume": 510000}
+            ][:limit],
+            "status": "success"
+        }
+    except Exception as e:
+        logger.error(f"Error fetching trending tokens: {e}")
+        return {"tokens": [], "status": "error", "message": str(e)}
 # ------------------------------------------------------------------
 # Asset Prices Endpoints
 # ------------------------------------------------------------------
@@ -345,7 +394,6 @@ async def get_asset_prices(request: AssetPriceRequest):
     except Exception as e:
         logger.error(f"Error fetching asset prices: {e}")
         return {"prices": {}, "timestamp": 0}
-
 # ------------------------------------------------------------------
 # Volatility Endpoints
 # ------------------------------------------------------------------
@@ -358,7 +406,6 @@ async def get_volatility(request: VolatilityRequest):
     except Exception as e:
         logger.error(f"Error calculating volatility: {e}")
         return {"volatility": 0.0, "timeframe": request.timeframe}
-
 # ------------------------------------------------------------------
 # Correlation Endpoints
 # ------------------------------------------------------------------
@@ -377,7 +424,6 @@ async def get_correlation(request: CorrelationRequest):
     except Exception as e:
         logger.error(f"Error calculating correlation: {e}")
         return {"correlation_matrix": {}, "timeframe": request.timeframe}
-
 # ------------------------------------------------------------------
 # Option Pricing Endpoints
 # ------------------------------------------------------------------
@@ -391,7 +437,6 @@ async def start_option_pricing(request: OptionPricingRequest):
     except Exception as e:
         logger.error(f"Error starting option pricing: {e}")
         return {"simulation_id": ""}
-
 @app.get("/api/price_option/status/{simulation_id}", response_model=SimulationProgress)
 async def get_option_pricing_status(simulation_id: str):
     """Get option pricing simulation status"""
@@ -411,7 +456,6 @@ async def get_option_pricing_status(simulation_id: str):
             "progress": 0.0,
             "message": str(e)
         }
-
 @app.get("/api/price_option/result/{simulation_id}", response_model=OptionPricingResponse)
 async def get_option_pricing_result(simulation_id: str):
     """Get option pricing result"""
@@ -430,7 +474,6 @@ async def get_option_pricing_result(simulation_id: str):
     except Exception as e:
         logger.error(f"Error fetching option pricing result: {e}")
         return {"price": 0.0, "greeks": {}}
-
 @app.post("/api/price_option", response_model=OptionPricingResponse)
 async def price_option(request: OptionPricingRequest):
     """Price option directly"""
@@ -449,7 +492,6 @@ async def price_option(request: OptionPricingRequest):
     except Exception as e:
         logger.error(f"Error pricing option: {e}")
         return {"price": 0.0, "greeks": {}}
-
 # ------------------------------------------------------------------
 # Implied Volatility Endpoints
 # ------------------------------------------------------------------
@@ -462,7 +504,6 @@ async def calculate_implied_volatility(request: ImpliedVolatilityRequest):
     except Exception as e:
         logger.error(f"Error calculating implied volatility: {e}")
         return {"implied_volatility": 0.0}
-
 # ------------------------------------------------------------------
 # Risk Metrics Endpoints
 # ------------------------------------------------------------------
@@ -480,7 +521,6 @@ async def calculate_risk_metrics(request: RiskMetricsRequest):
     except Exception as e:
         logger.error(f"Error calculating risk metrics: {e}")
         return {"var": 0.0, "expected_shortfall": 0.0, "beta": {}}
-
 # ------------------------------------------------------------------
 # Simulation Status Endpoints
 # ------------------------------------------------------------------
@@ -508,7 +548,6 @@ async def get_all_simulations():
     except Exception as e:
         logger.error(f"Error fetching simulations: {e}")
         return {"simulations": []}
-
 # ------------------------------------------------------------------
 # Statische Dateien für Next.js
 # ------------------------------------------------------------------
@@ -520,7 +559,6 @@ if STATIC_DIR.exists():
     
 if PUBLIC_DIR.exists():
     app.mount("/public", StaticFiles(directory=PUBLIC_DIR), name="public")
-
 # ------------------------------------------------------------------
 # Angepasster 404-Handler
 # ------------------------------------------------------------------
@@ -604,7 +642,6 @@ npm run start
         """,
         status_code=200
     )
-
 # ------------------------------------------------------------------
 # Fallback-Route
 # ------------------------------------------------------------------
@@ -644,50 +681,9 @@ async def serve_frontend_fallback(request: Request):
         """,
         status_code=200
     )
-
 # ------------------------------------------------------------------
 # Globaler Exception-Handler
 # ------------------------------------------------------------------
-
-@app.get("/api/tokens/statistics")
-async def get_tokens_statistics():
-    """Get token statistics"""
-    try:
-        return {
-            "statistics": {
-                "totalTokens": 1250,
-                "activeTokens": 1180,
-                "newTokens24h": 25,
-                "topGainers": [
-                    {"symbol": "TOKEN1", "change": 25.5},
-                    {"symbol": "TOKEN2", "change": 18.3},
-                    {"symbol": "TOKEN3", "change": 15.7}
-                ]
-            },
-            "status": "success"
-        }
-    except Exception as e:
-        logger.error(f"Error fetching token statistics: {e}")
-        return {"statistics": {}, "status": "error", "message": str(e)}
-
-@app.get("/api/tokens/trending")
-async def get_tokens_trending(limit: int = 5):
-    """Get trending tokens"""
-    try:
-        return {
-            "tokens": [
-                {"symbol": "TOKEN1", "name": "Token One", "price": 0.025, "change24h": 25.5, "volume": 1250000},
-                {"symbol": "TOKEN2", "name": "Token Two", "price": 0.045, "change24h": 18.3, "volume": 980000},
-                {"symbol": "TOKEN3", "name": "Token Three", "price": 0.075, "change24h": 15.7, "volume": 750000},
-                {"symbol": "TOKEN4", "name": "Token Four", "price": 0.015, "change24h": 12.5, "volume": 620000},
-                {"symbol": "TOKEN5", "name": "Token Five", "price": 0.035, "change24h": 10.3, "volume": 510000}
-            ][:limit],
-            "status": "success"
-        }
-    except Exception as e:
-        logger.error(f"Error fetching trending tokens: {e}")
-        return {"tokens": [], "status": "error", "message": str(e)}
-
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}", exc_info=True)
@@ -698,7 +694,6 @@ async def global_exception_handler(request: Request, exc: Exception):
             "detail": str(exc) if app.debug else "An unexpected error occurred",
         },
     )
-
 # ------------------------------------------------------------------
 # Datenbankkonfiguration für Render
 # ------------------------------------------------------------------
