@@ -18,7 +18,7 @@ import time
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
     router as custom_analysis_router,
 )
-from app.core.backend_crypto_tracker.api.routes.contracts import router as contracts_router
+from app.core.backend_crypto_tracker.api.routes.contract_routes import router as contracts_router
 from app.core.backend_crypto_tracker.api.routes import token_routes
 from app.core.backend_crypto_tracker.api.routes import transaction_routes
 from app.core.backend_crypto_tracker.api.routes import scanner_routes
