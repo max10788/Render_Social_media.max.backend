@@ -107,3 +107,18 @@ class InsufficientDataException(CustomAnalysisException):
                 "data_points_available": data_points_available
             }
         )
+
+class NotFoundException(BaseCryptoTrackerException):
+    """Exception for when a resource is not found"""
+    
+    def __init__(self, resource_type: str, identifier: str = None):
+        if identifier:
+            message = f"{resource_type} with identifier '{identifier}' not found"
+        else:
+            message = f"{resource_type} not found"
+        
+        super().__init__(
+            message,
+            error_code="NOT_FOUND",
+            details={"resource_type": resource_type, "identifier": identifier}
+        )
