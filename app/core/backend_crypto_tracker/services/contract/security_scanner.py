@@ -5,18 +5,19 @@ import subprocess
 import tempfile
 import aiohttp
 import re
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Tuple
 from datetime import datetime
 from pathlib import Path
+from functools import lru_cache
 
 from app.core.backend_crypto_tracker.utils.logger import get_logger
-from app.core.backend_crypto_tracker.utils.exceptions import APIException, NotFoundException
+from app.core.backend_crypto_tracker.utils.exceptions import APIException, NotFoundException, SecurityScanException
 from app.core.backend_crypto_tracker.services.contract.contract_metadata import ContractMetadataService
 
 logger = get_logger(__name__)
 
 class SecurityScanner:
-    """Service for analyzing smart contracts for security vulnerabilities."""
+    """Service für die Analyse von Smart Contracts auf Sicherheitslücken."""
     
     # SWC (Smart Contract Weakness Classification) Registry
     SWC_REGISTRY = {
@@ -202,40 +203,48 @@ class SecurityScanner:
         }
     }
     
-    def __init__(self):
-        """Initialize scanner and rules."""
-        # Initialize contract metadata service
+    def __init__(self, cache_ttl: int = 3600):
+        """
+        Initialisiere Scanner und Regeln.
+        
+        Args:
+            cache_ttl: Cache Time-To-Live in Sekunden
+        """
+        # Initialisiere Contract-Metadaten-Service
         self.metadata_service = ContractMetadataService()
         
-        # Initialize session for HTTP requests
+        # Initialisiere Session für HTTP-Anfragen
         self.session = None
         
-        # Path to Slither executable (if available)
+        # Pfad zum Slither-Executable (falls verfügbar)
         self.slither_path = os.getenv("SLITHER_PATH", "slither")
         
-        # Chain-specific security rules
+        # Cache-TTL
+        self.cache_ttl = cache_ttl
+        
+        # Chain-spezifische Sicherheitsregeln
         self.chain_specific_rules = {
             "ethereum": {
-                "max_external_calls": 5,
-                "recommended_min_proxy_delay": 2 * 24 * 60 * 60,  # 2 days in seconds
-                "recommended_max_supply": "1000000000000000000000000"  # 1 million tokens with 18 decimals
+                "max_external_calls": int(os.getenv("ETH_MAX_EXTERNAL_CALLS", "5")),
+                "recommended_min_proxy_delay": int(os.getenv("ETH_MIN_PROXY_DELAY", "172800")),  # 2 Tage in Sekunden
+                "recommended_max_supply": os.getenv("ETH_MAX_SUPPLY", "1000000000000000000000000")  # 1 Million Tokens mit 18 Dezimalstellen
             },
             "bsc": {
-                "max_external_calls": 5,
-                "recommended_min_proxy_delay": 2 * 24 * 60 * 60,  # 2 days in seconds
-                "recommended_max_supply": "1000000000000000000000000"  # 1 million tokens with 18 decimals
+                "max_external_calls": int(os.getenv("BSC_MAX_EXTERNAL_CALLS", "5")),
+                "recommended_min_proxy_delay": int(os.getenv("BSC_MIN_PROXY_DELAY", "172800")),  # 2 Tage in Sekunden
+                "recommended_max_supply": os.getenv("BSC_MAX_SUPPLY", "1000000000000000000000000")  # 1 Million Tokens mit 18 Dezimalstellen
             },
             "solana": {
-                "max_cross_program_invocations": 4,
-                "recommended_max_compute_units": 200000
+                "max_cross_program_invocations": int(os.getenv("SOL_MAX_CPI", "4")),
+                "recommended_max_compute_units": int(os.getenv("SOL_MAX_COMPUTE", "200000"))
             },
             "sui": {
-                "max_object_dependencies": 10,
-                "recommended_max_gas": 10000000
+                "max_object_dependencies": int(os.getenv("SUI_MAX_OBJECTS", "10")),
+                "recommended_max_gas": int(os.getenv("SUI_MAX_GAS", "10000000"))
             }
         }
         
-        # Initialize vulnerability patterns for regex-based detection
+        # Initialisiere Vulnerability-Patterns für Regex-basierte Erkennung
         self.vulnerability_patterns = {
             "SWC-107": [
                 r"\.call\s*\(\s*.*\s*\)\s*;",  # External call pattern
@@ -260,6 +269,9 @@ class SecurityScanner:
                 r"\.delegatecall\s*\("  # Delegatecall with address
             ]
         }
+        
+        # Cache für Analyseergebnisse
+        self._cache = {}
     
     async def __aenter__(self):
         """Async context manager entry."""
@@ -273,102 +285,153 @@ class SecurityScanner:
             await self.session.close()
         await self.metadata_service.__aexit__(exc_type, exc_val, exc_tb)
     
+    def _get_cache_key(self, method_name: str, *args) -> str:
+        """Erzeuge einen Cache-Schlüssel für eine Methode mit ihren Argumenten."""
+        return f"{method_name}:{':'.join(str(arg) for arg in args)}"
+    
+    def _is_cache_valid(self, timestamp: float) -> bool:
+        """Prüfe, ob ein Cache-Eintrag noch gültig ist."""
+        return (datetime.now().timestamp() - timestamp) < self.cache_ttl
+    
     async def scan_contract_security(self, address: str, chain: str) -> Dict[str, Any]:
         """
-        Perform a comprehensive security scan of a smart contract.
+        Führe eine umfassende Sicherheitsanalyse eines Smart Contracts durch.
         
         Args:
-            address: Contract address
-            chain: Blockchain name (ethereum, bsc, solana, sui)
+            address: Contract-Adresse
+            chain: Blockchain-Name (ethereum, bsc, solana, sui)
             
         Returns:
-            Dictionary containing security analysis results
+            Dictionary mit den Ergebnissen der Sicherheitsanalyse
         """
         try:
-            # Get contract metadata
+            # Prüfe Cache
+            cache_key = self._get_cache_key("scan_contract_security", address, chain)
+            if cache_key in self._cache and self._is_cache_valid(self._cache[cache_key]["timestamp"]):
+                logger.info(f"Using cached security scan results for {address} on {chain}")
+                return self._cache[cache_key]["data"]
+            
+            logger.info(f"Starting security scan for contract {address} on {chain}")
+            
+            # Hole Contract-Metadaten
             metadata = await self.metadata_service.get_contract_metadata(address, chain)
             
-            # Perform vulnerability check
+            # Führe Vulnerability-Check durch
             vulnerabilities = await self.check_vulnerabilities(address, chain)
             
-            # Analyze access control
+            # Analysiere Zugriffskontrollen
             access_control_issues = await self.analyze_access_control(address, chain)
             
-            # Analyze economic risks
+            # Analysiere wirtschaftliche Risiken
             economic_risks = await self.analyze_economic_risks(address, chain)
             
-            # Calculate verification confidence
+            # Berechne Verifizierungs-Konfidenz
             verification_confidence = await self.calculate_verification_confidence(address, chain)
             
-            # Calculate code quality metrics
+            # Berechne Code-Qualitäts-Metriken
             code_quality_metrics = await self._analyze_code_quality(address, chain)
             
-            return {
+            result = {
                 "vulnerabilities": vulnerabilities,
                 "code_quality_metrics": code_quality_metrics,
                 "access_control_issues": access_control_issues,
                 "economic_risks": economic_risks,
                 "verification_confidence": verification_confidence
             }
+            
+            # Speichere im Cache
+            self._cache[cache_key] = {
+                "timestamp": datetime.now().timestamp(),
+                "data": result
+            }
+            
+            logger.info(f"Completed security scan for contract {address} on {chain}")
+            return result
         except Exception as e:
-            logger.error(f"Failed to scan contract security for {address} on {chain}: {str(e)}")
-            raise
+            error_msg = f"Failed to scan contract security for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
+            raise SecurityScanException(error_msg) from e
     
     async def check_vulnerabilities(self, address: str, chain: str) -> List[Dict]:
         """
-        Check for known vulnerabilities in a smart contract.
+        Prüfe auf bekannte Vulnerabilities in einem Smart Contract.
         
         Args:
-            address: Contract address
-            chain: Blockchain name (ethereum, bsc, solana, sui)
+            address: Contract-Adresse
+            chain: Blockchain-Name (ethereum, bsc, solana, sui)
             
         Returns:
-            List of detected vulnerabilities
+            Liste der erkannten Vulnerabilities
         """
         try:
+            # Prüfe Cache
+            cache_key = self._get_cache_key("check_vulnerabilities", address, chain)
+            if cache_key in self._cache and self._is_cache_valid(self._cache[cache_key]["timestamp"]):
+                logger.info(f"Using cached vulnerability check results for {address} on {chain}")
+                return self._cache[cache_key]["data"]
+            
+            logger.info(f"Checking vulnerabilities for contract {address} on {chain}")
+            
             vulnerabilities = []
             
             if chain.lower() in ["ethereum", "bsc"]:
-                # Use Slither for Solidity contracts
+                # Verwende Slither für Solidity-Contracts
                 vulnerabilities = await self._check_solidity_vulnerabilities(address, chain)
                 
-                # Perform additional regex-based checks
+                # Führe zusätzliche Regex-basierte Prüfungen durch
                 regex_vulnerabilities = await self._check_vulnerabilities_with_regex(address, chain)
                 vulnerabilities.extend(regex_vulnerabilities)
                 
             elif chain.lower() == "solana":
-                # Solana-specific vulnerability checks
+                # Solana-spezifische Vulnerability-Prüfungen
                 vulnerabilities = await self._check_solana_vulnerabilities(address, chain)
             elif chain.lower() == "sui":
-                # Sui-specific vulnerability checks
+                # Sui-spezifische Vulnerability-Prüfungen
                 vulnerabilities = await self._check_sui_vulnerabilities(address, chain)
             else:
                 raise ValueError(f"Unsupported blockchain: {chain}")
             
-            return vulnerabilities
+            # Entferne Duplikate basierend auf ID und Zeilennummer
+            unique_vulnerabilities = []
+            seen = set()
+            for vuln in vulnerabilities:
+                key = (vuln.get("id", ""), vuln.get("line_number", 0))
+                if key not in seen:
+                    seen.add(key)
+                    unique_vulnerabilities.append(vuln)
+            
+            # Speichere im Cache
+            self._cache[cache_key] = {
+                "timestamp": datetime.now().timestamp(),
+                "data": unique_vulnerabilities
+            }
+            
+            logger.info(f"Found {len(unique_vulnerabilities)} vulnerabilities for contract {address} on {chain}")
+            return unique_vulnerabilities
         except Exception as e:
-            logger.error(f"Failed to check vulnerabilities for {address} on {chain}: {str(e)}")
-            raise
+            error_msg = f"Failed to check vulnerabilities for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
+            raise SecurityScanException(error_msg) from e
     
     async def _check_vulnerabilities_with_regex(self, address: str, chain: str) -> List[Dict]:
-        """Check for vulnerabilities using regex patterns on the contract source code."""
+        """Prüfe auf Vulnerabilities mit Regex-Patterns im Contract-Quellcode."""
         try:
             vulnerabilities = []
             
-            # Get contract source code
+            # Hole Contract-Quellcode
             source_code = await self._get_contract_source_code(address, chain)
             if not source_code:
                 return vulnerabilities
             
-            # Check for each vulnerability pattern
+            # Prüfe für jedes Vulnerability-Pattern
             for swc_id, patterns in self.vulnerability_patterns.items():
                 for pattern in patterns:
                     matches = re.finditer(pattern, source_code, re.IGNORECASE)
                     for match in matches:
-                        # Get line number
+                        # Hole Zeilennummer
                         line_number = source_code[:match.start()].count('\n') + 1
                         
-                        # Get vulnerability details
+                        # Hole Vulnerability-Details
                         vuln_details = self.SWC_REGISTRY.get(swc_id, {})
                         
                         vulnerability = {
@@ -379,33 +442,47 @@ class SecurityScanner:
                             "line_number": line_number
                         }
                         
-                        # Avoid duplicates
-                        if not any(v["id"] == swc_id and v["line_number"] == line_number for v in vulnerabilities):
-                            vulnerabilities.append(vulnerability)
+                        vulnerabilities.append(vulnerability)
             
             return vulnerabilities
         except Exception as e:
-            logger.error(f"Failed to check vulnerabilities with regex for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to check vulnerabilities with regex for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return []
     
     async def _get_contract_source_code(self, address: str, chain: str) -> Optional[str]:
-        """Get the source code of a contract."""
+        """Hole den Quellcode eines Contracts."""
         try:
+            # Prüfe Cache
+            cache_key = self._get_cache_key("_get_contract_source_code", address, chain)
+            if cache_key in self._cache and self._is_cache_valid(self._cache[cache_key]["timestamp"]):
+                return self._cache[cache_key]["data"]
+            
+            source_code = None
+            
             if chain.lower() == "ethereum":
-                return await self._get_ethereum_source_code(address)
+                source_code = await self._get_ethereum_source_code(address)
             elif chain.lower() == "bsc":
-                return await self._get_bsc_source_code(address)
-            else:
-                return None
+                source_code = await self._get_bsc_source_code(address)
+            
+            # Speichere im Cache
+            self._cache[cache_key] = {
+                "timestamp": datetime.now().timestamp(),
+                "data": source_code
+            }
+            
+            return source_code
         except Exception as e:
-            logger.error(f"Failed to get source code for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to get source code for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return None
     
     async def _get_ethereum_source_code(self, address: str) -> Optional[str]:
-        """Get the source code of an Ethereum contract."""
+        """Hole den Quellcode eines Ethereum-Contracts."""
         try:
             etherscan_api_key = os.getenv("ETHERSCAN_API_KEY")
             if not etherscan_api_key:
+                logger.warning("ETHERSCAN_API_KEY not set, cannot fetch Ethereum source code")
                 return None
             
             params = {
@@ -430,14 +507,16 @@ class SecurityScanner:
             
             return None
         except Exception as e:
-            logger.error(f"Failed to get Ethereum source code for {address}: {str(e)}")
+            error_msg = f"Failed to get Ethereum source code for {address}: {str(e)}"
+            logger.error(error_msg)
             return None
     
     async def _get_bsc_source_code(self, address: str) -> Optional[str]:
-        """Get the source code of a BSC contract."""
+        """Hole den Quellcode eines BSC-Contracts."""
         try:
             bscscan_api_key = os.getenv("BSCSCAN_API_KEY")
             if not bscscan_api_key:
+                logger.warning("BSCSCAN_API_KEY not set, cannot fetch BSC source code")
                 return None
             
             params = {
@@ -462,25 +541,26 @@ class SecurityScanner:
             
             return None
         except Exception as e:
-            logger.error(f"Failed to get BSC source code for {address}: {str(e)}")
+            error_msg = f"Failed to get BSC source code for {address}: {str(e)}"
+            logger.error(error_msg)
             return None
     
     async def _check_solidity_vulnerabilities(self, address: str, chain: str) -> List[Dict]:
-        """Check for vulnerabilities in Solidity contracts using Slither."""
+        """Prüfe auf Vulnerabilities in Solidity-Contracts mit Slither."""
         try:
-            # Get contract ABI
+            # Hole Contract-ABI
             abi = await self.metadata_service.get_abi(address, chain)
             if not abi:
                 logger.warning(f"No ABI available for contract {address} on {chain}")
                 return []
             
-            # Create a temporary file for the ABI
+            # Erstelle eine temporäre Datei für die ABI
             with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as abi_file:
                 abi_file.write(abi)
                 abi_path = abi_file.name
             
             try:
-                # Run Slither to detect vulnerabilities
+                # Führe Slither aus, um Vulnerabilities zu erkennen
                 cmd = [
                     self.slither_path,
                     address,
@@ -490,7 +570,7 @@ class SecurityScanner:
                     "all"
                 ]
                 
-                # Add API key if available
+                # Füge API-Schlüssel hinzu, falls verfügbar
                 api_key = os.getenv("ETHERSCAN_API_KEY") if chain.lower() == "ethereum" else os.getenv("BSCSCAN_API_KEY")
                 if api_key:
                     cmd.extend(["--etherscan-apikey", api_key])
@@ -509,17 +589,17 @@ class SecurityScanner:
                     logger.error(f"Slither failed with return code {process.returncode}: {stderr.decode()}")
                     return []
                 
-                # Parse Slither output
+                # Parse Slither-Ausgabe
                 try:
                     slither_results = json.loads(stdout.decode())
                 except json.JSONDecodeError:
                     logger.error("Failed to parse Slither output as JSON")
                     return []
                 
-                # Convert Slither results to our format
+                # Konvertiere Slither-Ergebnisse in unser Format
                 vulnerabilities = []
                 for detector_result in slither_results.get("detectors", []):
-                    # Map Slither detector to SWC ID if possible
+                    # Mappe Slither-Detector zu SWC-ID, falls möglich
                     swc_id = self._map_slither_to_swc(detector_result.get("check", ""))
                     
                     vulnerability = {
@@ -534,15 +614,16 @@ class SecurityScanner:
                 
                 return vulnerabilities
             finally:
-                # Clean up temporary file
+                # Räume temporäre Datei auf
                 os.unlink(abi_path)
         except Exception as e:
-            logger.error(f"Failed to check Solidity vulnerabilities for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to check Solidity vulnerabilities for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return []
     
     def _map_slither_to_swc(self, slither_check: str) -> str:
-        """Map a Slither check name to an SWC ID."""
-        # Simple mapping for common checks
+        """Mappe einen Slither-Check-Namen zu einer SWC-ID."""
+        # Einfache Mapping für gängige Checks
         mapping = {
             "reentrancy-eth": "SWC-107",
             "integer-overflow": "SWC-101",
@@ -570,7 +651,7 @@ class SecurityScanner:
         return mapping.get(slither_check, "UNKNOWN")
     
     def _normalize_severity(self, severity: str) -> str:
-        """Normalize severity to our standard format."""
+        """Normalisiere Schweregrad zu unserem Standardformat."""
         severity = severity.lower()
         if severity in ["high", "critical"]:
             return "high"
@@ -579,17 +660,17 @@ class SecurityScanner:
         elif severity in ["low", "informational", "optimization"]:
             return "low"
         else:
-            return "medium"  # Default to medium if unknown
+            return "medium"  # Standard auf medium, falls unbekannt
     
     async def _check_solana_vulnerabilities(self, address: str, chain: str) -> List[Dict]:
-        """Check for vulnerabilities in Solana programs."""
+        """Prüfe auf Vulnerabilities in Solana-Programmen."""
         try:
             vulnerabilities = []
             
-            # Get contract metadata
+            # Hole Contract-Metadaten
             metadata = await self.metadata_service.get_contract_metadata(address, chain)
             
-            # Check for common Solana vulnerabilities
+            # Prüfe auf gängige Solana-Vulnerabilities
             if not metadata.get("verification_status", False):
                 vulnerabilities.append({
                     "id": "SOL-001",
@@ -599,9 +680,9 @@ class SecurityScanner:
                     "line_number": 0
                 })
             
-            # Check for excessive cross-program invocations
-            # This would require analyzing the program's instructions
-            # For now, we'll add a placeholder check
+            # Prüfe auf übermäßige Cross-Program-Invocations
+            # Dies würde die Analyse der Anweisungen des Programms erfordern
+            # Für jetzt fügen wir eine Platzhalter-Prüfung hinzu
             vulnerabilities.append({
                 "id": "SOL-002",
                 "name": "Excessive Cross-Program Invocations",
@@ -610,7 +691,7 @@ class SecurityScanner:
                 "line_number": 0
             })
             
-            # Check for missing account validation
+            # Prüfe auf fehlende Account-Validierung
             vulnerabilities.append({
                 "id": "SOL-003",
                 "name": "Missing Account Validation",
@@ -621,18 +702,19 @@ class SecurityScanner:
             
             return vulnerabilities
         except Exception as e:
-            logger.error(f"Failed to check Solana vulnerabilities for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to check Solana vulnerabilities for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return []
     
     async def _check_sui_vulnerabilities(self, address: str, chain: str) -> List[Dict]:
-        """Check for vulnerabilities in Sui Move modules."""
+        """Prüfe auf Vulnerabilities in Sui Move-Modulen."""
         try:
             vulnerabilities = []
             
-            # Get contract metadata
+            # Hole Contract-Metadaten
             metadata = await self.metadata_service.get_contract_metadata(address, chain)
             
-            # Check for common Sui vulnerabilities
+            # Prüfe auf gängige Sui-Vulnerabilities
             if not metadata.get("verification_status", False):
                 vulnerabilities.append({
                     "id": "SUI-001",
@@ -642,9 +724,9 @@ class SecurityScanner:
                     "line_number": 0
                 })
             
-            # Check for excessive object dependencies
-            # This would require analyzing the module's dependencies
-            # For now, we'll add a placeholder check
+            # Prüfe auf übermäßige Objekt-Abhängigkeiten
+            # Dies würde die Analyse der Abhängigkeiten des Moduls erfordern
+            # Für jetzt fügen wir eine Platzhalter-Prüfung hinzu
             vulnerabilities.append({
                 "id": "SUI-002",
                 "name": "Excessive Object Dependencies",
@@ -653,7 +735,7 @@ class SecurityScanner:
                 "line_number": 0
             })
             
-            # Check for missing capability checks
+            # Prüfe auf fehlende Capability-Checks
             vulnerabilities.append({
                 "id": "SUI-003",
                 "name": "Missing Capability Checks",
@@ -664,21 +746,30 @@ class SecurityScanner:
             
             return vulnerabilities
         except Exception as e:
-            logger.error(f"Failed to check Sui vulnerabilities for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to check Sui vulnerabilities for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return []
     
     async def analyze_access_control(self, address: str, chain: str) -> List[str]:
         """
-        Analyze access control issues in a smart contract.
+        Analysiere Zugriffskontrollprobleme in einem Smart Contract.
         
         Args:
-            address: Contract address
-            chain: Blockchain name (ethereum, bsc, solana, sui)
+            address: Contract-Adresse
+            chain: Blockchain-Name (ethereum, bsc, solana, sui)
             
         Returns:
-            List of access control issues
+            Liste der Zugriffskontrollprobleme
         """
         try:
+            # Prüfe Cache
+            cache_key = self._get_cache_key("analyze_access_control", address, chain)
+            if cache_key in self._cache and self._is_cache_valid(self._cache[cache_key]["timestamp"]):
+                logger.info(f"Using cached access control analysis for {address} on {chain}")
+                return self._cache[cache_key]["data"]
+            
+            logger.info(f"Analyzing access control for contract {address} on {chain}")
+            
             issues = []
             
             if chain.lower() in ["ethereum", "bsc"]:
@@ -690,34 +781,42 @@ class SecurityScanner:
             else:
                 raise ValueError(f"Unsupported blockchain: {chain}")
             
+            # Speichere im Cache
+            self._cache[cache_key] = {
+                "timestamp": datetime.now().timestamp(),
+                "data": issues
+            }
+            
+            logger.info(f"Found {len(issues)} access control issues for contract {address} on {chain}")
             return issues
         except Exception as e:
-            logger.error(f"Failed to analyze access control for {address} on {chain}: {str(e)}")
-            raise
+            error_msg = f"Failed to analyze access control for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
+            raise SecurityScanException(error_msg) from e
     
     async def _analyze_solidity_access_control(self, address: str, chain: str) -> List[str]:
-        """Analyze access control issues in Solidity contracts."""
+        """Analysiere Zugriffskontrollprobleme in Solidity-Contracts."""
         try:
             issues = []
             
-            # Get contract source code
+            # Hole Contract-Quellcode
             source_code = await self._get_contract_source_code(address, chain)
             if not source_code:
                 issues.append("No source code available to analyze access control")
                 return issues
             
-            # Check for missing access control on critical functions
+            # Prüfe auf fehlende Zugriffskontrolle bei kritischen Funktionen
             critical_functions = [
                 "mint", "burn", "pause", "unpause", "withdraw", "transferownership",
                 "setfee", "settax", "setlimit", "setrate", "setaddress", "changeowner"
             ]
             
-            # Check for functions with names matching critical functions
+            # Prüfe auf Funktionen mit Namen, die mit kritischen Funktionen übereinstimmen
             for func in critical_functions:
                 pattern = rf"function\s+{func}\s*\("
                 matches = re.finditer(pattern, source_code, re.IGNORECASE)
                 for match in matches:
-                    # Get the function signature
+                    # Hole die Funktionssignatur
                     line_start = source_code.rfind('\n', 0, match.start()) + 1
                     line_end = source_code.find('\n', match.end())
                     if line_end == -1:
@@ -725,7 +824,7 @@ class SecurityScanner:
                     
                     function_line = source_code[line_start:line_end].strip()
                     
-                    # Check if the function has access control modifiers
+                    # Prüfe, ob die Funktion Zugriffskontroll-Modifikatoren hat
                     has_access_control = any(
                         modifier in function_line 
                         for modifier in ["onlyOwner", "onlyAdmin", "whenNotPaused", "whenPaused", "internal", "private"]
@@ -734,85 +833,96 @@ class SecurityScanner:
                     if not has_access_control:
                         issues.append(f"Critical function {func} lacks access control")
             
-            # Check for tx.origin usage
+            # Prüfe auf tx.origin-Nutzung
             if re.search(r"tx\.origin", source_code):
                 issues.append("Use of tx.origin detected, which can lead to phishing attacks")
             
-            # Check for unprotected selfdestruct
+            # Prüfe auf ungeschützten selfdestruct
             if re.search(r"selfdestruct\s*\(", source_code) and not re.search(r"onlyOwner", source_code):
                 issues.append("Unprotected selfdestruct function detected")
             
-            # Check for unprotected delegatecall
+            # Prüfe auf ungeschützten delegatecall
             if re.search(r"delegatecall\s*\(", source_code) and not re.search(r"onlyOwner", source_code):
                 issues.append("Unprotected delegatecall function detected")
             
-            # Check for missing pausing mechanism
+            # Prüfe auf fehlenden Pausierungsmechanismus
             if not re.search(r"pause\s*\(", source_code) and not re.search(r"unpause\s*\(", source_code):
                 issues.append("No pausing mechanism detected, which could be problematic in emergencies")
             
             return issues
         except Exception as e:
-            logger.error(f"Failed to analyze Solidity access control for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to analyze Solidity access control for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return ["Failed to analyze access control due to an error"]
     
     async def _analyze_solana_access_control(self, address: str, chain: str) -> List[str]:
-        """Analyze access control issues in Solana programs."""
+        """Analysiere Zugriffskontrollprobleme in Solana-Programmen."""
         try:
             issues = []
             
-            # Get contract metadata
+            # Hole Contract-Metadaten
             metadata = await self.metadata_service.get_contract_metadata(address, chain)
             
-            # Solana-specific access control checks
+            # Solana-spezifische Zugriffskontrollprüfungen
             if not metadata.get("verification_status", False):
                 issues.append("Unverified program, access control cannot be fully verified")
             
-            # Check for missing account validation
+            # Prüfe auf fehlende Account-Validierung
             issues.append("Potential missing account validation in program")
             
-            # Check for missing authority checks
+            # Prüfe auf fehlende Authority-Checks
             issues.append("Potential missing authority checks in program")
             
             return issues
         except Exception as e:
-            logger.error(f"Failed to analyze Solana access control for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to analyze Solana access control for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return ["Failed to analyze access control due to an error"]
     
     async def _analyze_sui_access_control(self, address: str, chain: str) -> List[str]:
-        """Analyze access control issues in Sui Move modules."""
+        """Analysiere Zugriffskontrollprobleme in Sui Move-Modulen."""
         try:
             issues = []
             
-            # Get contract metadata
+            # Hole Contract-Metadaten
             metadata = await self.metadata_service.get_contract_metadata(address, chain)
             
-            # Sui-specific access control checks
+            # Sui-spezifische Zugriffskontrollprüfungen
             if not metadata.get("verification_status", False):
                 issues.append("Unverified module, access control cannot be fully verified")
             
-            # Check for missing capability checks
+            # Prüfe auf fehlende Capability-Checks
             issues.append("Potential missing capability checks in module")
             
-            # Check for missing object ownership validation
+            # Prüfe auf fehlende Objekt-Eigentümer-Validierung
             issues.append("Potential missing object ownership validation in module")
             
             return issues
         except Exception as e:
-            logger.error(f"Failed to analyze Sui access control for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to analyze Sui access control for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return ["Failed to analyze access control due to an error"]
     
     async def analyze_economic_risks(self, address: str, chain: str) -> List[str]:
         """
-        Analyze economic risks in a smart contract.
+        Analysiere wirtschaftliche Risiken in einem Smart Contract.
         
         Args:
-            address: Contract address
-            chain: Blockchain name (ethereum, bsc, solana, sui)
+            address: Contract-Adresse
+            chain: Blockchain-Name (ethereum, bsc, solana, sui)
             
         Returns:
-            List of economic risks
+            Liste der wirtschaftlichen Risiken
         """
         try:
+            # Prüfe Cache
+            cache_key = self._get_cache_key("analyze_economic_risks", address, chain)
+            if cache_key in self._cache and self._is_cache_valid(self._cache[cache_key]["timestamp"]):
+                logger.info(f"Using cached economic risks analysis for {address} on {chain}")
+                return self._cache[cache_key]["data"]
+            
+            logger.info(f"Analyzing economic risks for contract {address} on {chain}")
+            
             risks = []
             
             if chain.lower() in ["ethereum", "bsc"]:
@@ -824,173 +934,208 @@ class SecurityScanner:
             else:
                 raise ValueError(f"Unsupported blockchain: {chain}")
             
+            # Speichere im Cache
+            self._cache[cache_key] = {
+                "timestamp": datetime.now().timestamp(),
+                "data": risks
+            }
+            
+            logger.info(f"Found {len(risks)} economic risks for contract {address} on {chain}")
             return risks
         except Exception as e:
-            logger.error(f"Failed to analyze economic risks for {address} on {chain}: {str(e)}")
-            raise
+            error_msg = f"Failed to analyze economic risks for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
+            raise SecurityScanException(error_msg) from e
     
     async def _analyze_solidity_economic_risks(self, address: str, chain: str) -> List[str]:
-        """Analyze economic risks in Solidity contracts."""
+        """Analysiere wirtschaftliche Risiken in Solidity-Contracts."""
         try:
             risks = []
             
-            # Get contract source code
+            # Hole Contract-Quellcode
             source_code = await self._get_contract_source_code(address, chain)
             if not source_code:
                 risks.append("No source code available to analyze economic risks")
                 return risks
             
-            # Check for unlimited minting
+            # Prüfe auf unbegrenztes Minting
             if re.search(r"mint\s*\(", source_code) and not re.search(r"_maxSupply", source_code):
                 risks.append("Potential for unlimited minting detected")
             
-            # Check for excessive burning
+            # Prüfe auf übermäßiges Burning
             if re.search(r"burn\s*\(", source_code) and not re.search(r"onlyOwner", source_code):
                 risks.append("Potential for excessive burning detected")
             
-            # Check for rug pull potential
+            # Prüfe auf Rug-Pull-Potenzial
             if re.search(r"withdraw\s*\(", source_code) and not re.search(r"onlyOwner", source_code):
                 risks.append("Potential for rug pull detected")
             
-            # Check for excessive fees or taxes
+            # Prüfe auf übermäßige Gebühren oder Steuern
             if re.search(r"fee\s*=\s*[0-9]+", source_code) and re.search(r"fee\s*>\s*10", source_code):
                 risks.append("Potential for excessive fees or taxes detected")
             
-            # Check for missing pausing mechanism
+            # Prüfe auf fehlenden Pausierungsmechanismus
             if not re.search(r"pause\s*\(", source_code) and not re.search(r"unpause\s*\(", source_code):
                 risks.append("No pausing mechanism detected, which could be problematic in emergencies")
             
-            # Check for honeypot potential
+            # Prüfe auf Honeypot-Potenzial
             if re.search(r"transfer\s*\(", source_code) and re.search(r"require\s*\(\s*false", source_code):
                 risks.append("Potential honeypot mechanism detected")
             
-            # Check for anti-whale mechanisms
+            # Prüfe auf Anti-Whale-Mechanismen
             if re.search(r"balanceOf\s*\(\s*msg\.sender\s*\)\s*>\s*max", source_code):
                 risks.append("Anti-whale mechanism detected, which may limit usability")
             
             return risks
         except Exception as e:
-            logger.error(f"Failed to analyze Solidity economic risks for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to analyze Solidity economic risks for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return ["Failed to analyze economic risks due to an error"]
     
     async def _analyze_solana_economic_risks(self, address: str, chain: str) -> List[str]:
-        """Analyze economic risks in Solana programs."""
+        """Analysiere wirtschaftliche Risiken in Solana-Programmen."""
         try:
             risks = []
             
-            # Get contract metadata
+            # Hole Contract-Metadaten
             metadata = await self.metadata_service.get_contract_metadata(address, chain)
             
-            # Solana-specific economic risk checks
+            # Solana-spezifische wirtschaftliche Risikoprüfungen
             if not metadata.get("verification_status", False):
                 risks.append("Unverified program, economic risks cannot be fully verified")
             
-            # Check for excessive minting
+            # Prüfe auf übermäßiges Minting
             risks.append("Potential for excessive minting detected")
             
-            # Check for rug pull potential
+            # Prüfe auf Rug-Pull-Potenzial
             risks.append("Potential for rug pull detected")
             
             return risks
         except Exception as e:
-            logger.error(f"Failed to analyze Solana economic risks for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to analyze Solana economic risks for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return ["Failed to analyze economic risks due to an error"]
     
     async def _analyze_sui_economic_risks(self, address: str, chain: str) -> List[str]:
-        """Analyze economic risks in Sui Move modules."""
+        """Analysiere wirtschaftliche Risiken in Sui Move-Modulen."""
         try:
             risks = []
             
-            # Get contract metadata
+            # Hole Contract-Metadaten
             metadata = await self.metadata_service.get_contract_metadata(address, chain)
             
-            # Sui-specific economic risk checks
+            # Sui-spezifische wirtschaftliche Risikoprüfungen
             if not metadata.get("verification_status", False):
                 risks.append("Unverified module, economic risks cannot be fully verified")
             
-            # Check for excessive minting
+            # Prüfe auf übermäßiges Minting
             risks.append("Potential for excessive minting detected")
             
-            # Check for rug pull potential
+            # Prüfe auf Rug-Pull-Potenzial
             risks.append("Potential for rug pull detected")
             
             return risks
         except Exception as e:
-            logger.error(f"Failed to analyze Sui economic risks for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to analyze Sui economic risks for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return ["Failed to analyze economic risks due to an error"]
     
     async def calculate_verification_confidence(self, address: str, chain: str) -> float:
         """
-        Calculate the verification confidence score for a contract.
+        Berechne den Verifizierungs-Konfidenz-Score für einen Contract.
         
         Args:
-            address: Contract address
-            chain: Blockchain name (ethereum, bsc, solana, sui)
+            address: Contract-Adresse
+            chain: Blockchain-Name (ethereum, bsc, solana, sui)
             
         Returns:
-            Verification confidence score between 0.0 and 1.0
+            Verifizierungs-Konfidenz-Score zwischen 0.0 und 1.0
         """
         try:
-            # Get contract metadata
+            # Prüfe Cache
+            cache_key = self._get_cache_key("calculate_verification_confidence", address, chain)
+            if cache_key in self._cache and self._is_cache_valid(self._cache[cache_key]["timestamp"]):
+                logger.info(f"Using cached verification confidence for {address} on {chain}")
+                return self._cache[cache_key]["data"]
+            
+            logger.info(f"Calculating verification confidence for contract {address} on {chain}")
+            
+            # Hole Contract-Metadaten
             metadata = await self.metadata_service.get_contract_metadata(address, chain)
             
-            # Start with a base score
+            # Beginne mit einem Basis-Score
             confidence = 0.0
             
-            # Check if contract is verified
+            # Prüfe, ob der Contract verifiziert ist
             if metadata.get("verification_status", False):
                 confidence += 0.4
             
-            # Check if we have ABI
+            # Prüfe, ob wir eine ABI haben
             abi = await self.metadata_service.get_abi(address, chain)
             if abi:
                 confidence += 0.2
             
-            # Check if we have creator address
+            # Prüfe, ob wir eine Creator-Adresse haben
             creator = await self.metadata_service.get_creator_address(address, chain)
             if creator:
                 confidence += 0.1
             
-            # Check for deployment date
+            # Prüfe auf Deploymentsdatum
             if metadata.get("deployment_date"):
                 confidence += 0.1
             
-            # Check for contract type
+            # Prüfe auf Contract-Typ
             if metadata.get("contract_type"):
                 confidence += 0.1
             
-            # Check for source code availability
+            # Prüfe auf Verfügbarkeit des Quellcodes
             source_code = await self._get_contract_source_code(address, chain)
             if source_code:
                 confidence += 0.1
             
-            # Check for vulnerabilities
+            # Prüfe auf Vulnerabilities
             vulnerabilities = await self.check_vulnerabilities(address, chain)
             if vulnerabilities:
-                # Reduce confidence based on number of high severity vulnerabilities
+                # Reduziere Konfidenz basierend auf der Anzahl der hochschweren Vulnerabilities
                 high_severity_count = sum(1 for v in vulnerabilities if v.get("severity") == "high")
                 confidence -= min(0.3, high_severity_count * 0.1)
             
-            # Ensure the score is between 0.0 and 1.0
+            # Stelle sicher, dass der Score zwischen 0.0 und 1.0 liegt
             confidence = max(0.0, min(1.0, confidence))
             
+            # Speichere im Cache
+            self._cache[cache_key] = {
+                "timestamp": datetime.now().timestamp(),
+                "data": confidence
+            }
+            
+            logger.info(f"Calculated verification confidence {confidence} for contract {address} on {chain}")
             return confidence
         except Exception as e:
-            logger.error(f"Failed to calculate verification confidence for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to calculate verification confidence for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return 0.0
     
     async def _analyze_code_quality(self, address: str, chain: str) -> Dict[str, Any]:
         """
-        Analyze code quality metrics for a contract.
+        Analysiere Code-Qualitätsmetriken für einen Contract.
         
         Args:
-            address: Contract address
-            chain: Blockchain name (ethereum, bsc, solana, sui)
+            address: Contract-Adresse
+            chain: Blockchain-Name (ethereum, bsc, solana, sui)
             
         Returns:
-            Dictionary containing code quality metrics
+            Dictionary mit Code-Qualitätsmetriken
         """
         try:
+            # Prüfe Cache
+            cache_key = self._get_cache_key("_analyze_code_quality", address, chain)
+            if cache_key in self._cache and self._is_cache_valid(self._cache[cache_key]["timestamp"]):
+                logger.info(f"Using cached code quality analysis for {address} on {chain}")
+                return self._cache[cache_key]["data"]
+            
+            logger.info(f"Analyzing code quality for contract {address} on {chain}")
+            
             metrics = {
                 "complexity_score": 0,
                 "lines_of_code": 0,
@@ -1006,9 +1151,17 @@ class SecurityScanner:
             else:
                 raise ValueError(f"Unsupported blockchain: {chain}")
             
+            # Speichere im Cache
+            self._cache[cache_key] = {
+                "timestamp": datetime.now().timestamp(),
+                "data": metrics
+            }
+            
+            logger.info(f"Analyzed code quality for contract {address} on {chain}")
             return metrics
         except Exception as e:
-            logger.error(f"Failed to analyze code quality for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to analyze code quality for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return {
                 "complexity_score": 0,
                 "lines_of_code": 0,
@@ -1016,9 +1169,9 @@ class SecurityScanner:
             }
     
     async def _analyze_solidity_code_quality(self, address: str, chain: str) -> Dict[str, Any]:
-        """Analyze code quality metrics for Solidity contracts."""
+        """Analysiere Code-Qualitätsmetriken für Solidity-Contracts."""
         try:
-            # Get contract source code
+            # Hole Contract-Quellcode
             source_code = await self._get_contract_source_code(address, chain)
             if not source_code:
                 return {
@@ -1027,44 +1180,44 @@ class SecurityScanner:
                     "external_calls": 0
                 }
             
-            # Count lines of code
+            # Zähle Codezeilen
             lines_of_code = len(source_code.split('\n'))
             
-            # Count external calls
+            # Zähle externe Aufrufe
             external_calls = len(re.findall(r"\.(call|send|transfer|delegatecall)\s*\(", source_code))
             
-            # Count functions
+            # Zähle Funktionen
             function_count = len(re.findall(r"function\s+\w+\s*\(", source_code))
             
-            # Count modifiers
+            # Zähle Modifikatoren
             modifier_count = len(re.findall(r"modifier\s+\w+\s*\(", source_code))
             
-            # Count events
+            # Zähle Events
             event_count = len(re.findall(r"event\s+\w+\s*\(", source_code))
             
-            # Calculate complexity score based on various factors
+            # Berechne Komplexitäts-Score basierend auf verschiedenen Faktoren
             complexity_score = 0
             
-            # Base complexity from function count
+            # Basis-Komplexität aus Funktionsanzahl
             complexity_score += min(30, function_count * 2)
             
-            # Add complexity from external calls
+            # Füge Komplexität aus externen Aufrufen hinzu
             complexity_score += min(20, external_calls * 4)
             
-            # Add complexity from lines of code
+            # Füge Komplexität aus Codezeilen hinzu
             complexity_score += min(20, lines_of_code / 50)
             
-            # Add complexity from modifiers
+            # Füge Komplexität aus Modifikatoren hinzu
             complexity_score += min(10, modifier_count * 2)
             
-            # Add complexity from events
+            # Füge Komplexität aus Events hinzu
             complexity_score += min(10, event_count)
             
-            # Add complexity from inheritance
+            # Füge Komplexität aus Vererbung hinzu
             inheritance_count = len(re.findall(r"is\s+\w+", source_code))
             complexity_score += min(10, inheritance_count * 3)
             
-            # Ensure complexity score is between 0 and 100
+            # Stelle sicher, dass der Komplexitäts-Score zwischen 0 und 100 liegt
             complexity_score = min(100, complexity_score)
             
             return {
@@ -1073,7 +1226,8 @@ class SecurityScanner:
                 "external_calls": external_calls
             }
         except Exception as e:
-            logger.error(f"Failed to analyze Solidity code quality for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to analyze Solidity code quality for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return {
                 "complexity_score": 0,
                 "lines_of_code": 0,
@@ -1081,15 +1235,15 @@ class SecurityScanner:
             }
     
     async def _analyze_solana_code_quality(self, address: str, chain: str) -> Dict[str, Any]:
-        """Analyze code quality metrics for Solana programs."""
+        """Analysiere Code-Qualitätsmetriken für Solana-Programme."""
         try:
-            # Get contract metadata
+            # Hole Contract-Metadaten
             metadata = await self.metadata_service.get_contract_metadata(address, chain)
             
-            # Solana-specific code quality metrics
-            # This is a simplified analysis; in a real implementation, we would use Solana-specific tools
+            # Solana-spezifische Code-Qualitätsmetriken
+            # Dies ist eine vereinfachte Analyse; in einer echten Implementierung würden wir Solana-spezifische Tools verwenden
             
-            # Placeholder values
+            # Platzhalter-Werte
             complexity_score = 50
             lines_of_code = 1000
             external_calls = 3
@@ -1100,7 +1254,8 @@ class SecurityScanner:
                 "external_calls": external_calls
             }
         except Exception as e:
-            logger.error(f"Failed to analyze Solana code quality for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to analyze Solana code quality for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return {
                 "complexity_score": 0,
                 "lines_of_code": 0,
@@ -1108,15 +1263,15 @@ class SecurityScanner:
             }
     
     async def _analyze_sui_code_quality(self, address: str, chain: str) -> Dict[str, Any]:
-        """Analyze code quality metrics for Sui Move modules."""
+        """Analysiere Code-Qualitätsmetriken für Sui Move-Module."""
         try:
-            # Get contract metadata
+            # Hole Contract-Metadaten
             metadata = await self.metadata_service.get_contract_metadata(address, chain)
             
-            # Sui-specific code quality metrics
-            # This is a simplified analysis; in a real implementation, we would use Sui-specific tools
+            # Sui-spezifische Code-Qualitätsmetriken
+            # Dies ist eine vereinfachte Analyse; in einer echten Implementierung würden wir Sui-spezifische Tools verwenden
             
-            # Placeholder values
+            # Platzhalter-Werte
             complexity_score = 50
             lines_of_code = 1000
             external_calls = 3
@@ -1127,153 +1282,33 @@ class SecurityScanner:
                 "external_calls": external_calls
             }
         except Exception as e:
-            logger.error(f"Failed to analyze Sui code quality for {address} on {chain}: {str(e)}")
+            error_msg = f"Failed to analyze Sui code quality for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
             return {
                 "complexity_score": 0,
                 "lines_of_code": 0,
                 "external_calls": 0
             }
-
-            return {
-                "complexity_score": 0,
-                "lines_of_code": 0,
-                "external_calls": 0
-            }
-
-    async def _get_contract_source_code(self, address: str, chain: str) -> Optional[str]:
-        """Get the source code of a contract."""
-        try:
-            if chain.lower() == "ethereum":
-                return await self._get_ethereum_source_code(address)
-            elif chain.lower() == "bsc":
-                return await self._get_bsc_source_code(address)
-            else:
-                return None
-        except Exception as e:
-            logger.error(f"Failed to get source code for {address} on {chain}: {str(e)}")
-            return None
-
-    async def _get_ethereum_source_code(self, address: str) -> Optional[str]:
-        """Get the source code of an Ethereum contract."""
-        try:
-            etherscan_api_key = os.getenv("ETHERSCAN_API_KEY")
-            if not etherscan_api_key:
-                return None
-            
-            params = {
-                "module": "contract",
-                "action": "getsourcecode",
-                "address": address,
-                "apikey": etherscan_api_key
-            }
-            
-            url = "https://api.etherscan.io/api"
-            
-            if not self.session:
-                self.session = aiohttp.ClientSession()
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data["status"] == "1" and data["result"]:
-                        contract_data = data["result"][0]
-                        if contract_data.get("ContractName", "") != "":
-                            return contract_data.get("SourceCode", "")
-            
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get Ethereum source code for {address}: {str(e)}")
-            return None
-
-    async def _get_bsc_source_code(self, address: str) -> Optional[str]:
-        """Get the source code of a BSC contract."""
-        try:
-            bscscan_api_key = os.getenv("BSCSCAN_API_KEY")
-            if not bscscan_api_key:
-                return None
-            
-            params = {
-                "module": "contract",
-                "action": "getsourcecode",
-                "address": address,
-                "apikey": bscscan_api_key
-            }
-            
-            url = "https://api.bscscan.com/api"
-            
-            if not self.session:
-                self.session = aiohttp.ClientSession()
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data["status"] == "1" and data["result"]:
-                        contract_data = data["result"][0]
-                        if contract_data.get("ContractName", "") != "":
-                            return contract_data.get("SourceCode", "")
-            
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get BSC source code for {address}: {str(e)}")
-            return None
-
-    async def _check_vulnerabilities_with_regex(self, address: str, chain: str) -> List[Dict]:
-        """Check for vulnerabilities using regex patterns on the contract source code."""
-        try:
-            vulnerabilities = []
-            
-            # Get contract source code
-            source_code = await self._get_contract_source_code(address, chain)
-            if not source_code:
-                return vulnerabilities
-            
-            # Check for each vulnerability pattern
-            for swc_id, patterns in self.vulnerability_patterns.items():
-                for pattern in patterns:
-                    matches = re.finditer(pattern, source_code, re.IGNORECASE)
-                    for match in matches:
-                        # Get line number
-                        line_number = source_code[:match.start()].count('\n') + 1
-                        
-                        # Get vulnerability details
-                        vuln_details = self.SWC_REGISTRY.get(swc_id, {})
-                        
-                        vulnerability = {
-                            "id": swc_id,
-                            "name": vuln_details.get("name", "Unknown Vulnerability"),
-                            "severity": vuln_details.get("severity", "medium"),
-                            "description": vuln_details.get("description", "No description available"),
-                            "line_number": line_number
-                        }
-                        
-                        # Avoid duplicates
-                        if not any(v["id"] == swc_id and v["line_number"] == line_number for v in vulnerabilities):
-                            vulnerabilities.append(vulnerability)
-            
-            return vulnerabilities
-        except Exception as e:
-            logger.error(f"Failed to check vulnerabilities with regex for {address} on {chain}: {str(e)}")
-            return []
-
+    
     async def _calculate_risk_score(self, vulnerabilities: List[Dict], access_control_issues: List[str], 
                                   economic_risks: List[str], verification_confidence: float) -> float:
         """
-        Calculate an overall risk score based on security analysis results.
+        Berechne einen Gesamt-Risiko-Score basierend auf den Sicherheitsanalyse-Ergebnissen.
         
         Args:
-            vulnerabilities: List of detected vulnerabilities
-            access_control_issues: List of access control issues
-            economic_risks: List of economic risks
-            verification_confidence: Verification confidence score
+            vulnerabilities: Liste der erkannten Vulnerabilities
+            access_control_issues: Liste der Zugriffskontrollprobleme
+            economic_risks: Liste der wirtschaftlichen Risiken
+            verification_confidence: Verifizierungs-Konfidenz-Score
             
         Returns:
-            Risk score between 0.0 (low risk) and 1.0 (high risk)
+            Risiko-Score zwischen 0.0 (geringes Risiko) und 1.0 (hohes Risiko)
         """
         try:
-            # Start with a base risk score
+            # Beginne mit einem Basis-Risiko-Score
             risk_score = 0.0
             
-            # Add risk based on vulnerabilities
+            # Füge Risiko basierend auf Vulnerabilities hinzu
             for vuln in vulnerabilities:
                 severity = vuln.get("severity", "medium")
                 if severity == "high":
@@ -1283,39 +1318,42 @@ class SecurityScanner:
                 else:  # low
                     risk_score += 0.05
             
-            # Add risk based on access control issues
+            # Füge Risiko basierend auf Zugriffskontrollproblemen hinzu
             risk_score += len(access_control_issues) * 0.1
             
-            # Add risk based on economic risks
+            # Füge Risiko basierend auf wirtschaftlichen Risiken hinzu
             risk_score += len(economic_risks) * 0.1
             
-            # Reduce risk based on verification confidence
+            # Reduziere Risiko basierend auf Verifizierungs-Konfidenz
             risk_score *= (1.0 - verification_confidence)
             
-            # Ensure the score is between 0.0 and 1.0
+            # Stelle sicher, dass der Score zwischen 0.0 und 1.0 liegt
             risk_score = max(0.0, min(1.0, risk_score))
             
             return risk_score
         except Exception as e:
-            logger.error(f"Failed to calculate risk score: {str(e)}")
-            return 0.5  # Default to medium risk
-
+            error_msg = f"Failed to calculate risk score: {str(e)}"
+            logger.error(error_msg)
+            return 0.5  # Standard auf mittleres Risiko
+    
     async def generate_security_report(self, address: str, chain: str) -> Dict[str, Any]:
         """
-        Generate a comprehensive security report for a contract.
+        Erstelle einen umfassenden Sicherheitsbericht für einen Contract.
         
         Args:
-            address: Contract address
-            chain: Blockchain name (ethereum, bsc, solana, sui)
+            address: Contract-Adresse
+            chain: Blockchain-Name (ethereum, bsc, solana, sui)
             
         Returns:
-            Dictionary containing the security report
+            Dictionary mit dem Sicherheitsbericht
         """
         try:
-            # Perform security scan
+            logger.info(f"Generating security report for contract {address} on {chain}")
+            
+            # Führe Sicherheitsanalyse durch
             scan_results = await self.scan_contract_security(address, chain)
             
-            # Calculate risk score
+            # Berechne Risiko-Score
             risk_score = await self._calculate_risk_score(
                 scan_results["vulnerabilities"],
                 scan_results["access_control_issues"],
@@ -1323,7 +1361,7 @@ class SecurityScanner:
                 scan_results["verification_confidence"]
             )
             
-            # Generate report
+            # Erstelle Bericht
             report = {
                 "contract_address": address,
                 "blockchain": chain,
@@ -1334,13 +1372,15 @@ class SecurityScanner:
                 "details": scan_results
             }
             
+            logger.info(f"Generated security report for contract {address} on {chain}")
             return report
         except Exception as e:
-            logger.error(f"Failed to generate security report for {address} on {chain}: {str(e)}")
-            raise
-
+            error_msg = f"Failed to generate security report for {address} on {chain}: {str(e)}"
+            logger.error(error_msg)
+            raise SecurityScanException(error_msg) from e
+    
     def _get_risk_level(self, risk_score: float) -> str:
-        """Convert risk score to risk level."""
+        """Konvertiere Risiko-Score in Risiko-Level."""
         if risk_score >= 0.7:
             return "critical"
         elif risk_score >= 0.5:
@@ -1350,21 +1390,20 @@ class SecurityScanner:
         else:
             return "low"
 
-
     def _generate_summary(self, scan_results: Dict[str, Any], risk_score: float) -> str:
-        """Generate a human-readable summary of the security analysis."""
+        """Erstelle eine menschenlesbare Zusammenfassung der Sicherheitsanalyse."""
         try:
             vulnerabilities = scan_results["vulnerabilities"]
             access_control_issues = scan_results["access_control_issues"]
             economic_risks = scan_results["economic_risks"]
             verification_confidence = scan_results["verification_confidence"]
             
-            # Count high severity vulnerabilities
+            # Zähle hochschwere Vulnerabilities
             high_vulns = sum(1 for v in vulnerabilities if v.get("severity") == "high")
             medium_vulns = sum(1 for v in vulnerabilities if v.get("severity") == "medium")
             low_vulns = sum(1 for v in vulnerabilities if v.get("severity") == "low")
             
-            # Generate summary based on findings
+            # Erstelle Zusammenfassung basierend auf den Ergebnissen
             if high_vulns > 0:
                 summary = f"CRITICAL: Contract has {high_vulns} high-severity vulnerabilities. Immediate action required."
             elif medium_vulns > 0:
@@ -1378,166 +1417,6 @@ class SecurityScanner:
             
             return summary
         except Exception as e:
-            logger.error(f"Failed to generate summary: {str(e)}")
+            error_msg = f"Failed to generate summary: {str(e)}"
+            logger.error(error_msg)
             return "Unable to generate summary due to an error."
-
-    async def _calculate_risk_score(self, vulnerabilities: List[Dict], access_control_issues: List[str], 
-                                  economic_risks: List[str], verification_confidence: float) -> float:
-        """
-        Calculate an overall risk score based on security analysis results.
-        
-        Args:
-            vulnerabilities: List of detected vulnerabilities
-            access_control_issues: List of access control issues
-            economic_risks: List of economic risks
-            verification_confidence: Verification confidence score
-            
-        Returns:
-            Risk score between 0.0 (low risk) and 1.0 (high risk)
-        """
-        try:
-            # Start with a base risk score
-            risk_score = 0.0
-            
-            # Add risk based on vulnerabilities
-            for vuln in vulnerabilities:
-                severity = vuln.get("severity", "medium")
-                if severity == "high":
-                    risk_score += 0.2
-                elif severity == "medium":
-                    risk_score += 0.1
-                else:  # low
-                    risk_score += 0.05
-            
-            # Add risk based on access control issues
-            risk_score += len(access_control_issues) * 0.1
-            
-            # Add risk based on economic risks
-            risk_score += len(economic_risks) * 0.1
-            
-            # Reduce risk based on verification confidence
-            risk_score *= (1.0 - verification_confidence)
-            
-            # Ensure the score is between 0.0 and 1.0
-            risk_score = max(0.0, min(1.0, risk_score))
-            
-            return risk_score
-        except Exception as e:
-            logger.error(f"Failed to calculate risk score: {str(e)}")
-            return 0.5  # Default to medium risk
-
-    async def generate_security_report(self, address: str, chain: str) -> Dict[str, Any]:
-        """
-        Generate a comprehensive security report for a contract.
-        
-        Args:
-            address: Contract address
-            chain: Blockchain name (ethereum, bsc, solana, sui)
-            
-        Returns:
-            Dictionary containing the security report
-        """
-        try:
-            # Perform security scan
-            scan_results = await self.scan_contract_security(address, chain)
-            
-            # Calculate risk score
-            risk_score = await self._calculate_risk_score(
-                scan_results["vulnerabilities"],
-                scan_results["access_control_issues"],
-                scan_results["economic_risks"],
-                scan_results["verification_confidence"]
-            )
-            
-            # Generate report
-            report = {
-                "contract_address": address,
-                "blockchain": chain,
-                "scan_timestamp": datetime.utcnow().isoformat(),
-                "risk_score": risk_score,
-                "risk_level": self._get_risk_level(risk_score),
-                "summary": self._generate_summary(scan_results, risk_score),
-                "details": scan_results
-            }
-            
-            return report
-        except Exception as e:
-            logger.error(f"Failed to generate security report for {address} on {chain}: {str(e)}")
-            raise
-
-    async def _get_contract_source_code(self, address: str, chain: str) -> Optional[str]:
-        """Get the source code of a contract."""
-        try:
-            if chain.lower() == "ethereum":
-                return await self._get_ethereum_source_code(address)
-            elif chain.lower() == "bsc":
-                return await self._get_bsc_source_code(address)
-            else:
-                return None
-        except Exception as e:
-            logger.error(f"Failed to get source code for {address} on {chain}: {str(e)}")
-            return None
-
-    async def _get_ethereum_source_code(self, address: str) -> Optional[str]:
-        """Get the source code of an Ethereum contract."""
-        try:
-            etherscan_api_key = os.getenv("ETHERSCAN_API_KEY")
-            if not etherscan_api_key:
-                return None
-            
-            params = {
-                "module": "contract",
-                "action": "getsourcecode",
-                "address": address,
-                "apikey": etherscan_api_key
-            }
-            
-            url = "https://api.etherscan.io/api"
-            
-            if not self.session:
-                self.session = aiohttp.ClientSession()
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data["status"] == "1" and data["result"]:
-                        contract_data = data["result"][0]
-                        if contract_data.get("ContractName", "") != "":
-                            return contract_data.get("SourceCode", "")
-            
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get Ethereum source code for {address}: {str(e)}")
-            return None
-
-    async def _get_bsc_source_code(self, address: str) -> Optional[str]:
-        """Get the source code of a BSC contract."""
-        try:
-            bscscan_api_key = os.getenv("BSCSCAN_API_KEY")
-            if not bscscan_api_key:
-                return None
-            
-            params = {
-                "module": "contract",
-                "action": "getsourcecode",
-                "address": address,
-                "apikey": bscscan_api_key
-            }
-            
-            url = "https://api.bscscan.com/api"
-            
-            if not self.session:
-                self.session = aiohttp.ClientSession()
-            
-            async with self.session.get(url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data["status"] == "1" and data["result"]:
-                        contract_data = data["result"][0]
-                        if contract_data.get("ContractName", "") != "":
-                            return contract_data.get("SourceCode", "")
-            
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get BSC source code for {address}: {str(e)}")
-            return None
