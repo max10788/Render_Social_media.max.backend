@@ -18,6 +18,7 @@ import time
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
     router as custom_analysis_router,
 )
+from app.core.backend_crypto_tracker.api.routes.contracts import router as contracts_router
 from app.core.backend_crypto_tracker.api.routes import token_routes
 from app.core.backend_crypto_tracker.api.routes import transaction_routes
 from app.core.backend_crypto_tracker.api.routes import scanner_routes
@@ -161,6 +162,7 @@ app.include_router(custom_analysis_router, prefix="/api/v1")
 app.include_router(token_routes.router, prefix="/api/v1")
 app.include_router(transaction_routes.router, prefix="/api/v1")
 app.include_router(scanner_routes.router, prefix="/api/v1")
+app.include_router(contracts_router, prefix="/api/v1")
 app.include_router(frontend_router)
 # ------------------------------------------------------------------
 # WebSocket Endpoint
