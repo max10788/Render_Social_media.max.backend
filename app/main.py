@@ -158,7 +158,7 @@ app.add_middleware(
 # ------------------------------------------------------------------
 # API Routes (mount first to prevent conflicts)
 # ------------------------------------------------------------------
-app.include_router(custom_analysis_router, prefix="/api/v1")
+app.include_router(custom_analysis_router)
 app.include_router(token_routes.router, prefix="/api/v1")
 app.include_router(transaction_routes.router, prefix="/api/v1")
 app.include_router(scanner_routes.router, prefix="/api/v1")
