@@ -51,19 +51,17 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
     Analysiert einen benutzerdefinierten Token basierend auf Adresse und Chain
     """
     try:
-        # Import des Analyzers (sollte als Dependency injiziert werden)
+        # Import des Analyzers
         from app.core.backend_crypto_tracker.scanner.low_cap_analyzer import LowCapAnalyzer
-        from app.core.backend_crypto_tracker.processor.database.models.manager import DatabaseManager
-        from app.core.backend_crypto_tracker.scanner.token_analyzer import TokenAnalyzer
+        # from app.core.backend_crypto_tracker.config.database import get_db  # Falls DB benötigt wird
         
-        # Initialisierung (in echtem Setup über Dependency Injection)
-        LowCapAnalyzer = TokenAnalyzer
-        
-        # Analyse durchführen
-        result = await analyzer.analyze_custom_token(
-            token_address=request.token_address,
-            chain=request.chain
-        )
+        # Initialisierung mit async with context manager
+        async with LowCapAnalyzer() as analyzer:
+            # Analyse durchführen
+            result = await analyzer.analyze_custom_token(
+                token_address=request.token_address,
+                chain=request.chain
+            )
         
         return CustomAnalysisResponse(
             success=True,
@@ -76,6 +74,10 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        # Logge den Fehler für Debugging
+        import logging
+        logging.error(f"Fehler in analyze_custom_token: {str(e)}", exc_info=True)
+        
         return CustomAnalysisResponse(
             success=False,
             token_address=request.token_address,
