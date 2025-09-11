@@ -989,3 +989,6 @@ class EnhancedWalletClassifier:
             '0x0000000000000000000000000000000000000000000000000000000000000000': WalletTypeEnum.BURN_WALLET,
             # Weitere Sui-spezifische Adressen könnten hier hinzugefügt werden
         }
+
+# Am Ende der Datei (vermutlich)
+WalletClassifier = EnhancedWalletClassifier
