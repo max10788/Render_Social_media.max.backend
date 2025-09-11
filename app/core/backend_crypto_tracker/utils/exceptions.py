@@ -122,3 +122,13 @@ class NotFoundException(BaseCryptoTrackerException):
             error_code="NOT_FOUND",
             details={"resource_type": resource_type, "identifier": identifier}
         )
+
+class SecurityScanException(ScannerException):
+    """Exception für Sicherheitsanalyse-Fehler"""
+    
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message,
+            error_code="SECURITY_SCAN_ERROR",
+            details=details
+        )
