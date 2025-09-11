@@ -53,7 +53,7 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
     try:
         # Import des Analyzers (sollte als Dependency injiziert werden)
         from app.core.backend_crypto_tracker.scanner.low_cap_analyzer import LowCapAnalyzer
-        from app.core.backend_crypto_tracker.database.manager import DatabaseManager
+        from app.core.backend_crypto_tracker.config.database import DatabaseManager
         
         # Initialisierung (in echtem Setup über Dependency Injection)
         LowCapAnalyzer = TokenAnalyzer
