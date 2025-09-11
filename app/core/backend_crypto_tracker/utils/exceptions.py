@@ -1,6 +1,16 @@
 # utils/exceptions.py
 from typing import Any, Dict, Optional
 
+class ValidationException(BaseCryptoTrackerException):
+    """Exception für Validierungsfehler"""
+    
+    def __init__(self, message: str, field: str = None, value: Any = None):
+        super().__init__(
+            message,
+            error_code="VALIDATION_ERROR",
+            details={"field": field, "value": value} if field else {}
+        )
+
 class BaseCryptoTrackerException(Exception):
     """Base exception for the application"""
     
