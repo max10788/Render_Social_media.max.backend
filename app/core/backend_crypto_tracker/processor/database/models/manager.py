@@ -34,14 +34,17 @@ class DatabaseConfig:
             'pool_size': int(os.getenv('DB_POOL_SIZE', '10')),
             'max_overflow': int(os.getenv('DB_MAX_OVERFLOW', '20')),
             'pool_timeout': int(os.getenv('DB_POOL_TIMEOUT', '30')),
-            'pool_recycle': int(os.getenv('DB_POOL_RECYCLE', '3600'))
+            'pool_recycle': int(os.getenv('DB_POOL_RECYCLE', '3600')),
+            'sslmode': os.getenv('POSTGRES_SSLMODE', 'require')  # SSL-Modus hinzugefügt
         }
         
     def get_postgres_url(self) -> str:
-        return f"postgresql://{self.postgres_config['username']}:{self.postgres_config['password']}@{self.postgres_config['host']}:{self.postgres_config['port']}/{self.postgres_config['database']}"
+        # SSL-Parameter zur Verbindungszeichenfolge hinzugefügt
+        return f"postgresql://{self.postgres_config['username']}:{self.postgres_config['password']}@{self.postgres_config['host']}:{self.postgres_config['port']}/{self.postgres_config['database']}?sslmode={self.postgres_config['sslmode']}"
     
     def get_async_postgres_url(self) -> str:
-        return f"postgresql+asyncpg://{self.postgres_config['username']}:{self.postgres_config['password']}@{self.postgres_config['host']}:{self.postgres_config['port']}/{self.postgres_config['database']}"
+        # SSL-Parameter zur asynchronen Verbindungszeichenfolge hinzugefügt
+        return f"postgresql+asyncpg://{self.postgres_config['username']}:{self.postgres_config['password']}@{self.postgres_config['host']}:{self.postgres_config['port']}/{self.postgres_config['database']}?sslmode={self.postgres_config['sslmode']}"
 
 class DatabaseManager:
     def __init__(self):
