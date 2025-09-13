@@ -1,6 +1,7 @@
 # services/eth/etherscan_api.py
 import aiohttp
 import logging
+import os
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 from app.core.backend_crypto_tracker.utils.logger import get_logger
@@ -16,9 +17,10 @@ class TokenHolder:
     percentage: float
 
 class EtherscanAPI:
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self.api_key = api_key
-        self.base_url = "https://api.etherscan.io/api"
+        # Verwende die Umgebungsvariable ETHEREUM_RPC_URL oder den Standardwert
+        self.base_url = base_url or os.getenv("ETHEREUM_RPC_URL", "https://api.etherscan.io/api")
         self.rate_limiter = RateLimiter()
         self.session = None
         
@@ -165,6 +167,7 @@ class EtherscanAPI:
 class BscScanAPI(EtherscanAPI):
     """BscScan API mit gleicher Schnittstelle wie Etherscan"""
     
-    def __init__(self, api_key: Optional[str] = None):
-        super().__init__(api_key)
-        self.base_url = "https://api.bscscan.com/api"
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+        # Verwende die Umgebungsvariable BSC_RPC_URL oder den Standardwert
+        bsc_endpoint = base_url or os.getenv("BSC_RPC_URL", "https://api.bscscan.com/api")
+        super().__init__(api_key=api_key, base_url=bsc_endpoint)
