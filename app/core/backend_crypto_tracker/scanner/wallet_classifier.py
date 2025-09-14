@@ -844,7 +844,7 @@ class EnhancedWalletClassifier:
             'timestamp': datetime.utcnow()
         }
     
-    def _calculate_risk_score(self, wallet_type: WalletTypeEnum, balance: float, total_supply: float, chain: str) -> float:
+   def _calculate_risk_score(self, wallet_type: WalletTypeEnum, balance: float, total_supply: float, chain: str) -> float:
         """Enhanced risk score calculation with support for all wallet types and chain-specific adjustments"""
         base_scores = {
             WalletTypeEnum.DEV_WALLET: 80.0,
@@ -922,8 +922,9 @@ class EnhancedWalletClassifier:
             base_score = 0.0
         
         # Chain-spezifische Anpassungen
-        # Verwende die Mindestscores aus der Konfiguration
-        min_scores = self.chain_config.get('min_scores', {})
+        # Lade die Konfiguration für die gegebene Kette
+        chain_config = load_config(chain)  # <--- KONFIGURATION JETZT HIER LADEN
+        min_scores = chain_config.get('min_scores', {})
         chain_min_score = min_scores.get(chain, 30) # Default Mindestscore
         # Stelle sicher, dass der Score nicht unter den chain-spezifischen Mindestscore fällt,
         # es sei denn, es ist ein Burn-Wallet (0) oder ein explizit sehr niedriger Score gerechtfertigt ist.
