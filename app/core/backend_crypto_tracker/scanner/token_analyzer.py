@@ -56,8 +56,8 @@ class TokenAnalyzer:
     async def __aenter__(self):
         self.price_service = PriceService(self.coingecko_key)
         self.etherscan_api = EtherscanAPI(self.etherscan_key, self.bscscan_key)
-        self.solana_api = SolanaAPI()
-        self.sui_api = SuiAPI()
+        self.solana_api = SolanaAPIService()  # <--- KORRIGIERT: SolanaAPIService statt SolanaAPI
+        self.sui_api = SuiAPIService()  # <--- Auch hier wahrscheinlich korrigieren
         
         self.w3_eth = Web3(Web3.HTTPProvider(self.ethereum_rpc))
         self.w3_bsc = Web3(Web3.HTTPProvider(self.bsc_rpc))
