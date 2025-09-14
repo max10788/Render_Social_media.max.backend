@@ -705,8 +705,7 @@ class EnhancedWalletClassifier:
         self.cache_ttl = WALLET_CLASSIFIER_CONFIG.cache_ttl
         # Lade bekannte Adressen (könnte in eine eigene Datei oder DB ausgelagert werden)
         self.known_addresses = self._load_known_addresses()
-        # Lade chain-spezifische Konfigurationen
-        self.chain_config = load_config()
+        # ENTFERNT: self.chain_config = load_config()  # <--- FEHLERHAFTE ZEILE ENTFERNT
     
     async def classify_wallet(self, wallet_address: str, chain: str,
                             balance: float, total_supply: float = None) -> WalletAnalysis:
@@ -728,7 +727,7 @@ class EnhancedWalletClassifier:
                 wallet_type=known_type,
                 balance=balance,
                 percentage_of_supply=(balance / total_supply * 100) if total_supply else 0,
-                risk_score=self._calculate_risk_score(known_type, balance, total_supply, chain),
+                risk_score=self._calculate_risk_score(known_type, balance, total_supply, chain),  # chain hinzugefügt
                 confidence_score=0.95,  # High confidence for known addresses
                 analysis_date=datetime.utcnow(),
                 sources_used=['known_addresses']
@@ -743,7 +742,7 @@ class EnhancedWalletClassifier:
                 wallet_type=wallet_type,
                 balance=balance,
                 percentage_of_supply=(balance / total_supply * 100) if total_supply else 0,
-                risk_score=self._calculate_risk_score(wallet_type, balance, total_supply, chain),
+                risk_score=self._calculate_risk_score(wallet_type, balance, total_supply, chain),  # chain hinzugefügt
                 confidence_score=confidence,
                 analysis_date=datetime.utcnow(),
                 sources_used=sources_used
