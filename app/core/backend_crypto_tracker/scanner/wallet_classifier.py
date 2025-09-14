@@ -844,7 +844,7 @@ class EnhancedWalletClassifier:
             'timestamp': datetime.utcnow()
         }
     
-   def _calculate_risk_score(self, wallet_type: WalletTypeEnum, balance: float, total_supply: float, chain: str) -> float:
+    def _calculate_risk_score(self, wallet_type: WalletTypeEnum, balance: float, total_supply: float, chain: str) -> float:
         """Enhanced risk score calculation with support for all wallet types and chain-specific adjustments"""
         base_scores = {
             WalletTypeEnum.DEV_WALLET: 80.0,
