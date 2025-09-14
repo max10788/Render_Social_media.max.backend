@@ -707,6 +707,17 @@ class EnhancedWalletClassifier:
         self.known_addresses = self._load_known_addresses()
         # ENTFERNT: self.chain_config = load_config()  # <--- FEHLERHAFTE ZEILE ENTFERNT
     
+    async def __aenter__(self):
+        """Asynchronous context manager entry"""
+        # Initialisiere die MultiSourceClassifier-Komponenten, falls nötig
+        # Da die MultiSourceClassifier-Klasse selbst keine __aenter__ hat, müssen wir hier nichts tun
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Asynchronous context manager exit"""
+        # Hier könnten Aufräumarbeiten durchgeführt werden, falls nötig
+        pass
+    
     async def classify_wallet(self, wallet_address: str, chain: str,
                             balance: float, total_supply: float = None) -> WalletAnalysis:
         """Enhanced wallet classification with multiple sources and caching"""
