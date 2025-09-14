@@ -1,6 +1,6 @@
 # app/core/backend_crypto_tracker/config/database.py
 import os
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from urllib.parse import urlparse
 from typing import Generator, Optional, AsyncGenerator
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
@@ -23,9 +23,6 @@ class DatabaseConfig:
                 "postgresql://postgres:password@localhost:5432/lowcap_analyzer"
             )
         
-        # Stelle sicher, dass SSL/TLS in der URL enthalten ist
-        self.database_url = self._ensure_ssl_parameter(self.database_url)
-        
         # Für SQLAlchemy mit asyncpg
         self.async_database_url = self.database_url.replace("postgresql://", "postgresql+asyncpg://")
         
@@ -44,32 +41,13 @@ class DatabaseConfig:
         self.pool_timeout = int(os.getenv("DB_POOL_TIMEOUT", "30"))
         self.pool_recycle = int(os.getenv("DB_POOL_RECYCLE", "3600"))
         
+        # SSL-Modus aus Umgebungsvariable oder Standardwert
+        self.ssl_mode = os.getenv("POSTGRES_SSLMODE", "require")
+        
         # Schema-Name für dieses Tool
         self.schema_name = "token_analyzer"
         
-        logger.info(f"Database configuration: host={self.db_host}, port={self.db_port}, database={self.db_name}, schema={self.schema_name}")
-    
-    def _ensure_ssl_parameter(self, url: str) -> str:
-        """Stellt sicher, dass die URL den SSL-Parameter enthält"""
-        parsed_url = urlparse(url)
-        query_params = parse_qs(parsed_url.query)
-        
-        # Wenn sslmode nicht gesetzt ist, setzen wir es auf 'require'
-        if 'sslmode' not in query_params:
-            query_params['sslmode'] = ['require']
-            # Baue den Query-String neu
-            new_query = urlencode(query_params, doseq=True)
-            # Baue die URL neu
-            return urlunparse((
-                parsed_url.scheme,
-                parsed_url.netloc,
-                parsed_url.path,
-                parsed_url.params,
-                new_query,
-                parsed_url.fragment
-            ))
-        
-        return url
+        logger.info(f"Database configuration: host={self.db_host}, port={self.db_port}, database={self.db_name}, schema={self.schema_name}, ssl_mode={self.ssl_mode}")
 
 # Globale Instanz
 database_config = DatabaseConfig()
@@ -82,7 +60,10 @@ engine = create_engine(
     pool_timeout=database_config.pool_timeout,
     pool_recycle=database_config.pool_recycle,
     echo=os.getenv("DB_ECHO", "false").lower() == "true",
-    connect_args={"options": f"-csearch_path={database_config.schema_name},public"}
+    connect_args={
+        "options": f"-csearch_path={database_config.schema_name},public",
+        "sslmode": database_config.ssl_mode  # SSL-Modus in connect_args
+    }
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -95,6 +76,9 @@ async_engine = create_async_engine(
     pool_timeout=database_config.pool_timeout,
     pool_recycle=database_config.pool_recycle,
     echo=os.getenv("DB_ECHO", "false").lower() == "true",
+    connect_args={
+        "sslmode": database_config.ssl_mode  # SSL-Modus in connect_args
+    }
 )
 
 AsyncSessionLocal = async_sessionmaker(
