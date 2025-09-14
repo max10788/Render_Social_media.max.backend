@@ -701,7 +701,8 @@ class EnhancedWalletClassifier:
         self.data_collector = DynamicDataCollector()
         self.advanced_risk_assessor = AdvancedRiskAssessor()
         self.cache = {}
-        self.cache_ttl = WALLET_CLASSIFIER_CONFIG['cache_ttl']
+        # Korrigierter Zugriff auf die Konfiguration
+        self.cache_ttl = WALLET_CLASSIFIER_CONFIG.cache_ttl
         # Lade bekannte Adressen (könnte in eine eigene Datei oder DB ausgelagert werden)
         self.known_addresses = self._load_known_addresses()
         # Lade chain-spezifische Konfigurationen
