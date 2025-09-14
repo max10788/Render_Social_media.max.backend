@@ -332,7 +332,8 @@ class MultiSourceClassifier:
             OnChainAnalyzer()
         ]
         self.source_weights = SOURCE_WEIGHTS
-        self.confidence_thresholds = WALLET_CLASSIFIER_CONFIG['confidence_thresholds']
+        # Korrigierter Zugriff auf die Konfiguration
+        self.confidence_thresholds = WALLET_CLASSIFIER_CONFIG.confidence_thresholds
     
     async def classify_with_confidence(self, address: str, chain: str, balance: float, total_supply: float) -> Tuple[WalletTypeEnum, float, List[str]]:
         """Classify wallet with confidence score using multiple sources"""
