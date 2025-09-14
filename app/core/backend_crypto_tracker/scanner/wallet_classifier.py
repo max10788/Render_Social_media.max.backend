@@ -77,11 +77,12 @@ class WalletAnalysis(Base):
 class OnChainAnalyzer:
     """Enhanced on-chain pattern analysis for wallet classification"""
     def __init__(self):
-        self.dex_signatures = ONCHAIN_ANALYSIS_CONFIG['dex_signatures']
-        self.cex_patterns = ONCHAIN_ANALYSIS_CONFIG['cex_patterns']
-        self.dev_patterns = ONCHAIN_ANALYSIS_CONFIG['dev_patterns']
-        self.lp_patterns = ONCHAIN_ANALYSIS_CONFIG['lp_patterns']
-        self.rugpull_patterns = ONCHAIN_ANALYSIS_CONFIG['rugpull_patterns']
+        # Korrigierte Zugriffe auf die Konfiguration
+        self.dex_signatures = ONCHAIN_ANALYSIS_CONFIG.dex_signatures
+        self.cex_patterns = ONCHAIN_ANALYSIS_CONFIG.cex_patterns
+        self.dev_patterns = ONCHAIN_ANALYSIS_CONFIG.dev_patterns
+        self.lp_patterns = ONCHAIN_ANALYSIS_CONFIG.lp_patterns
+        self.rugpull_patterns = ONCHAIN_ANALYSIS_CONFIG.rugpull_patterns
     
     async def analyze_transaction_patterns(self, address: str, chain: str) -> Dict[str, Any]:
         """Comprehensive on-chain transaction pattern analysis"""
