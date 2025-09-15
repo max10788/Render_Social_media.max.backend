@@ -3,6 +3,8 @@ import asyncio
 import aiohttp
 import logging
 from datetime import datetime, timedelta
+import time  # FEHLENDES IMPORT
+import random  # FEHLENDES IMPORT
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 from web3 import Web3
