@@ -8,6 +8,7 @@ import numpy as np
 from web3 import Web3
 from dataclasses import dataclass, field
 from enum import Enum
+from functools import wraps
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, InvalidAddressException
 from app.core.backend_crypto_tracker.config.scanner_config import scanner_config
