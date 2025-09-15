@@ -1,12 +1,12 @@
-# app/core/backend_crypto_tracker/api/routes/custom_analysis_routes.py
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, validator
 from typing import Optional
 from datetime import datetime
 import re
-import logging  # FEHLENDES IMPORT
+import logging
 
 router = APIRouter(prefix="/api/analyze", tags=["custom-analysis"])
+logger = logging.getLogger(__name__)  # Logger korrekt initialisieren
 
 class CustomAnalysisRequest(BaseModel):
     token_address: str
