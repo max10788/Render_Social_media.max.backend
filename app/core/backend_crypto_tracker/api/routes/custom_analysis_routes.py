@@ -47,13 +47,10 @@ class CustomAnalysisResponse(BaseModel):
 
 @router.post("/custom", response_model=CustomAnalysisResponse)
 async def analyze_custom_token(request: CustomAnalysisRequest):
-    """
-    Analysiert einen benutzerdefinierten Token basierend auf Adresse und Chain
-    """
+    """Analysiert einen benutzerdefinierten Token basierend auf Adresse und Chain"""
     try:
         # Import des Analyzers
         from app.core.backend_crypto_tracker.scanner.low_cap_analyzer import LowCapAnalyzer
-        # from app.core.backend_crypto_tracker.config.database import get_db  # Falls DB benötigt wird
         
         # Initialisierung mit async with context manager
         async with LowCapAnalyzer() as analyzer:
@@ -72,16 +69,27 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
         )
         
     except ValueError as e:
+        logger.error(f"Validation error: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        # Logge den Fehler für Debugging
-        import logging
-        logging.error(f"Fehler in analyze_custom_token: {str(e)}", exc_info=True)
+        # Detaillierte Fehlermeldung für Debugging
+        error_msg = str(e)
+        logger.error(f"Fehler in analyze_custom_token: {error_msg}", exc_info=True)
+        
+        # Benutzerfreundliche Fehlermeldung
+        user_msg = "Ein unerwarteter Fehler ist aufgetreten. Bitte versuchen Sie es später erneut."
+        
+        if "Tokendaten konnten nicht abgerufen werden" in error_msg:
+            user_msg = error_msg
+        elif "Analyse fehlgeschlagen" in error_msg:
+            user_msg = error_msg
+        elif "Rate limit exceeded" in error_msg:
+            user_msg = "Zu viele Anfragen. Bitte warten Sie einige Minuten und versuchen Sie es erneut."
         
         return CustomAnalysisResponse(
             success=False,
             token_address=request.token_address,
             chain=request.chain,
-            error_message=str(e),
+            error_message=user_msg,
             analyzed_at=datetime.utcnow()
         )
