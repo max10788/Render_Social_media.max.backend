@@ -1,6 +1,7 @@
 # services/multichain/price_service.py
 import aiohttp
 import logging
+import os
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 from app.core.backend_crypto_tracker.utils.logger import get_logger
@@ -19,8 +20,15 @@ class TokenPriceData:
 
 class PriceService:
     def __init__(self, coingecko_api_key: Optional[str] = None):
-        self.coingecko_api_key = coingecko_api_key
+        # If no API key is provided, try to get it from environment variables
+        self.coingecko_api_key = coingecko_api_key or os.getenv('COINGECKO_API_KEY')
         self.session = None
+        
+        # Log the API key status (without revealing the key itself)
+        if self.coingecko_api_key:
+            logger.info("CoinGecko API key is configured")
+        else:
+            logger.warning("No CoinGecko API key configured - using public API with rate limits")
         
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -61,6 +69,9 @@ class PriceService:
         headers = {}
         if self.coingecko_api_key:
             headers['x-cg-pro-api-key'] = self.coingecko_api_key
+            logger.debug(f"Using CoinGecko API key for {token_address}")
+        else:
+            logger.warning(f"No CoinGecko API key provided for {token_address}")
         
         try:
             async with self.session.get(url, params=params, headers=headers) as response:
@@ -73,6 +84,9 @@ class PriceService:
                 
                 response.raise_for_status()
                 data = await response.json()
+                
+                # Log the response for debugging
+                logger.debug(f"CoinGecko response for {token_address}: {data}")
                 
                 token_data = data.get(token_address.lower(), {})
                 return TokenPriceData(
@@ -103,6 +117,9 @@ class PriceService:
         headers = {}
         if self.coingecko_api_key:
             headers['x-cg-pro-api-key'] = self.coingecko_api_key
+            logger.debug(f"Using CoinGecko API key for Solana token {token_address}")
+        else:
+            logger.warning(f"No CoinGecko API key provided for Solana token {token_address}")
         
         try:
             async with self.session.get(url, params=params, headers=headers) as response:
@@ -115,6 +132,9 @@ class PriceService:
                 
                 response.raise_for_status()
                 data = await response.json()
+                
+                # Log the response for debugging
+                logger.debug(f"CoinGecko response for Solana token {token_address}: {data}")
                 
                 token_data = data.get(token_address, {})
                 return TokenPriceData(
@@ -173,6 +193,9 @@ class PriceService:
         headers = {}
         if self.coingecko_api_key:
             headers['x-cg-pro-api-key'] = self.coingecko_api_key
+            logger.debug("Using CoinGecko API key for low-cap tokens request")
+        else:
+            logger.warning("No CoinGecko API key provided for low-cap tokens request")
         
         try:
             async with self.session.get(url, params=params, headers=headers) as response:
@@ -185,6 +208,9 @@ class PriceService:
                 
                 response.raise_for_status()
                 data = await response.json()
+                
+                # Log the response for debugging
+                logger.debug(f"CoinGecko response for low-cap tokens: {len(data)} tokens returned")
                 
                 tokens = []
                 for coin in data:
