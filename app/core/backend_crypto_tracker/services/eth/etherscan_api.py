@@ -32,24 +32,28 @@ class EtherscanAPI:
         self.rate_limiter = RateLimiter()
         self.session = None
         
+        # Prüfe, ob die API-Schlüssel gültig sind (nicht nur Platzhalter)
+        self.etherscan_key_valid = self.etherscan_key and not self.etherscan_key.startswith('your')
+        self.bscscan_key_valid = self.bscscan_key and not self.bscscan_key.startswith('YOUR')
+        
         # Logging der API-Schlüssel (maskiert)
-        if self.etherscan_key:
+        if self.etherscan_key and self.etherscan_key_valid:
             if len(self.etherscan_key) > 8:
                 masked_etherscan = self.etherscan_key[:4] + "..." + self.etherscan_key[-4:]
             else:
                 masked_etherscan = "***"
             logger.info(f"Etherscan API key configured: {masked_etherscan}")
         else:
-            logger.warning("No Etherscan API key configured")
+            logger.warning("No valid Etherscan API key configured")
             
-        if self.bscscan_key:
+        if self.bscscan_key and self.bscscan_key_valid:
             if len(self.bscscan_key) > 8:
                 masked_bscscan = self.bscscan_key[:4] + "..." + self.bscscan_key[-4:]
             else:
                 masked_bscscan = "***"
             logger.info(f"BscScan API key configured: {masked_bscscan}")
         else:
-            logger.warning("No BscScan API key configured")
+            logger.warning("No valid BscScan API key configured")
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -95,8 +99,8 @@ class EtherscanAPI:
         """Holt die Top Token-Holder von Etherscan/BscScan"""
         try:
             if chain == 'ethereum':
-                if not self.etherscan_key:
-                    logger.warning("No Etherscan API key provided")
+                if not self.etherscan_key_valid:
+                    logger.warning("No valid Etherscan API key provided")
                     return []
                 
                 params = {
@@ -112,8 +116,8 @@ class EtherscanAPI:
                 return data.get('result', [])
                 
             elif chain == 'bsc':
-                if not self.bscscan_key:
-                    logger.warning("No BscScan API key provided")
+                if not self.bscscan_key_valid:
+                    logger.warning("No valid BscScan API key provided")
                     return []
                 
                 params = {
@@ -141,8 +145,8 @@ class EtherscanAPI:
         """Holt Transaktionsdaten für eine Wallet"""
         try:
             if chain == 'ethereum':
-                if not self.etherscan_key:
-                    logger.warning("No Etherscan API key provided")
+                if not self.etherscan_key_valid:
+                    logger.warning("No valid Etherscan API key provided")
                     return {}
                 
                 params = {
@@ -189,8 +193,8 @@ class EtherscanAPI:
                     return {}
                     
             elif chain == 'bsc':
-                if not self.bscscan_key:
-                    logger.warning("No BscScan API key provided")
+                if not self.bscscan_key_valid:
+                    logger.warning("No valid BscScan API key provided")
                     return {}
                 
                 params = {
@@ -249,8 +253,8 @@ class EtherscanAPI:
         """Holt die Erstellungs-Transaktion eines Contracts"""
         try:
             if chain == 'ethereum':
-                if not self.etherscan_key:
-                    logger.warning("No Etherscan API key provided")
+                if not self.etherscan_key_valid:
+                    logger.warning("No valid Etherscan API key provided")
                     return None
                 
                 params = {
@@ -269,8 +273,8 @@ class EtherscanAPI:
                     return None
                     
             elif chain == 'bsc':
-                if not self.bscscan_key:
-                    logger.warning("No BscScan API key provided")
+                if not self.bscscan_key_valid:
+                    logger.warning("No valid BscScan API key provided")
                     return None
                 
                 params = {
@@ -301,8 +305,8 @@ class EtherscanAPI:
         """Prüft, ob ein Contract verifiziert ist"""
         try:
             if chain == 'ethereum':
-                if not self.etherscan_key:
-                    logger.warning("No Etherscan API key provided")
+                if not self.etherscan_key_valid:
+                    logger.warning("No valid Etherscan API key provided")
                     return False
                 
                 params = {
@@ -318,8 +322,8 @@ class EtherscanAPI:
                 return data.get('status') == '1' and data.get('message') != 'Contract source code not verified'
                 
             elif chain == 'bsc':
-                if not self.bscscan_key:
-                    logger.warning("No BscScan API key provided")
+                if not self.bscscan_key_valid:
+                    logger.warning("No valid BscScan API key provided")
                     return False
                 
                 params = {
@@ -347,8 +351,8 @@ class EtherscanAPI:
         """Holt grundlegende Token-Informationen"""
         try:
             if chain == 'ethereum':
-                if not self.etherscan_key:
-                    logger.warning("No Etherscan API key provided")
+                if not self.etherscan_key_valid:
+                    logger.warning("No valid Etherscan API key provided")
                     return {}
                 
                 params = {
@@ -362,8 +366,8 @@ class EtherscanAPI:
                 return data.get('result', {})
                 
             elif chain == 'bsc':
-                if not self.bscscan_key:
-                    logger.warning("No BscScan API key provided")
+                if not self.bscscan_key_valid:
+                    logger.warning("No valid BscScan API key provided")
                     return {}
                 
                 params = {
@@ -389,8 +393,8 @@ class EtherscanAPI:
         """Holt die ABI eines Smart Contracts"""
         try:
             if chain == 'ethereum':
-                if not self.etherscan_key:
-                    logger.warning("No Etherscan API key provided")
+                if not self.etherscan_key_valid:
+                    logger.warning("No valid Etherscan API key provided")
                     return []
                 
                 params = {
@@ -405,8 +409,8 @@ class EtherscanAPI:
                 return json.loads(abi_str)
                 
             elif chain == 'bsc':
-                if not self.bscscan_key:
-                    logger.warning("No BscScan API key provided")
+                if not self.bscscan_key_valid:
+                    logger.warning("No valid BscScan API key provided")
                     return []
                 
                 params = {
@@ -435,8 +439,8 @@ class EtherscanAPI:
         """Holt Transaktionen für eine Adresse"""
         try:
             if chain == 'ethereum':
-                if not self.etherscan_key:
-                    logger.warning("No Etherscan API key provided")
+                if not self.etherscan_key_valid:
+                    logger.warning("No valid Etherscan API key provided")
                     return []
                 
                 params = {
@@ -453,8 +457,8 @@ class EtherscanAPI:
                 return data.get('result', [])
                 
             elif chain == 'bsc':
-                if not self.bscscan_key:
-                    logger.warning("No BscScan API key provided")
+                if not self.bscscan_key_valid:
+                    logger.warning("No valid BscScan API key provided")
                     return []
                 
                 params = {
