@@ -287,9 +287,13 @@ class TokenAnalyzer:
             logger.error(f"Error analyzing custom token {token_address} on {chain}: {e}")
             raise
     
+    @retry_with_backoff(max_retries=3, base_delay=2, max_delay=30)
     async def _fetch_custom_token_data(self, token_address: str, chain: str) -> Optional[Token]:
-        """Holt Token-Daten für verschiedene Chains"""
+        """Holt Token-Daten für verschiedene Chains mit Rate-Limit-Handling"""
         try:
+            # Rate-Limit-Handling für CoinGecko
+            await self._enforce_coingecko_rate_limit()
+            
             async with self.price_service:
                 price_data = await self.price_service.get_token_price(token_address, chain)
             
