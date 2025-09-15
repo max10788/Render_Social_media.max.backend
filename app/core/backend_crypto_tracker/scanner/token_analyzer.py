@@ -32,6 +32,35 @@ class TokenAnalysisConfig:
     max_holders_to_analyze: int = 100
     request_delay_seconds: float = 1.0
 
+def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60):
+    """Decorator für Retry mit exponentiellem Backoff"""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            retries = 0
+            last_exception = None
+            
+            while retries < max_retries:
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    retries += 1
+                    
+                    # Bei Rate-Limit-Fehlern länger warten
+                    if "Rate limit exceeded" in str(e) or "429" in str(e):
+                        delay = min(base_delay * (2 ** (retries - 1)) + random.uniform(0, 0.5), max_delay)
+                    else:
+                        delay = min(base_delay * (1.5 ** (retries - 1)) + random.uniform(0, 0.1), max_delay)
+                    
+                    logger.warning(f"Retry {retries}/{max_retries} after error: {str(e)}. Waiting {delay:.2f}s...")
+                    await asyncio.sleep(delay)
+            
+            logger.error(f"Max retries ({max_retries}) exceeded. Last error: {str(last_exception)}")
+            raise last_exception
+        return wrapper
+    return decorator
+
 class TokenAnalyzer:
     def __init__(self, config: TokenAnalysisConfig = None):
         self.config = config or TokenAnalysisConfig()
@@ -49,6 +78,12 @@ class TokenAnalyzer:
         self.bscscan_key = scanner_config.rpc_config.bscscan_api_key
         self.coingecko_key = scanner_config.rpc_config.coingecko_api_key
         
+        # Rate-Limit-Tracking für CoinGecko
+        self.coingecko_last_request_time = 0
+        self.coingecko_min_interval = 1.2  # 50 Anfragen pro Minute = 1.2 Sekunden zwischen Anfragen
+        self.coingecko_request_count = 0
+        self.coingecko_reset_time = datetime.utcnow() + timedelta(minutes=1)
+        
         # Bekannte Contract-Adressen
         self.known_contracts = scanner_config.rpc_config.known_contracts
         self.cex_wallets = scanner_config.rpc_config.cex_wallets
@@ -56,8 +91,8 @@ class TokenAnalyzer:
     async def __aenter__(self):
         self.price_service = PriceService(self.coingecko_key)
         self.etherscan_api = EtherscanAPI(self.etherscan_key, self.bscscan_key)
-        self.solana_api = SolanaAPIService()  # <--- KORRIGIERT: SolanaAPIService statt SolanaAPI
-        self.sui_api = SuiAPIService()  # <--- Auch hier wahrscheinlich korrigieren
+        self.solana_api = SolanaAPIService()
+        self.sui_api = SuiAPIService()
         
         self.w3_eth = Web3(Web3.HTTPProvider(self.ethereum_rpc))
         self.w3_bsc = Web3(Web3.HTTPProvider(self.bsc_rpc))
@@ -70,14 +105,65 @@ class TokenAnalyzer:
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # Sicheres Schließen aller Ressourcen
+        close_tasks = []
+        
         if self.price_service:
-            await self.price_service.__aexit__(exc_type, exc_val, exc_tb)
+            close_tasks.append(self._safe_close(self.price_service, exc_type, exc_val, exc_tb, "price_service"))
+        
         if self.etherscan_api:
-            await self.etherscan_api.__aexit__(exc_type, exc_val, exc_tb)
+            close_tasks.append(self._safe_close(self.etherscan_api, exc_type, exc_val, exc_tb, "etherscan_api"))
+        
         if self.solana_api:
-            await self.solana_api.__aexit__(exc_type, exc_val, exc_tb)
+            close_tasks.append(self._safe_close(self.solana_api, exc_type, exc_val, exc_tb, "solana_api"))
+        
         if self.sui_api:
-            await self.sui_api.__aexit__(exc_type, exc_val, exc_tb)
+            close_tasks.append(self._safe_close(self.sui_api, exc_type, exc_val, exc_tb, "sui_api"))
+        
+        # Alle Schließvorgänge parallel ausführen
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+        
+        # Web3-Verbindungen trennen
+        if hasattr(self, 'w3_eth') and self.w3_eth:
+            self.w3_eth = None
+        
+        if hasattr(self, 'w3_bsc') and self.w3_bsc:
+            self.w3_bsc = None
+    
+    async def _safe_close(self, service, exc_type, exc_val, exc_tb, service_name):
+        """Sicheres Schließen einer Service-Verbindung"""
+        try:
+            await service.__aexit__(exc_type, exc_val, exc_tb)
+        except Exception as e:
+            logger.warning(f"Error closing {service_name}: {str(e)}")
+    
+    async def _enforce_coingecko_rate_limit(self):
+        """Stellt sicher, dass das CoinGecko Rate-Limit eingehalten wird"""
+        current_time = time.time()
+        
+        # Wenn das Zeitfenster abgelaufen ist, setze den Zähler zurück
+        if datetime.utcnow() >= self.coingecko_reset_time:
+            self.coingecko_request_count = 0
+            self.coingecko_reset_time = datetime.utcnow() + timedelta(minutes=1)
+        
+        # Wenn wir das Limit erreicht haben, warte bis zum nächsten Zeitfenster
+        if self.coingecko_request_count >= 50:
+            wait_time = (self.coingecko_reset_time - datetime.utcnow()).total_seconds()
+            if wait_time > 0:
+                logger.warning(f"CoinGecko rate limit reached. Waiting {wait_time:.2f}s for reset...")
+                await asyncio.sleep(wait_time + 0.1)  # Kleiner Puffer
+                self.coingecko_request_count = 0
+                self.coingecko_reset_time = datetime.utcnow() + timedelta(minutes=1)
+        
+        # Wenn die letzte Anfrage zu kurz zurückliegt, warte
+        time_since_last_request = current_time - self.coingecko_last_request_time
+        if time_since_last_request < self.coingecko_min_interval:
+            await asyncio.sleep(self.coingecko_min_interval - time_since_last_request)
+        
+        # Aktualisiere die Tracking-Variablen
+        self.coingecko_last_request_time = time.time()
+        self.coingecko_request_count += 1
     
     async def scan_low_cap_tokens(self, max_tokens: int = None) -> List[Dict[str, Any]]:
         """Hauptfunktion zum Scannen von Low-Cap Tokens"""
