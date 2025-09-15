@@ -22,19 +22,17 @@ class TokenPriceData:
 
 class PriceService:
     def __init__(self, coingecko_api_key: Optional[str] = None):
-        # Wenn kein API-Schlüssel übergeben wird, versuche, ihn aus den Umgebungsvariablen zu lesen
         self.coingecko_api_key = coingecko_api_key or os.getenv('COINGECKO_API_KEY')
         self.session = None
         self.api_key_valid = False
         self.cache = {}  # Einfacher Cache für Token-Preise
         self.cache_expiry = 300  # 5 Minuten Cache
         
-        # Standardmäßig öffentliche API verwenden
+        # Für Demo-API-Schlüssel immer die öffentliche API verwenden
         self.base_url = "https://api.coingecko.com/api/v3"
         
         # Protokolliere den Status des API-Schlüssels (maskiert für Sicherheit)
         if self.coingecko_api_key:
-            # Zeige nur die ersten 4 und letzten 4 Zeichen des Schlüssels
             if len(self.coingecko_api_key) > 8:
                 masked_key = self.coingecko_api_key[:4] + "..." + self.coingecko_api_key[-4:]
             else:
@@ -67,23 +65,11 @@ class PriceService:
             async with self.session.get(url, headers=headers) as response:
                 if response.status == 200:
                     self.api_key_valid = True
-                    self.base_url = "https://api.coingecko.com/api/v3"
                     logger.info("CoinGecko API key is valid with public API")
                 else:
                     error_text = await response.text()
                     logger.error(f"CoinGecko API key validation failed with public API: {response.status} - {error_text}")
-                    
-                    # Pro-API testen
-                    url = "https://pro-api.coingecko.com/api/v3/ping"
-                    async with self.session.get(url, headers=headers) as response2:
-                        if response2.status == 200:
-                            self.api_key_valid = True
-                            self.base_url = "https://pro-api.coingecko.com/api/v3"
-                            logger.info("CoinGecko API key is valid with Pro API")
-                        else:
-                            error_text2 = await response2.text()
-                            logger.error(f"CoinGecko API key validation failed with Pro API: {response2.status} - {error_text2}")
-                            self.api_key_valid = False
+                    self.api_key_valid = False
         except Exception as e:
             logger.error(f"Error validating CoinGecko API key: {e}")
             self.api_key_valid = False
@@ -144,7 +130,7 @@ class PriceService:
     
     async def _get_from_coingecko(self, token_address: str, platform_id: str) -> Optional[TokenPriceData]:
         """Holt Tokendaten von CoinGecko"""
-        # Verwende die korrekte Basis-URL
+        # Verwende die öffentliche API für Demo-Schlüssel
         url = f"{self.base_url}/simple/token_price/{platform_id}"
         params = {
             'contract_addresses': token_address,
@@ -196,10 +182,30 @@ class PriceService:
         
         if chain == 'ethereum':
             # Versuche, den Preis von Uniswap zu holen
-            return await self._get_uniswap_price(token_address)
+            try:
+                token_data = await self._get_uniswap_price(token_address)
+                if token_data:
+                    # Speichere im Cache
+                    self._save_to_cache(f"ethereum:{token_address}", token_data)
+                    return token_data
+            except Exception as e:
+                logger.error(f"Error fetching from Uniswap: {e}")
+            
+            # Fallback: Etherscan
+            return await self._get_etherscan_price(token_address)
         elif chain == 'bsc':
             # Versuche, den Preis von PancakeSwap zu holen
-            return await self._get_pancakeswap_price(token_address)
+            try:
+                token_data = await self._get_pancakeswap_price(token_address)
+                if token_data:
+                    # Speichere im Cache
+                    self._save_to_cache(f"bsc:{token_address}", token_data)
+                    return token_data
+            except Exception as e:
+                logger.error(f"Error fetching from PancakeSwap: {e}")
+            
+            # Fallback: BscScan
+            return await self._get_bscscan_price(token_address)
         
         return TokenPriceData(price=0, market_cap=0, volume_24h=0)
     
@@ -216,6 +222,10 @@ class PriceService:
             }
             
             async with self.session.get(url, params=params) as response:
+                if response.status == 409:
+                    logger.warning(f"Uniswap returned 409 Conflict for {token_address}")
+                    raise APIException(f"Uniswap conflict for token {token_address}")
+                
                 response.raise_for_status()
                 data = await response.json()
                 
@@ -230,6 +240,7 @@ class PriceService:
                     )
         except Exception as e:
             logger.error(f"Error fetching from Uniswap: {e}")
+            raise
         
         # Fallback: Etherscan
         return await self._get_etherscan_price(token_address)
@@ -260,6 +271,35 @@ class PriceService:
                     )
         except Exception as e:
             logger.error(f"Error fetching from Etherscan: {e}")
+        
+        return TokenPriceData(price=0, market_cap=0, volume_24h=0)
+    
+    async def _get_bscscan_price(self, token_address: str) -> TokenPriceData:
+        """Holt Token-Preis von BscScan"""
+        try:
+            # BscScan API
+            url = "https://api.bscscan.com/api"
+            params = {
+                'module': 'token',
+                'action': 'tokenprice',
+                'contractaddress': token_address,
+                'apikey': os.getenv('BSCSCAN_API_KEY', 'YourApiKeyToken')
+            }
+            
+            async with self.session.get(url, params=params) as response:
+                response.raise_for_status()
+                data = await response.json()
+                
+                if data.get('status') == '1' and data.get('result'):
+                    result = data['result']
+                    return TokenPriceData(
+                        price=float(result.get('bnbusd', 0)),
+                        market_cap=0,  # Nicht verfügbar
+                        volume_24h=0,  # Nicht verfügbar
+                        price_change_percentage_24h=0  # Nicht verfügbar
+                    )
+        except Exception as e:
+            logger.error(f"Error fetching from BscScan: {e}")
         
         return TokenPriceData(price=0, market_cap=0, volume_24h=0)
     
