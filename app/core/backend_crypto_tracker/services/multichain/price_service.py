@@ -57,11 +57,13 @@ class PriceService:
             'include_24hr_change': 'true'
         }
         
+        # Header mit API-Schlüssel vorbereiten
+        headers = {}
         if self.coingecko_api_key:
-            params['x-cg-pro-api-key'] = self.coingecko_api_key
+            headers['x-cg-pro-api-key'] = self.coingecko_api_key
         
         try:
-            async with self.session.get(url, params=params) as response:
+            async with self.session.get(url, params=params, headers=headers) as response:
                 if response.status == 429:
                     raise RateLimitExceededException(
                         "CoinGecko", 
@@ -97,11 +99,13 @@ class PriceService:
             'include_24hr_change': 'true'
         }
         
+        # Header mit API-Schlüssel vorbereiten
+        headers = {}
         if self.coingecko_api_key:
-            params['x-cg-pro-api-key'] = self.coingecko_api_key
+            headers['x-cg-pro-api-key'] = self.coingecko_api_key
         
         try:
-            async with self.session.get(url, params=params) as response:
+            async with self.session.get(url, params=params, headers=headers) as response:
                 if response.status == 429:
                     raise RateLimitExceededException(
                         "CoinGecko", 
@@ -165,11 +169,13 @@ class PriceService:
             'price_change_percentage': '24h'
         }
         
+        # Header mit API-Schlüssel vorbereiten
+        headers = {}
         if self.coingecko_api_key:
-            params['x-cg-pro-api-key'] = self.coingecko_api_key
+            headers['x-cg-pro-api-key'] = self.coingecko_api_key
         
         try:
-            async with self.session.get(url, params=params) as response:
+            async with self.session.get(url, params=params, headers=headers) as response:
                 if response.status == 429:
                     raise RateLimitExceededException(
                         "CoinGecko", 
