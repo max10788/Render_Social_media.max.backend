@@ -2,6 +2,8 @@
 import aiohttp
 import logging
 import os
+import time
+import json
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 from app.core.backend_crypto_tracker.utils.logger import get_logger
@@ -23,6 +25,17 @@ class PriceService:
         # Wenn kein API-Schlüssel übergeben wird, versuche, ihn aus den Umgebungsvariablen zu lesen
         self.coingecko_api_key = coingecko_api_key or os.getenv('COINGECKO_API_KEY')
         self.session = None
+        self.api_key_valid = False
+        self.cache = {}  # Einfacher Cache für Token-Preise
+        self.cache_expiry = 300  # 5 Minuten Cache
+        
+        # Bestimme die Basis-URL basierend auf dem API-Schlüssel
+        if self.coingecko_api_key and self.coingecko_api_key.startswith('CG-'):
+            self.base_url = "https://pro-api.coingecko.com/api/v3"  # Pro-API
+            logger.info("Using CoinGecko Pro API endpoint")
+        else:
+            self.base_url = "https://api.coingecko.com/api/v3"  # Öffentliche API
+            logger.warning("Using CoinGecko public API endpoint")
         
         # Protokolliere den Status des API-Schlüssels (maskiert für Sicherheit)
         if self.coingecko_api_key:
@@ -37,16 +50,62 @@ class PriceService:
         
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
+        # Validiere den API-Schlüssel beim Start
+        await self._validate_api_key()
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.session:
             await self.session.close()
     
+    async def _validate_api_key(self):
+        """Validiert den CoinGecko API-Schlüssel"""
+        if not self.coingecko_api_key:
+            self.api_key_valid = False
+            return
+            
+        try:
+            # Teste den API-Schlüssel mit einer einfachen Anfrage
+            url = f"{self.base_url}/ping"
+            headers = {"x-cg-pro-api-key": self.coingecko_api_key}
+            
+            async with self.session.get(url, headers=headers) as response:
+                if response.status == 200:
+                    self.api_key_valid = True
+                    logger.info("CoinGecko API key is valid")
+                else:
+                    error_text = await response.text()
+                    logger.error(f"CoinGecko API key validation failed: {response.status} - {error_text}")
+                    self.api_key_valid = False
+        except Exception as e:
+            logger.error(f"Error validating CoinGecko API key: {e}")
+            self.api_key_valid = False
+    
+    def _get_from_cache(self, key: str):
+        """Holt Daten aus dem Cache"""
+        if key in self.cache:
+            data, timestamp = self.cache[key]
+            if time.time() - timestamp < self.cache_expiry:
+                return data
+            # Cache-Eintrag ist abgelaufen, entferne ihn
+            del self.cache[key]
+        return None
+    
+    def _save_to_cache(self, key: str, data):
+        """Speichert Daten im Cache"""
+        self.cache[key] = (data, time.time())
+    
     async def get_token_price(self, token_address: str, chain: str) -> TokenPriceData:
         """Holt Preisinformationen für ein Token basierend auf der Blockchain"""
         if not chain_config.is_supported(chain):
             raise ValueError(f"Unsupported chain: {chain}")
+        
+        # Prüfe Cache
+        cache_key = f"{chain}:{token_address}"
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data:
+            logger.debug(f"Using cached data for {token_address}")
+            return cached_data
         
         if chain in ['ethereum', 'bsc']:
             return await self._get_evm_token_price(token_address, chain)
@@ -61,10 +120,25 @@ class PriceService:
         """Preis für EVM-basierte Token (Ethereum, BSC)"""
         platform_id = 'ethereum' if chain == 'ethereum' else 'binance-smart-chain'
         
-        # URL für die API-Anfrage
-        url = f"https://api.coingecko.com/api/v3/simple/token_price/{platform_id}"
+        # Zuerst mit CoinGecko versuchen
+        if self.api_key_valid:
+            try:
+                token_data = await self._get_from_coingecko(token_address, platform_id)
+                if token_data:
+                    # Speichere im Cache
+                    self._save_to_cache(f"{chain}:{token_address}", token_data)
+                    return token_data
+            except Exception as e:
+                logger.error(f"Error fetching from CoinGecko: {e}")
         
-        # Parameter für die API-Anfrage
+        # Fallback: Alternative Datenquellen
+        logger.warning(f"Falling back to alternative sources for {token_address}")
+        return await self._get_evm_token_price_fallback(token_address, chain)
+    
+    async def _get_from_coingecko(self, token_address: str, platform_id: str) -> Optional[TokenPriceData]:
+        """Holt Tokendaten von CoinGecko"""
+        # Verwende die korrekte Basis-URL
+        url = f"{self.base_url}/simple/token_price/{platform_id}"
         params = {
             'contract_addresses': token_address,
             'vs_currencies': 'usd',
@@ -73,57 +147,29 @@ class PriceService:
             'include_24hr_change': 'true'
         }
         
-        # Header mit API-Schlüssel vorbereiten
         headers = {}
-        if self.coingecko_api_key:
+        if self.api_key_valid:
             headers['x-cg-pro-api-key'] = self.coingecko_api_key
-            # Protokolliere den Header (maskiere den API-Schlüssel)
-            masked_headers = dict(headers)
-            if 'x-cg-pro-api-key' in masked_headers:
-                key = masked_headers['x-cg-pro-api-key']
-                if len(key) > 8:
-                    masked_headers['x-cg-pro-api-key'] = key[:4] + "..." + key[-4:]
-                else:
-                    masked_headers['x-cg-pro-api-key'] = "***"
-            logger.debug(f"Using headers for CoinGecko API: {masked_headers}")
-        else:
-            logger.warning(f"No CoinGecko API key provided for {token_address}")
         
         try:
-            # Protokolliere die vollständige Anfrage
-            logger.debug(f"Making request to: {url}")
-            logger.debug(f"Request params: {params}")
-            
             async with self.session.get(url, params=params, headers=headers) as response:
-                # Protokolliere den Antwortstatus
-                logger.debug(f"Response status: {response.status}")
+                logger.debug(f"CoinGecko response status: {response.status}")
+                logger.debug(f"Request URL: {response.url}")
                 
-                # Bei Rate-Limit, protokolliere die Antwort
                 if response.status == 429:
                     error_text = await response.text()
                     logger.error(f"Rate limit exceeded. Response: {error_text}")
-                    raise RateLimitExceededException(
-                        "CoinGecko", 
-                        50,  # Annahme: 50 Anfragen pro Minute
-                        "minute"
-                    )
+                    raise RateLimitExceededException("CoinGecko", 50, "minute")
                 
                 response.raise_for_status()
                 data = await response.json()
                 
-                # Protokolliere die Antwort (gekürzt)
                 logger.debug(f"CoinGecko response (truncated): {str(data)[:200]}...")
                 
-                # Überprüfe, ob die Antwort die erwarteten Daten enthält
-                if not data:
-                    logger.error(f"Empty response from CoinGecko for token {token_address}")
-                    raise ValueError(f"No data returned from CoinGecko for token {token_address}")
-                
-                # Extrahiere die Tokendaten
                 token_data = data.get(token_address.lower(), {})
                 if not token_data:
-                    logger.error(f"No token data found in response for {token_address}. Response: {data}")
-                    raise ValueError(f"Token data not found for {token_address}")
+                    logger.error(f"No token data found in response for {token_address}")
+                    return None
                 
                 return TokenPriceData(
                     price=token_data.get('usd', 0),
@@ -133,69 +179,129 @@ class PriceService:
                 )
                 
         except aiohttp.ClientError as e:
-            logger.error(f"Error fetching EVM token price: {e}")
-            # Versuche, die Fehlerantwort zu protokollieren
-            if hasattr(e, 'response') and e.response:
-                try:
-                    error_response = await e.response.text()
-                    logger.error(f"Error response: {error_response}")
-                except:
-                    pass
-            raise APIException(f"Failed to fetch token price: {str(e)}")
+            logger.error(f"Error fetching from CoinGecko: {e}")
+            return None
+    
+    async def _get_evm_token_price_fallback(self, token_address: str, chain: str) -> TokenPriceData:
+        """Holt Tokendaten von alternativen Quellen für EVM-Chains"""
+        # Für Ethereum können wir DEX APIs wie Uniswap oder 1inch verwenden
+        # Für BSC können wir PancakeSwap verwenden
+        
+        if chain == 'ethereum':
+            # Versuche, den Preis von Uniswap zu holen
+            return await self._get_uniswap_price(token_address)
+        elif chain == 'bsc':
+            # Versuche, den Preis von PancakeSwap zu holen
+            return await self._get_pancakeswap_price(token_address)
+        
+        return TokenPriceData(price=0, market_cap=0, volume_24h=0)
+    
+    async def _get_uniswap_price(self, token_address: str) -> TokenPriceData:
+        """Holt Token-Preis von Uniswap"""
+        try:
+            # Uniswap V3 API
+            url = "https://api.uniswap.org/v1/quote"
+            params = {
+                'tokenIn': '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',  # WETH
+                'tokenOut': token_address,
+                'amount': '1000000000000000000',  # 1 WETH
+                'type': 'exactIn'
+            }
+            
+            async with self.session.get(url, params=params) as response:
+                response.raise_for_status()
+                data = await response.json()
+                
+                if data.get('quote'):
+                    # Berechne den Preis basierend auf dem Quote
+                    price = float(data['quote']) / 1000000000000000000  # WETH to token
+                    return TokenPriceData(
+                        price=price,
+                        market_cap=0,  # Nicht verfügbar
+                        volume_24h=0,  # Nicht verfügbar
+                        price_change_percentage_24h=0  # Nicht verfügbar
+                    )
+        except Exception as e:
+            logger.error(f"Error fetching from Uniswap: {e}")
+        
+        # Fallback: Etherscan
+        return await self._get_etherscan_price(token_address)
+    
+    async def _get_etherscan_price(self, token_address: str) -> TokenPriceData:
+        """Holt Token-Preis von Etherscan"""
+        try:
+            # Etherscan API
+            url = "https://api.etherscan.io/api"
+            params = {
+                'module': 'token',
+                'action': 'tokenprice',
+                'contractaddress': token_address,
+                'apikey': os.getenv('ETHERSCAN_API_KEY', 'YourApiKeyToken')
+            }
+            
+            async with self.session.get(url, params=params) as response:
+                response.raise_for_status()
+                data = await response.json()
+                
+                if data.get('status') == '1' and data.get('result'):
+                    result = data['result']
+                    return TokenPriceData(
+                        price=float(result.get('ethusd', 0)),
+                        market_cap=0,  # Nicht verfügbar
+                        volume_24h=0,  # Nicht verfügbar
+                        price_change_percentage_24h=0  # Nicht verfügbar
+                    )
+        except Exception as e:
+            logger.error(f"Error fetching from Etherscan: {e}")
+        
+        return TokenPriceData(price=0, market_cap=0, volume_24h=0)
+    
+    async def _get_pancakeswap_price(self, token_address: str) -> TokenPriceData:
+        """Holt Token-Preis von PancakeSwap"""
+        try:
+            # PancakeSwap V2 API
+            url = "https://api.pancakeswap.info/api/v2/tokens/" + token_address
+            
+            async with self.session.get(url) as response:
+                response.raise_for_status()
+                data = await response.json()
+                
+                if data.get('data'):
+                    token_data = data['data']
+                    return TokenPriceData(
+                        price=float(token_data.get('price_BNB', 0)),
+                        market_cap=0,  # Nicht verfügbar
+                        volume_24h=0,  # Nicht verfügbar
+                        price_change_percentage_24h=0  # Nicht verfügbar
+                    )
+        except Exception as e:
+            logger.error(f"Error fetching from PancakeSwap: {e}")
         
         return TokenPriceData(price=0, market_cap=0, volume_24h=0)
     
     async def _get_solana_token_price(self, token_address: str) -> TokenPriceData:
         """Preis für Solana Token"""
-        # CoinGecko unterstützt auch Solana Token
-        url = f"https://api.coingecko.com/api/v3/simple/token_price/solana"
-        params = {
-            'contract_addresses': token_address,
-            'vs_currencies': 'usd',
-            'include_market_cap': 'true',
-            'include_24hr_vol': 'true',
-            'include_24hr_change': 'true'
-        }
+        # Prüfe Cache
+        cache_key = f"solana:{token_address}"
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data:
+            logger.debug(f"Using cached data for Solana token {token_address}")
+            return cached_data
         
-        # Header mit API-Schlüssel vorbereiten
-        headers = {}
-        if self.coingecko_api_key:
-            headers['x-cg-pro-api-key'] = self.coingecko_api_key
-            logger.debug(f"Using CoinGecko API key for Solana token {token_address}")
-        else:
-            logger.warning(f"No CoinGecko API key provided for Solana token {token_address}")
+        # Zuerst mit CoinGecko versuchen
+        if self.api_key_valid:
+            try:
+                token_data = await self._get_from_coingecko(token_address, 'solana')
+                if token_data:
+                    # Speichere im Cache
+                    self._save_to_cache(cache_key, token_data)
+                    return token_data
+            except Exception as e:
+                logger.error(f"Error fetching from CoinGecko: {e}")
         
-        try:
-            async with self.session.get(url, params=params, headers=headers) as response:
-                logger.debug(f"Solana token response status: {response.status}")
-                
-                if response.status == 429:
-                    error_text = await response.text()
-                    logger.error(f"Rate limit exceeded for Solana token. Response: {error_text}")
-                    raise RateLimitExceededException(
-                        "CoinGecko", 
-                        50,  # Annahme: 50 Anfragen pro Minute
-                        "minute"
-                    )
-                
-                response.raise_for_status()
-                data = await response.json()
-                
-                logger.debug(f"Solana token response (truncated): {str(data)[:200]}...")
-                
-                token_data = data.get(token_address, {})
-                return TokenPriceData(
-                    price=token_data.get('usd', 0),
-                    market_cap=token_data.get('usd_market_cap', 0),
-                    volume_24h=token_data.get('usd_24h_vol', 0),
-                    price_change_percentage_24h=token_data.get('usd_24h_change')
-                )
-        except aiohttp.ClientError as e:
-            logger.error(f"Error fetching Solana token price: {e}")
-            # Fallback: Jupiter API für Solana Preise
-            return await self._get_solana_price_jupiter(token_address)
-        
-        return TokenPriceData(price=0, market_cap=0, volume_24h=0)
+        # Fallback: Jupiter API
+        logger.warning(f"Falling back to Jupiter API for {token_address}")
+        return await self._get_solana_price_jupiter(token_address)
     
     async def _get_solana_price_jupiter(self, token_address: str) -> TokenPriceData:
         """Fallback: Jupiter API für Solana Token Preise"""
@@ -207,14 +313,20 @@ class PriceService:
                 response.raise_for_status()
                 data = await response.json()
                 token_data = data.get('data', {}).get(token_address, {})
-                return TokenPriceData(
-                    price=token_data.get('price', 0),
-                    market_cap=0,  # Jupiter API bietet keine Market Cap
-                    volume_24h=0
-                )
+                
+                if token_data:
+                    result = TokenPriceData(
+                        price=token_data.get('price', 0),
+                        market_cap=0,  # Jupiter API bietet keine Market Cap
+                        volume_24h=0
+                    )
+                    # Speichere im Cache
+                    self._save_to_cache(f"solana:{token_address}", result)
+                    return result
         except aiohttp.ClientError as e:
             logger.error(f"Error fetching Solana price from Jupiter: {e}")
-            raise APIException(f"Failed to fetch token price from Jupiter: {str(e)}")
+        
+        return TokenPriceData(price=0, market_cap=0, volume_24h=0)
     
     async def _get_sui_token_price(self, token_address: str) -> TokenPriceData:
         """Preis für Sui Token"""
@@ -226,7 +338,7 @@ class PriceService:
     
     async def get_low_cap_tokens(self, max_market_cap: float = 5_000_000, limit: int = 250) -> List[Token]:
         """Holt Low-Cap Tokens von CoinGecko"""
-        url = "https://api.coingecko.com/api/v3/coins/markets"
+        url = f"{self.base_url}/coins/markets"
         params = {
             'vs_currency': 'usd',
             'order': 'market_cap_desc',
@@ -238,7 +350,7 @@ class PriceService:
         
         # Header mit API-Schlüssel vorbereiten
         headers = {}
-        if self.coingecko_api_key:
+        if self.api_key_valid:
             headers['x-cg-pro-api-key'] = self.coingecko_api_key
             logger.debug("Using CoinGecko API key for low-cap tokens request")
         else:
