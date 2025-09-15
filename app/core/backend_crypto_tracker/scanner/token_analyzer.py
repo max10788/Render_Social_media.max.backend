@@ -155,14 +155,15 @@ class TokenAnalyzer:
             wait_time = (self.coingecko_reset_time - datetime.utcnow()).total_seconds()
             if wait_time > 0:
                 logger.warning(f"CoinGecko rate limit reached. Waiting {wait_time:.2f}s for reset...")
-                await asyncio.sleep(wait_time + 0.1)  # Kleiner Puffer
+                await asyncio.sleep(wait_time + 0.5)  # Etwas mehr Puffer
                 self.coingecko_request_count = 0
                 self.coingecko_reset_time = datetime.utcnow() + timedelta(minutes=1)
         
         # Wenn die letzte Anfrage zu kurz zurückliegt, warte
         time_since_last_request = current_time - self.coingecko_last_request_time
-        if time_since_last_request < self.coingecko_min_interval:
-            await asyncio.sleep(self.coingecko_min_interval - time_since_last_request)
+        min_interval = 1.5  # Etwas mehr Abstand zwischen Anfragen
+        if time_since_last_request < min_interval:
+            await asyncio.sleep(min_interval - time_since_last_request)
         
         # Aktualisiere die Tracking-Variablen
         self.coingecko_last_request_time = time.time()
