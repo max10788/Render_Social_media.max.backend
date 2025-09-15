@@ -4,6 +4,7 @@ from pydantic import BaseModel, validator
 from typing import Optional
 from datetime import datetime
 import re
+import logging  # FEHLENDES IMPORT
 
 router = APIRouter(prefix="/api/analyze", tags=["custom-analysis"])
 
