@@ -53,136 +53,108 @@ class LowCapAnalyzer:
     Zentrale Fassade/Koordinator für die gesamte Low-Cap-Token-Analyse.
     Integriert Funktionalitäten aus verschiedenen Analysekomponenten.
     """
-
     def __init__(
         self,
         config: Optional[TokenAnalysisConfig] = None,
         scan_config: Optional[ScanConfig] = None
     ):
-        """
-        Initialisiert die benötigten Komponenten.
-
-        Args:
-            config: Konfiguration für die Token-Analyse
-            scan_config: Konfiguration für den Scan-Vorgang
-        """
         self.logger = get_logger(__name__)
         self.config = config or TokenAnalysisConfig()
         self.scan_config = scan_config or ScanConfig()
-
+        
         # Initialisiere die Komponenten (Ressourcen werden in __aenter__ erstellt)
         self.token_analyzer: Optional[TokenAnalyzer] = None
         self.risk_assessor: Optional[AdvancedRiskAssessor] = None
         self.scoring_engine: Optional[MultiChainScoringEngine] = None
         self.wallet_classifier: Optional[WalletClassifier] = None
-
+        
         self.logger.info("LowCapAnalyzer initialisiert")
 
     async def __aenter__(self):
-        """
-        Initialisiert asynchrone Ressourcen (z.B. API-Clients) der untergeordneten Komponenten.
-        """
+        """Initialisiert asynchrone Ressourcen"""
         self.logger.info("Initialisiere asynchrone Ressourcen für LowCapAnalyzer")
-
         try:
             # Erstelle Instanzen der Komponenten mit asynchroner Initialisierung
-            # TokenAnalyzer erwartet die Config im Konstruktor
             self.token_analyzer = TokenAnalyzer(self.config)
-            # TokenAnalyzer hat __aenter__, also rufen wir es auf
             await self.token_analyzer.__aenter__()
-
-            # AdvancedRiskAssessor hat keinen __aenter__ in der bereitgestellten Version
-            # Aber wir erstellen eine Instanz
+            
             self.risk_assessor = AdvancedRiskAssessor()
-
-            # MultiChainScoringEngine hat keinen __aenter__ in der bereitgestellten Version
             self.scoring_engine = MultiChainScoringEngine()
-
-            # WalletClassifier (EnhancedWalletClassifier) hat __aenter__
             self.wallet_classifier = WalletClassifier()
             await self.wallet_classifier.__aenter__()
-
+            
             self.logger.info("Asynchrone Ressourcen erfolgreich initialisiert")
             return self
-
         except Exception as e:
             self.logger.error(f"Fehler bei der Initialisierung der Ressourcen: {str(e)}")
-            # Bei Fehlern in __aenter__ sollten wir versuchen, bereits initialisierte Ressourcen zu schließen
             await self.__aexit__(type(e), e, e.__traceback__)
             raise CustomAnalysisException(f"Initialisierung fehlgeschlagen: {str(e)}")
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """
-        Schließt asynchrone Ressourcen der untergeordneten Komponenten.
-        """
+        """Schließt asynchrone Ressourcen"""
         self.logger.info("Schließe asynchrone Ressourcen für LowCapAnalyzer")
-
+        
         # Schließe alle Komponenten in umgekehrter Reihenfolge der Erstellung
-        # Prüfe, ob die Komponente existiert und eine __aexit__ Methode hat
+        close_tasks = []
+        
         if self.wallet_classifier and hasattr(self.wallet_classifier, '__aexit__'):
-            try:
-                await self.wallet_classifier.__aexit__(exc_type, exc_val, exc_tb)
-            except Exception as e:
-                self.logger.warning(f"Fehler beim Schließen von wallet_classifier: {e}")
-
-        # TokenAnalyzer hat __aexit__
+            close_tasks.append(self._safe_close_component(
+                self.wallet_classifier, exc_type, exc_val, exc_tb, "wallet_classifier"))
+        
         if self.token_analyzer and hasattr(self.token_analyzer, '__aexit__'):
-            try:
-                await self.token_analyzer.__aexit__(exc_type, exc_val, exc_tb)
-            except Exception as e:
-                self.logger.warning(f"Fehler beim Schließen von token_analyzer: {e}")
-
-        # AdvancedRiskAssessor und MultiChainScoringEngine haben keine __aexit__ Methode,
-        # also brauchen wir sie nicht explizit schließen
-
+            close_tasks.append(self._safe_close_component(
+                self.token_analyzer, exc_type, exc_val, exc_tb, "token_analyzer"))
+        
+        # Alle Schließvorgänge parallel ausführen
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+        
         self.logger.info("Asynchrone Ressourcen erfolgreich geschlossen")
 
+    async def _safe_close_component(self, component, exc_type, exc_val, exc_tb, component_name):
+        """Sicheres Schließen einer Komponente"""
+        try:
+            await component.__aexit__(exc_type, exc_val, exc_tb)
+        except Exception as e:
+            self.logger.warning(f"Fehler beim Schließen von {component_name}: {str(e)}")
+
     async def analyze_custom_token(self, token_address: str, chain: str) -> Dict[str, Any]:
-        """
-        Zentrale Analyse-Methode für einen einzelnen Token.
-        Diese Methode delegiert die Arbeit an den bereits instanziierten TokenAnalyzer.
-
-        Args:
-            token_address: Die Adresse des zu analysierenden Tokens
-            chain: Die Blockchain, auf der der Token gehandelt wird
-
-        Returns:
-            Ein Dictionary mit allen Analyseergebnissen
-
-        Raises:
-            ValidationException: Bei ungültigen Eingabeparametern
-            CustomAnalysisException: Bei Fehlern während der Analyse
-        """
+        """Zentrale Analyse-Methode für einen einzelnen Token"""
         self.logger.info(f"Starte Analyse für Token {token_address} auf Chain {chain}")
-
+        
         # Validierung der Eingabeparameter
         if not token_address or not isinstance(token_address, str) or not token_address.strip():
             error_msg = "Token-Adresse muss ein nicht-leerer String sein"
             self.logger.error(error_msg)
             raise ValidationException(error_msg, field="token_address")
-
+        
         if not chain or not isinstance(chain, str) or not chain.strip():
             error_msg = "Chain muss ein nicht-leerer String sein"
             self.logger.error(error_msg)
             raise ValidationException(error_msg, field="chain")
-
+        
         # Normalisiere Chain-Name (kleinschreibung)
         chain = chain.lower().strip()
-
+        
         # Prüfe, ob der TokenAnalyzer initialisiert ist
         if not self.token_analyzer:
             error_msg = "TokenAnalyzer ist nicht initialisiert. Verwenden Sie den Analyzer innerhalb eines async-Kontext-Managers (async with)."
             self.logger.error(error_msg)
             raise CustomAnalysisException(error_msg)
-
+        
         try:
             # Delegiere die Analyse an den TokenAnalyzer
-            # TokenAnalyzer hat bereits eine Methode analyze_custom_token
             result = await self.token_analyzer.analyze_custom_token(token_address, chain)
-
             self.logger.info(f"Analyse für Token {token_address} auf Chain {chain} abgeschlossen")
             return result
-
+        except ValueError as e:
+            # Spezielle Behandlung für "Token data could not be retrieved" Fehler
+            if "Token data could not be retrieved" in str(e):
+                self.logger.error(f"Konnte Tokendaten nicht abrufen für {token_address} auf {chain}: {str(e)}")
+                raise CustomAnalysisException(
+                    "Tokendaten konnten nicht abgerufen werden. Bitte überprüfen Sie die Token-Adresse oder versuchen Sie es später erneut."
+                ) from e
+            raise CustomAnalysisException(f"Analyse fehlgeschlagen: {str(e)}") from e
         except (APIException, NotFoundException) as e:
             self.logger.error(f"Externer Fehler bei der Token-Analyse: {str(e)}")
             raise CustomAnalysisException(f"Analyse fehlgeschlagen: {str(e)}") from e
