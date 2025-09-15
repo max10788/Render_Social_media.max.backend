@@ -29,13 +29,8 @@ class PriceService:
         self.cache = {}  # Einfacher Cache für Token-Preise
         self.cache_expiry = 300  # 5 Minuten Cache
         
-        # Bestimme die Basis-URL basierend auf dem API-Schlüssel
-        if self.coingecko_api_key and self.coingecko_api_key.startswith('CG-'):
-            self.base_url = "https://pro-api.coingecko.com/api/v3"  # Pro-API
-            logger.info("Using CoinGecko Pro API endpoint")
-        else:
-            self.base_url = "https://api.coingecko.com/api/v3"  # Öffentliche API
-            logger.warning("Using CoinGecko public API endpoint")
+        # Standardmäßig öffentliche API verwenden
+        self.base_url = "https://api.coingecko.com/api/v3"
         
         # Protokolliere den Status des API-Schlüssels (maskiert für Sicherheit)
         if self.coingecko_api_key:
@@ -65,18 +60,30 @@ class PriceService:
             return
             
         try:
-            # Teste den API-Schlüssel mit einer einfachen Anfrage
-            url = f"{self.base_url}/ping"
+            # Zuerst mit der öffentlichen API testen
+            url = "https://api.coingecko.com/api/v3/ping"
             headers = {"x-cg-pro-api-key": self.coingecko_api_key}
             
             async with self.session.get(url, headers=headers) as response:
                 if response.status == 200:
                     self.api_key_valid = True
-                    logger.info("CoinGecko API key is valid")
+                    self.base_url = "https://api.coingecko.com/api/v3"
+                    logger.info("CoinGecko API key is valid with public API")
                 else:
                     error_text = await response.text()
-                    logger.error(f"CoinGecko API key validation failed: {response.status} - {error_text}")
-                    self.api_key_valid = False
+                    logger.error(f"CoinGecko API key validation failed with public API: {response.status} - {error_text}")
+                    
+                    # Pro-API testen
+                    url = "https://pro-api.coingecko.com/api/v3/ping"
+                    async with self.session.get(url, headers=headers) as response2:
+                        if response2.status == 200:
+                            self.api_key_valid = True
+                            self.base_url = "https://pro-api.coingecko.com/api/v3"
+                            logger.info("CoinGecko API key is valid with Pro API")
+                        else:
+                            error_text2 = await response2.text()
+                            logger.error(f"CoinGecko API key validation failed with Pro API: {response2.status} - {error_text2}")
+                            self.api_key_valid = False
         except Exception as e:
             logger.error(f"Error validating CoinGecko API key: {e}")
             self.api_key_valid = False
