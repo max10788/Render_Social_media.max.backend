@@ -232,6 +232,7 @@ class TokenAnalyzer:
             logger.error(f"Error analyzing token {token_data.symbol}: {e}")
             return None
     
+    @retry_with_backoff(max_retries=3, base_delay=2, max_delay=30)
     async def analyze_custom_token(self, token_address: str, chain: str) -> Dict[str, Any]:
         """Analysiert einen einzelnen, benutzerdefinierten Token"""
         try:
