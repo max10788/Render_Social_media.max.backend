@@ -10,6 +10,7 @@ from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, RateLimitExceededException
 from app.core.backend_crypto_tracker.config.blockchain_api_keys import chain_config
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
+from app.core.backend_crypto_tracker.services.multichain.multi_api_service import MultiAPIService
 
 logger = get_logger(__name__)
 
@@ -19,6 +20,8 @@ class TokenPriceData:
     market_cap: float
     volume_24h: float
     price_change_percentage_24h: Optional[float] = None
+    source: str = ""
+    confidence_score: float = 1.0  # 0.0 - 1.0, basierend auf Datenqualität
 
 class PriceService:
     def __init__(self, coingecko_api_key: Optional[str] = None):
