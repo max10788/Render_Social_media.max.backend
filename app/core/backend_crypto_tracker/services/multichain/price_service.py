@@ -30,6 +30,7 @@ class PriceService:
         self.api_key_valid = False
         self.cache = {}  # Einfacher Cache für Token-Preise
         self.cache_expiry = 300  # 5 Minuten Cache
+        self.multi_api_service = MultiAPIService()
         
         # Für Demo-API-Schlüssel immer die öffentliche API verwenden
         self.base_url = "https://api.coingecko.com/api/v3"
@@ -48,9 +49,11 @@ class PriceService:
         self.session = aiohttp.ClientSession()
         # Validiere den API-Schlüssel beim Start
         await self._validate_api_key()
+        await self.multi_api_service.__aenter__()
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.multi_api_service.__aexit__(exc_type, exc_val, exc_tb)
         if self.session:
             await self.session.close()
     
