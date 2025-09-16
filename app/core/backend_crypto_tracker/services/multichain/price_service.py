@@ -4,13 +4,17 @@ import logging
 import os
 import time
 import json
+import asyncio
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
+from datetime import datetime, timedelta
+
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, RateLimitExceededException
 from app.core.backend_crypto_tracker.config.blockchain_api_keys import chain_config
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 from app.core.backend_crypto_tracker.services.multichain.multi_api_service import MultiAPIService
+from app.core.backend_crypto_tracker.services.multichain.api_providers import TokenPriceData as APITokenPriceData
 
 logger = get_logger(__name__)
 
@@ -23,6 +27,54 @@ class TokenPriceData:
     source: str = ""
     confidence_score: float = 1.0  # 0.0 - 1.0, basierend auf Datenqualität
 
+class APIRateLimiter:
+    """Einfacher Rate-Limiter für API-Anfragen"""
+    
+    def __init__(self):
+        self.request_timestamps = {}
+        self.limits = {}
+    
+    async def acquire(self, service_name: str, max_requests: int, time_window: int) -> bool:
+        """Prüft, ob eine Anfrage gemacht werden kann"""
+        current_time = time.time()
+        
+        if service_name not in self.request_timestamps:
+            self.request_timestamps[service_name] = []
+        
+        # Alte Zeitstempel entfernen
+        window_start = current_time - time_window
+        self.request_timestamps[service_name] = [
+            ts for ts in self.request_timestamps[service_name] if ts > window_start
+        ]
+        
+        # Prüfen, ob das Limit erreicht ist
+        if len(self.request_timestamps[service_name]) >= max_requests:
+            return False
+        
+        # Neue Anfrage hinzufügen
+        self.request_timestamps[service_name].append(current_time)
+        return True
+    
+    def get_wait_time(self, service_name: str, max_requests: int, time_window: int) -> float:
+        """Berechnet die Wartezeit bis zur nächsten Anfrage"""
+        current_time = time.time()
+        
+        if service_name not in self.request_timestamps:
+            return 0
+        
+        # Alte Zeitstempel entfernen
+        window_start = current_time - time_window
+        self.request_timestamps[service_name] = [
+            ts for ts in self.request_timestamps[service_name] if ts > window_start
+        ]
+        
+        # Wenn das Limit erreicht ist, berechne Wartezeit
+        if len(self.request_timestamps[service_name]) >= max_requests:
+            oldest_request = min(self.request_timestamps[service_name])
+            return max(0, (oldest_request + time_window) - current_time)
+        
+        return 0
+
 class PriceService:
     def __init__(self, coingecko_api_key: Optional[str] = None):
         self.coingecko_api_key = coingecko_api_key or os.getenv('COINGECKO_API_KEY')
@@ -30,7 +82,12 @@ class PriceService:
         self.api_key_valid = False
         self.cache = {}  # Einfacher Cache für Token-Preise
         self.cache_expiry = 300  # 5 Minuten Cache
+        
+        # Multi-API-Service für Lastverteilung
         self.multi_api_service = MultiAPIService()
+        
+        # Rate-Limiter für direkte API-Aufrufe
+        self.rate_limiter = APIRateLimiter()
         
         # Für Demo-API-Schlüssel immer die öffentliche API verwenden
         self.base_url = "https://api.coingecko.com/api/v3"
@@ -44,14 +101,14 @@ class PriceService:
             logger.info(f"CoinGecko API key configured: {masked_key}")
         else:
             logger.warning("No CoinGecko API key configured - using public API with rate limits")
-        
+    
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
         # Validiere den API-Schlüssel beim Start
         await self._validate_api_key()
         await self.multi_api_service.__aenter__()
         return self
-        
+    
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.multi_api_service.__aexit__(exc_type, exc_val, exc_tb)
         if self.session:
@@ -95,7 +152,7 @@ class PriceService:
         self.cache[key] = (data, time.time())
     
     async def get_token_price(self, token_address: str, chain: str) -> TokenPriceData:
-        """Holt Preisinformationen für ein Token basierend auf der Blockchain"""
+        """Holt Preisinformationen für ein Token basierend auf der Blockchain mit Multi-API-Fallback"""
         if not chain_config.is_supported(chain):
             raise ValueError(f"Unsupported chain: {chain}")
         
@@ -106,22 +163,65 @@ class PriceService:
             logger.debug(f"Using cached data for {token_address}")
             return cached_data
         
-        if chain in ['ethereum', 'bsc']:
-            return await self._get_evm_token_price(token_address, chain)
-        elif chain == 'solana':
-            return await self._get_solana_token_price(token_address)
-        elif chain == 'sui':
-            return await self._get_sui_token_price(token_address)
-        else:
-            return TokenPriceData(price=0, market_cap=0, volume_24h=0)
+        try:
+            # Haupt-API-Anfrage mit Lastverteilung
+            api_price_data = await self.multi_api_service.get_token_price(token_address, chain)
+            
+            if api_price_data:
+                # Konvertiere API-TokenPriceData zu lokalem TokenPriceData
+                token_data = TokenPriceData(
+                    price=api_price_data.price,
+                    market_cap=api_price_data.market_cap,
+                    volume_24h=api_price_data.volume_24h,
+                    price_change_percentage_24h=api_price_data.price_change_percentage_24h,
+                    source=api_price_data.source,
+                    confidence_score=self._calculate_confidence_score(api_price_data)
+                )
+                
+                # Speichere im Cache
+                self._save_to_cache(cache_key, token_data)
+                return token_data
+            else:
+                logger.warning(f"No price data found for {token_address}")
+                raise ValueError(f"Token data could not be retrieved for {token_address} on {chain}")
+                
+        except Exception as e:
+            logger.error(f"Error fetching token price: {e}")
+            raise APIException(f"Failed to fetch token price: {str(e)}")
+    
+    def _calculate_confidence_score(self, price_data: APITokenPriceData) -> float:
+        """Berechnet einen Confidence-Score basierend auf der Datenqualität"""
+        score = 1.0
+        
+        # Reduziere Score, wenn wichtige Daten fehlen
+        if price_data.market_cap == 0:
+            score -= 0.3
+        
+        if price_data.volume_24h == 0:
+            score -= 0.2
+        
+        if price_data.price_change_percentage_24h is None:
+            score -= 0.1
+        
+        # Reduziere Score für bestimmte Quellen
+        if price_data.source == "Binance":
+            score -= 0.05  # Binance hat oft weniger vollständige Daten
+        
+        return max(0.1, score)  # Mindestens 0.1
     
     async def _get_evm_token_price(self, token_address: str, chain: str) -> TokenPriceData:
-        """Preis für EVM-basierte Token (Ethereum, BSC)"""
+        """Preis für EVM-basierte Token (Ethereum, BSC) mit Rate-Limiting"""
         platform_id = 'ethereum' if chain == 'ethereum' else 'binance-smart-chain'
         
         # Zuerst mit CoinGecko versuchen
         if self.api_key_valid:
             try:
+                # Rate-Limiting prüfen
+                wait_time = self.rate_limiter.get_wait_time("CoinGecko", 10, 60)
+                if wait_time > 0:
+                    logger.warning(f"Rate limit reached for CoinGecko, waiting {wait_time:.2f}s")
+                    await asyncio.sleep(wait_time)
+                
                 token_data = await self._get_from_coingecko(token_address, platform_id)
                 if token_data:
                     # Speichere im Cache
@@ -135,7 +235,7 @@ class PriceService:
         return await self._get_evm_token_price_fallback(token_address, chain)
     
     async def _get_from_coingecko(self, token_address: str, platform_id: str) -> Optional[TokenPriceData]:
-        """Holt Tokendaten von CoinGecko"""
+        """Holt Tokendaten von CoinGecko mit Rate-Limiting"""
         # Verwende die öffentliche API für Demo-Schlüssel
         url = f"{self.base_url}/simple/token_price/{platform_id}"
         params = {
@@ -158,7 +258,7 @@ class PriceService:
                 if response.status == 429:
                     error_text = await response.text()
                     logger.error(f"Rate limit exceeded. Response: {error_text}")
-                    raise RateLimitExceededException("CoinGecko", 50, "minute")
+                    raise RateLimitExceededException("CoinGecko", 10, "minute")
                 
                 response.raise_for_status()
                 data = await response.json()
@@ -182,7 +282,7 @@ class PriceService:
             return None
     
     async def _get_evm_token_price_fallback(self, token_address: str, chain: str) -> TokenPriceData:
-        """Holt Tokendaten von alternativen Quellen für EVM-Chains"""
+        """Holt Tokendaten von alternativen Quellen für EVM-Chains mit Rate-Limiting"""
         # Für Ethereum können wir DEX APIs wie Uniswap oder 1inch verwenden
         # Für BSC können wir PancakeSwap verwenden
         
@@ -216,8 +316,14 @@ class PriceService:
         return TokenPriceData(price=0, market_cap=0, volume_24h=0)
     
     async def _get_uniswap_price(self, token_address: str) -> TokenPriceData:
-        """Holt Token-Preis von Uniswap"""
+        """Holt Token-Preis von Uniswap mit Rate-Limiting"""
         try:
+            # Rate-Limiting prüfen
+            wait_time = self.rate_limiter.get_wait_time("Uniswap", 30, 60)
+            if wait_time > 0:
+                logger.warning(f"Rate limit reached for Uniswap, waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+            
             # Uniswap V3 API
             url = "https://api.uniswap.org/v1/quote"
             params = {
@@ -242,7 +348,8 @@ class PriceService:
                         price=price,
                         market_cap=0,  # Nicht verfügbar
                         volume_24h=0,  # Nicht verfügbar
-                        price_change_percentage_24h=0  # Nicht verfügbar
+                        price_change_percentage_24h=0,  # Nicht verfügbar
+                        source="Uniswap"
                     )
         except Exception as e:
             logger.error(f"Error fetching from Uniswap: {e}")
@@ -252,8 +359,14 @@ class PriceService:
         return await self._get_etherscan_price(token_address)
     
     async def _get_etherscan_price(self, token_address: str) -> TokenPriceData:
-        """Holt Token-Preis von Etherscan"""
+        """Holt Token-Preis von Etherscan mit Rate-Limiting"""
         try:
+            # Rate-Limiting prüfen
+            wait_time = self.rate_limiter.get_wait_time("Etherscan", 5, 60)
+            if wait_time > 0:
+                logger.warning(f"Rate limit reached for Etherscan, waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+            
             # Etherscan API
             url = "https://api.etherscan.io/api"
             params = {
@@ -273,7 +386,8 @@ class PriceService:
                         price=float(result.get('ethusd', 0)),
                         market_cap=0,  # Nicht verfügbar
                         volume_24h=0,  # Nicht verfügbar
-                        price_change_percentage_24h=0  # Nicht verfügbar
+                        price_change_percentage_24h=0,  # Nicht verfügbar
+                        source="Etherscan"
                     )
         except Exception as e:
             logger.error(f"Error fetching from Etherscan: {e}")
@@ -281,8 +395,14 @@ class PriceService:
         return TokenPriceData(price=0, market_cap=0, volume_24h=0)
     
     async def _get_bscscan_price(self, token_address: str) -> TokenPriceData:
-        """Holt Token-Preis von BscScan"""
+        """Holt Token-Preis von BscScan mit Rate-Limiting"""
         try:
+            # Rate-Limiting prüfen
+            wait_time = self.rate_limiter.get_wait_time("BscScan", 5, 60)
+            if wait_time > 0:
+                logger.warning(f"Rate limit reached for BscScan, waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+            
             # BscScan API
             url = "https://api.bscscan.com/api"
             params = {
@@ -302,7 +422,8 @@ class PriceService:
                         price=float(result.get('bnbusd', 0)),
                         market_cap=0,  # Nicht verfügbar
                         volume_24h=0,  # Nicht verfügbar
-                        price_change_percentage_24h=0  # Nicht verfügbar
+                        price_change_percentage_24h=0,  # Nicht verfügbar
+                        source="BscScan"
                     )
         except Exception as e:
             logger.error(f"Error fetching from BscScan: {e}")
@@ -310,8 +431,14 @@ class PriceService:
         return TokenPriceData(price=0, market_cap=0, volume_24h=0)
     
     async def _get_pancakeswap_price(self, token_address: str) -> TokenPriceData:
-        """Holt Token-Preis von PancakeSwap"""
+        """Holt Token-Preis von PancakeSwap mit Rate-Limiting"""
         try:
+            # Rate-Limiting prüfen
+            wait_time = self.rate_limiter.get_wait_time("PancakeSwap", 30, 60)
+            if wait_time > 0:
+                logger.warning(f"Rate limit reached for PancakeSwap, waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+            
             # PancakeSwap V2 API
             url = "https://api.pancakeswap.info/api/v2/tokens/" + token_address
             
@@ -325,7 +452,8 @@ class PriceService:
                         price=float(token_data.get('price_BNB', 0)),
                         market_cap=0,  # Nicht verfügbar
                         volume_24h=0,  # Nicht verfügbar
-                        price_change_percentage_24h=0  # Nicht verfügbar
+                        price_change_percentage_24h=0,  # Nicht verfügbar
+                        source="PancakeSwap"
                     )
         except Exception as e:
             logger.error(f"Error fetching from PancakeSwap: {e}")
@@ -358,10 +486,16 @@ class PriceService:
     
     async def _get_solana_price_jupiter(self, token_address: str) -> TokenPriceData:
         """Fallback: Jupiter API für Solana Token Preise"""
-        url = f"https://price.jup.ag/v4/price"
-        params = {'ids': token_address}
-        
         try:
+            # Rate-Limiting prüfen
+            wait_time = self.rate_limiter.get_wait_time("Jupiter", 60, 60)
+            if wait_time > 0:
+                logger.warning(f"Rate limit reached for Jupiter, waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+            
+            url = f"https://price.jup.ag/v4/price"
+            params = {'ids': token_address}
+            
             async with self.session.get(url, params=params) as response:
                 response.raise_for_status()
                 data = await response.json()
@@ -371,7 +505,8 @@ class PriceService:
                     result = TokenPriceData(
                         price=token_data.get('price', 0),
                         market_cap=0,  # Jupiter API bietet keine Market Cap
-                        volume_24h=0
+                        volume_24h=0,
+                        source="Jupiter"
                     )
                     # Speichere im Cache
                     self._save_to_cache(f"solana:{token_address}", result)
