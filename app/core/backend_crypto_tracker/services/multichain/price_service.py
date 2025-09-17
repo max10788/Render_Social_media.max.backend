@@ -8,16 +8,13 @@ import asyncio
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, RateLimitExceededException
 from app.core.backend_crypto_tracker.config.blockchain_api_keys import chain_config
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 from app.core.backend_crypto_tracker.services.multichain.multi_api_service import MultiAPIService
 from app.core.backend_crypto_tracker.services.multichain.api_providers import TokenPriceData as APITokenPriceData
-
 logger = get_logger(__name__)
-
 @dataclass
 class TokenPriceData:
     price: float
@@ -26,7 +23,6 @@ class TokenPriceData:
     price_change_percentage_24h: Optional[float] = None
     source: str = ""
     confidence_score: float = 1.0  # 0.0 - 1.0, basierend auf Datenqualität
-
 class APIRateLimiter:
     """Einfacher Rate-Limiter für API-Anfragen"""
     
@@ -74,7 +70,6 @@ class APIRateLimiter:
             return max(0, (oldest_request + time_window) - current_time)
         
         return 0
-
 class PriceService:
     def __init__(self, coingecko_api_key: Optional[str] = None):
         self.coingecko_api_key = coingecko_api_key or os.getenv('COINGECKO_API_KEY')
@@ -88,6 +83,16 @@ class PriceService:
         
         # Rate-Limiter für direkte API-Aufrufe
         self.rate_limiter = APIRateLimiter()
+        
+        # API-Limits für verschiedene Dienste
+        self.API_LIMITS = {
+            "CoinGecko": (10, 60),   # 10 req/min
+            "Uniswap": (30, 60),
+            "Etherscan": (5, 60),
+            "BscScan": (5, 60),
+            "PancakeSwap": (30, 60),
+            "Jupiter": (60, 60),
+        }
         
         # Für Demo-API-Schlüssel immer die öffentliche API verwenden
         self.base_url = "https://api.coingecko.com/api/v3"
@@ -216,9 +221,10 @@ class PriceService:
         # Zuerst mit CoinGecko versuchen
         if self.api_key_valid:
             try:
-                # Rate-Limiting prüfen
-                wait_time = self.rate_limiter.get_wait_time("CoinGecko", 10, 60)
-                if wait_time > 0:
+                # Rate-Limiting mit korrektem acquire-Aufruf
+                max_req, window = self.API_LIMITS["CoinGecko"]
+                while not await self.rate_limiter.acquire("CoinGecko", max_req, window):
+                    wait_time = self.rate_limiter.get_wait_time("CoinGecko", max_req, window)
                     logger.warning(f"Rate limit reached for CoinGecko, waiting {wait_time:.2f}s")
                     await asyncio.sleep(wait_time)
                 
@@ -316,11 +322,12 @@ class PriceService:
         return TokenPriceData(price=0, market_cap=0, volume_24h=0)
     
     async def _get_uniswap_price(self, token_address: str) -> TokenPriceData:
-        """Holt Token-Preis von Uniswap mit Rate-Limiting"""
+        """Holt Token-Preis von Uniswap mit korrektem Rate-Limiting"""
         try:
-            # Rate-Limiting prüfen
-            wait_time = self.rate_limiter.get_wait_time("Uniswap", 30, 60)
-            if wait_time > 0:
+            # Rate-Limiting mit korrektem acquire-Aufruf
+            max_req, window = self.API_LIMITS["Uniswap"]
+            while not await self.rate_limiter.acquire("Uniswap", max_req, window):
+                wait_time = self.rate_limiter.get_wait_time("Uniswap", max_req, window)
                 logger.warning(f"Rate limit reached for Uniswap, waiting {wait_time:.2f}s")
                 await asyncio.sleep(wait_time)
             
@@ -359,11 +366,12 @@ class PriceService:
         return await self._get_etherscan_price(token_address)
     
     async def _get_etherscan_price(self, token_address: str) -> TokenPriceData:
-        """Holt Token-Preis von Etherscan mit Rate-Limiting"""
+        """Holt Token-Preis von Etherscan mit korrektem Rate-Limiting"""
         try:
-            # Rate-Limiting prüfen
-            wait_time = self.rate_limiter.get_wait_time("Etherscan", 5, 60)
-            if wait_time > 0:
+            # Rate-Limiting mit korrektem acquire-Aufruf
+            max_req, window = self.API_LIMITS["Etherscan"]
+            while not await self.rate_limiter.acquire("Etherscan", max_req, window):
+                wait_time = self.rate_limiter.get_wait_time("Etherscan", max_req, window)
                 logger.warning(f"Rate limit reached for Etherscan, waiting {wait_time:.2f}s")
                 await asyncio.sleep(wait_time)
             
@@ -395,11 +403,12 @@ class PriceService:
         return TokenPriceData(price=0, market_cap=0, volume_24h=0)
     
     async def _get_bscscan_price(self, token_address: str) -> TokenPriceData:
-        """Holt Token-Preis von BscScan mit Rate-Limiting"""
+        """Holt Token-Preis von BscScan mit korrektem Rate-Limiting"""
         try:
-            # Rate-Limiting prüfen
-            wait_time = self.rate_limiter.get_wait_time("BscScan", 5, 60)
-            if wait_time > 0:
+            # Rate-Limiting mit korrektem acquire-Aufruf
+            max_req, window = self.API_LIMITS["BscScan"]
+            while not await self.rate_limiter.acquire("BscScan", max_req, window):
+                wait_time = self.rate_limiter.get_wait_time("BscScan", max_req, window)
                 logger.warning(f"Rate limit reached for BscScan, waiting {wait_time:.2f}s")
                 await asyncio.sleep(wait_time)
             
@@ -431,11 +440,12 @@ class PriceService:
         return TokenPriceData(price=0, market_cap=0, volume_24h=0)
     
     async def _get_pancakeswap_price(self, token_address: str) -> TokenPriceData:
-        """Holt Token-Preis von PancakeSwap mit Rate-Limiting"""
+        """Holt Token-Preis von PancakeSwap mit korrektem Rate-Limiting"""
         try:
-            # Rate-Limiting prüfen
-            wait_time = self.rate_limiter.get_wait_time("PancakeSwap", 30, 60)
-            if wait_time > 0:
+            # Rate-Limiting mit korrektem acquire-Aufruf
+            max_req, window = self.API_LIMITS["PancakeSwap"]
+            while not await self.rate_limiter.acquire("PancakeSwap", max_req, window):
+                wait_time = self.rate_limiter.get_wait_time("PancakeSwap", max_req, window)
                 logger.warning(f"Rate limit reached for PancakeSwap, waiting {wait_time:.2f}s")
                 await asyncio.sleep(wait_time)
             
@@ -485,11 +495,12 @@ class PriceService:
         return await self._get_solana_price_jupiter(token_address)
     
     async def _get_solana_price_jupiter(self, token_address: str) -> TokenPriceData:
-        """Fallback: Jupiter API für Solana Token Preise"""
+        """Fallback: Jupiter API für Solana Token Preise mit korrektem Rate-Limiting"""
         try:
-            # Rate-Limiting prüfen
-            wait_time = self.rate_limiter.get_wait_time("Jupiter", 60, 60)
-            if wait_time > 0:
+            # Rate-Limiting mit korrektem acquire-Aufruf
+            max_req, window = self.API_LIMITS["Jupiter"]
+            while not await self.rate_limiter.acquire("Jupiter", max_req, window):
+                wait_time = self.rate_limiter.get_wait_time("Jupiter", max_req, window)
                 logger.warning(f"Rate limit reached for Jupiter, waiting {wait_time:.2f}s")
                 await asyncio.sleep(wait_time)
             
