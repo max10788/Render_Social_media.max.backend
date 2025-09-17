@@ -80,6 +80,32 @@ class BaseAPIProvider(ABC):
             logger.error(f"Network error for {self.name}: {e}")
             raise APIException(f"Network error: {str(e)}")
     
+    async def _make_post_request(self, url: str, json_data: Dict[str, Any], headers: Dict[str, str] = None) -> Dict[str, Any]:
+        """Interne Methode für POST-Anfragen mit Rate-Limiting"""
+        # Rate-Limiting prüfen
+        if not await self.rate_limiter.acquire(self.name, 10, 60):  # 10 Anfragen pro Minute
+            raise RateLimitExceededException(self.name, 10, "minute")
+        
+        # Mindestabstand zwischen Anfragen
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        if time_since_last < self.min_request_interval:
+            await asyncio.sleep(self.min_request_interval - time_since_last)
+        self.last_request_time = time.time()
+        
+        try:
+            async with self.session.post(url, json=json_data, headers=headers) as response:
+                if response.status == 429:
+                    error_text = await response.text()
+                    logger.warning(f"Rate limit exceeded for {self.name}: {error_text}")
+                    raise RateLimitExceededException(self.name, 10, "minute")
+                
+                response.raise_for_status()
+                return await response.json()
+        except aiohttp.ClientError as e:
+            logger.error(f"Network error for {self.name}: {e}")
+            raise APIException(f"Network error: {str(e)}")
+    
     def check_availability(self) -> bool:
         """Prüft, ob der Anbieter verfügbar ist"""
         return self.is_available
@@ -341,6 +367,241 @@ class BinanceProvider(BaseAPIProvider):
     
     def get_rate_limits(self) -> Dict[str, int]:
         return {"requests_per_minute": 1200, "requests_per_day": 100000}
+class BitgetProvider(BaseAPIProvider):
+    """Bitget API-Anbieter"""
+    
+    def __init__(self, api_key: Optional[str] = None):
+        super().__init__("Bitget", "https://api.bitget.com/api/spot/v1", api_key, "BITGET_API_KEY")
+    
+    async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
+        try:
+            # Bitget verwendet Symbolnamen statt Contract-Adressen
+            # Wir versuchen, das Symbol aus der Adresse abzuleiten
+            symbol = self._get_symbol_from_address(token_address, chain)
+            if not symbol:
+                return None
+            
+            url = f"{self.base_url}/ticker"
+            params = {
+                'symbol': symbol
+            }
+            
+            data = await self._make_request(url, params)
+            
+            if data.get('data') and len(data['data']) > 0:
+                ticker = data['data'][0]
+                return TokenPriceData(
+                    price=float(ticker.get('lastPr', 0)),
+                    market_cap=0,  # Nicht verfügbar
+                    volume_24h=float(ticker.get('baseVol', 0)),
+                    price_change_percentage_24h=float(ticker.get('change24h', 0)),
+                    source=self.name
+                )
+        except Exception as e:
+            logger.error(f"Error fetching from Bitget: {e}")
+        
+        return None
+    
+    def _get_symbol_from_address(self, token_address: str, chain: str) -> Optional[str]:
+        """Versucht, das Trading-Symbol aus der Contract-Adresse abzuleiten"""
+        # In einer echten Implementierung müsste hier eine Mapping-Logik oder Datenbankabfrage erfolgen
+        # Für dieses Beispiel geben wir nur einige bekannte Symbole zurück
+        known_tokens = {
+            'ethereum': {
+                '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': 'ETHUSDT',  # WETH
+                '0x6B175474E89094C44Da98b954EedeAC495271d0F': 'DAIUSDT'   # DAI
+            },
+            'bsc': {
+                '0x55d398326f99059fF775485246999027B3197955': 'USDTUSDT',  # USDT
+                '0x2170Ed0880ac9A755fd29B2688956BD959F933F8': 'ETHUSDT'    # WETH
+            }
+        }
+        
+        if chain in known_tokens and token_address in known_tokens[chain]:
+            return known_tokens[chain][token_address]
+        
+        return None
+    
+    def get_rate_limits(self) -> Dict[str, int]:
+        return {"requests_per_minute": 100, "requests_per_hour": 10000}
+class CoinbaseProvider(BaseAPIProvider):
+    """Coinbase API-Anbieter"""
+    
+    def __init__(self, api_key: Optional[str] = None):
+        super().__init__("Coinbase", "https://api.coinbase.com/v2", api_key, "COINBASE_API_KEY")
+    
+    async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
+        try:
+            # Coinbase verwendet Produkt-IDs statt Contract-Adressen
+            product_id = self._get_product_id_from_address(token_address, chain)
+            if not product_id:
+                return None
+            
+            url = f"{self.base_url}/prices/{product_id}/spot"
+            
+            data = await self._make_request(url, {})
+            
+            if data.get('data'):
+                price_data = data['data']
+                return TokenPriceData(
+                    price=float(price_data.get('amount', 0)),
+                    market_cap=0,  # Nicht verfügbar
+                    volume_24h=0,  # Nicht verfügbar
+                    price_change_percentage_24h=0,  # Nicht verfügbar
+                    source=self.name
+                )
+        except Exception as e:
+            logger.error(f"Error fetching from Coinbase: {e}")
+        
+        return None
+    
+    def _get_product_id_from_address(self, token_address: str, chain: str) -> Optional[str]:
+        """Versucht, die Produkt-ID aus der Contract-Adresse abzuleiten"""
+        # In einer echten Implementierung müsste hier eine Mapping-Logik oder Datenbankabfrage erfolgen
+        # Für dieses Beispiel geben wir nur einige bekannte Produkt-IDs zurück
+        known_tokens = {
+            'ethereum': {
+                '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': 'ETH-USD',  # WETH
+                '0x6B175474E89094C44Da98b954EedeAC495271d0F': 'DAI-USD'   # DAI
+            },
+            'bsc': {
+                '0x55d398326f99059fF775485246999027B3197955': 'USDT-USD',  # USDT
+                '0x2170Ed0880ac9A755fd29B2688956BD959F933F8': 'ETH-USD'    # WETH
+            }
+        }
+        
+        if chain in known_tokens and token_address in known_tokens[chain]:
+            return known_tokens[chain][token_address]
+        
+        return None
+    
+    def get_rate_limits(self) -> Dict[str, int]:
+        return {"requests_per_minute": 10, "requests_per_hour": 600}
+class KrakenProvider(BaseAPIProvider):
+    """Kraken API-Anbieter"""
+    
+    def __init__(self, api_key: Optional[str] = None):
+        super().__init__("Kraken", "https://api.kraken.com/0/public", api_key, "KRAKEN_API_KEY")
+    
+    async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
+        try:
+            # Kraken verwendet Paar-Namen statt Contract-Adressen
+            pair = self._get_pair_from_address(token_address, chain)
+            if not pair:
+                return None
+            
+            url = f"{self.base_url}/Ticker"
+            params = {
+                'pair': pair
+            }
+            
+            data = await self._make_request(url, params)
+            
+            if data.get('error') == [] and data.get('result'):
+                result = data['result']
+                # Das Ergebnis enthält den Pair-Namen als Schlüssel
+                pair_key = list(result.keys())[0]
+                ticker = result[pair_key]
+                
+                # Berechne die prozentuale Veränderung aus den Werten
+                open_price = float(ticker.get('o', 0))
+                close_price = float(ticker.get('c', [0, 0])[0])
+                price_change_percentage = ((close_price - open_price) / open_price * 100) if open_price > 0 else 0
+                
+                return TokenPriceData(
+                    price=close_price,
+                    market_cap=0,  # Nicht verfügbar
+                    volume_24h=float(ticker.get('v', [0, 0])[1]),
+                    price_change_percentage_24h=price_change_percentage,
+                    source=self.name
+                )
+        except Exception as e:
+            logger.error(f"Error fetching from Kraken: {e}")
+        
+        return None
+    
+    def _get_pair_from_address(self, token_address: str, chain: str) -> Optional[str]:
+        """Versucht, das Handelspaar aus der Contract-Adresse abzuleiten"""
+        # In einer echten Implementierung müsste hier eine Mapping-Logik oder Datenbankabfrage erfolgen
+        # Für dieses Beispiel geben wir nur einige bekannte Paare zurück
+        known_tokens = {
+            'ethereum': {
+                '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': 'ETHUSD',  # WETH
+                '0x6B175474E89094C44Da98b954EedeAC495271d0F': 'DAIUSD'   # DAI
+            },
+            'bsc': {
+                '0x55d398326f99059fF775485246999027B3197955': 'USDTUSD',  # USDT
+                '0x2170Ed0880ac9A755fd29B2688956BD959F933F8': 'ETHUSD'    # WETH
+            }
+        }
+        
+        if chain in known_tokens and token_address in known_tokens[chain]:
+            return known_tokens[chain][token_address]
+        
+        return None
+    
+    def get_rate_limits(self) -> Dict[str, int]:
+        return {"requests_per_minute": 15, "requests_per_hour": 900}
+class BitqueryProvider(BaseAPIProvider):
+    """Bitquery API-Anbieter (GraphQL)"""
+    
+    def __init__(self, api_key: Optional[str] = None):
+        super().__init__("Bitquery", "https://graphql.bitquery.io", api_key, "BITQUERY_API_KEY")
+        self.min_request_interval = 0.5  # Höheres Rate-Limiting für GraphQL
+    
+    async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
+        try:
+            # Bitquery verwendet GraphQL-Abfragen
+            query = self._build_price_query(token_address, chain)
+            
+            headers = {
+                'Content-Type': 'application/json',
+                'X-API-KEY': self.api_key if self.api_key else ''
+            }
+            
+            data = await self._make_post_request(self.base_url, {'query': query}, headers)
+            
+            if data.get('data') and data['data'].get('ethereum'):
+                token_data = data['data']['ethereum']['dexTrades'][0]
+                return TokenPriceData(
+                    price=float(token_data.get('quotePrice', 0)),
+                    market_cap=0,  # Nicht verfügbar
+                    volume_24h=0,  # Nicht verfügbar
+                    price_change_percentage_24h=0,  # Nicht verfügbar
+                    source=self.name
+                )
+        except Exception as e:
+            logger.error(f"Error fetching from Bitquery: {e}")
+        
+        return None
+    
+    def _build_price_query(self, token_address: str, chain: str) -> str:
+        """Erstellt eine GraphQL-Abfrage für den Token-Preis"""
+        # In einer echten Implementierung müsste die Abfrage an die jeweilige Blockchain angepasst werden
+        # Für dieses Beispiel verwenden wir eine einfache Ethereum-DEX-Abfrage
+        
+        return """
+        {
+          ethereum {
+            dexTrades(
+              options: {limit: 1, desc: "block.timestamp.timeInterval"}
+              baseCurrency: {is: "%s"}
+              quoteCurrency: {is: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"}
+            ) {
+              tradeAmount(in: USD)
+              quotePrice
+              block {
+                timestamp {
+                  timeInterval(minute: 24)
+                }
+              }
+            }
+          }
+        }
+        """ % token_address
+    
+    def get_rate_limits(self) -> Dict[str, int]:
+        return {"requests_per_minute": 60, "requests_per_hour": 3600}
 class RateLimiter:
     """Einfacher Rate-Limiter für API-Anfragen"""
     
