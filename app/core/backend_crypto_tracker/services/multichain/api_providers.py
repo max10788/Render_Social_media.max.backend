@@ -4,15 +4,14 @@ import aiohttp
 import logging
 import time
 import json
+import os
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, RateLimitExceededException
-
 logger = get_logger(__name__)
-
 @dataclass
 class TokenPriceData:
     price: float
@@ -20,14 +19,17 @@ class TokenPriceData:
     volume_24h: float
     price_change_percentage_24h: Optional[float] = None
     source: str = ""  # Welche API hat die Daten geliefert
-
 class BaseAPIProvider(ABC):
     """Basisklasse für alle API-Anbieter"""
     
-    def __init__(self, name: str, base_url: str, api_key: Optional[str] = None):
+    def __init__(self, name: str, base_url: str, api_key: Optional[str] = None, api_key_env: Optional[str] = None):
         self.name = name
         self.base_url = base_url
-        self.api_key = api_key
+        # Wenn kein API-Schlüssel übergeben wurde, versuchen, ihn aus der Umgebungsvariable zu lesen
+        if api_key is None and api_key_env is not None:
+            self.api_key = os.getenv(api_key_env)
+        else:
+            self.api_key = api_key
         self.session = None
         self.rate_limiter = RateLimiter()
         self.last_request_time = 0
@@ -81,16 +83,15 @@ class BaseAPIProvider(ABC):
     def check_availability(self) -> bool:
         """Prüft, ob der Anbieter verfügbar ist"""
         return self.is_available
-
 class CoinGeckoProvider(BaseAPIProvider):
     """CoinGecko API-Anbieter"""
     
     def __init__(self, api_key: Optional[str] = None):
         # Für Demo-API-Schlüssel öffentliche API verwenden
         if api_key and api_key.startswith('CG-'):
-            super().__init__("CoinGecko", "https://api.coingecko.com/api/v3", api_key)
+            super().__init__("CoinGecko", "https://api.coingecko.com/api/v3", api_key, "COINGECKO_API_KEY")
         else:
-            super().__init__("CoinGecko", "https://api.coingecko.com/api/v3", None)
+            super().__init__("CoinGecko", "https://api.coingecko.com/api/v3", None, "COINGECKO_API_KEY")
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
         try:
@@ -135,13 +136,12 @@ class CoinGeckoProvider(BaseAPIProvider):
     
     def get_rate_limits(self) -> Dict[str, int]:
         return {"requests_per_minute": 10, "requests_per_hour": 600}
-
 class CoinMarketCapProvider(BaseAPIProvider):
     """CoinMarketCap API-Anbieter"""
     
     def __init__(self, api_key: Optional[str] = None):
-        super().__init__("CoinMarketCap", "https://pro-api.coinmarketcap.com/v1", api_key)
-        self.min_request_interval = 1.2  # Etwasuch länger für CoinMarketCap
+        super().__init__("CoinMarketCap", "https://pro-api.coinmarketcap.com/v1", api_key, "COINMARKETCAP_API_KEY")
+        self.min_request_interval = 1.2  # Etwas länger für CoinMarketCap
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
         try:
@@ -206,12 +206,11 @@ class CoinMarketCapProvider(BaseAPIProvider):
     
     def get_rate_limits(self) -> Dict[str, int]:
         return {"requests_per_minute": 333, "requests_per_day": 10000}
-
 class CryptoCompareProvider(BaseAPIProvider):
     """CryptoCompare API-Anbieter"""
     
     def __init__(self, api_key: Optional[str] = None):
-        super().__init__("CryptoCompare", "https://min-api.cryptocompare.com/data", api_key)
+        super().__init__("CryptoCompare", "https://min-api.cryptocompare.com/data", api_key, "CRYPTOCOMPARE_API_KEY")
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
         try:
@@ -281,12 +280,11 @@ class CryptoCompareProvider(BaseAPIProvider):
     
     def get_rate_limits(self) -> Dict[str, int]:
         return {"requests_per_minute": 100, "requests_per_hour": 10000}
-
 class BinanceProvider(BaseAPIProvider):
     """Binance API-Anbieter"""
     
     def __init__(self, api_key: Optional[str] = None):
-        super().__init__("Binance", "https://api.binance.com/api/v3", api_key)
+        super().__init__("Binance", "https://api.binance.com/api/v3", api_key, "BINANCE_API_KEY")
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
         try:
@@ -343,7 +341,6 @@ class BinanceProvider(BaseAPIProvider):
     
     def get_rate_limits(self) -> Dict[str, int]:
         return {"requests_per_minute": 1200, "requests_per_day": 100000}
-
 class RateLimiter:
     """Einfacher Rate-Limiter für API-Anfragen"""
     
