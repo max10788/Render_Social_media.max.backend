@@ -7,7 +7,7 @@ from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.cache import CacheManager
 # Importe aktualisiert
 from app.core.backend_crypto_tracker.blockchain.data_models import TokenPriceData
-from app.core.backend_crypto_tracker.blockchain.providers import (
+from app.core.backend_crypto_tracker.blockchain import (
     CoinGeckoProvider, CoinMarketCapProvider, 
     CryptoCompareProvider, BinanceProvider
 )
