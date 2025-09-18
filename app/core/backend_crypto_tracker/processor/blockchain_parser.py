@@ -4,7 +4,9 @@ from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, BlockchainException
-from app.core.backend_crypto_tracker.blockchain import EthereumProvider, SolanaProvider, SuiProvider
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
 from app.core.backend_crypto_tracker.processor.database.models.transaction import Transaction
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 
