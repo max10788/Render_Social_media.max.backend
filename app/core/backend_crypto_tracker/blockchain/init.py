@@ -2,26 +2,27 @@
 Blockchain module for handling all blockchain-related operations.
 """
 
-# Import all providers
-from base_provider import BaseAPIProvider
-from coingecko_provider import CoinGeckoProvider
-from binance_provider import BinanceProvider
-from cryptocompare_provider import CryptoCompareProvider
-from kraken_provider import KrakenProvider
-from bitquery_provider import BitqueryProvider
-from coinmarketcap_provider import CoinMarketCapProvider
-from bitget_provider import BitgetProvider
-from coinbase_provider import CoinbaseProvider
-from bitcoin_provider import BitcoinProvider
-from ethereum_provider import EthereumProvider
-from solana_provider import SolanaProvider
-from sui_provider import SuiProvider
+# Import all providers from subdirectories
+from .aggregators.coingecko_provider import CoinGeckoProvider
+from .aggregators.coinmarketcap_provider import CoinMarketCapProvider
+from .aggregators.cryptocompare_provider import CryptoCompareProvider
 
-# Import rate limiters
-from .rate_limiters.rate_limiter import RateLimiter
+from .blockchain_specific.bitcoin_provider import BitcoinProvider
+from .blockchain_specific.ethereum_provider import EthereumProvider
+from .blockchain_specific.solana_provider import SolanaProvider
+from .blockchain_specific.sui_provider import SuiProvider
 
-# Import data models
+from .exchanges.base_provider import BaseAPIProvider
+from .exchanges.binance_provider import BinanceProvider
+from .exchanges.bitget_provider import BitgetProvider
+from .exchanges.coinbase_provider import CoinbaseProvider
+from .exchanges.kraken_provider import KrakenProvider
+
+from .onchain.bitquery_provider import BitqueryProvider
+from .onchain.etherscan_provider import EtherscanProvider
+
 from .data_models.token_price_data import TokenPriceData
+from .rate_limiters.rate_limiter import RateLimiter
 
 # Make all important classes available at package level
 __all__ = [
@@ -30,23 +31,24 @@ __all__ = [
     'RateLimiter',
     'TokenPriceData',
     
-    # Exchange providers
-    'BinanceProvider',
-    'KrakenProvider',
-    'BitgetProvider',
-    'CoinbaseProvider',
-    
-    # Data aggregators
+    # Aggregator providers
     'CoinGeckoProvider',
-    'CryptoCompareProvider',
     'CoinMarketCapProvider',
-    
-    # On-chain data providers
-    'BitqueryProvider',
+    'CryptoCompareProvider',
     
     # Blockchain-specific providers
     'BitcoinProvider',
     'EthereumProvider',
     'SolanaProvider',
     'SuiProvider',
+    
+    # Exchange providers
+    'BinanceProvider',
+    'BitgetProvider',
+    'CoinbaseProvider',
+    'KrakenProvider',
+    
+    # On-chain data providers
+    'BitqueryProvider',
+    'EtherscanProvider',
 ]
