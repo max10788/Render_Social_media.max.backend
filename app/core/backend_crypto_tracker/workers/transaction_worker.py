@@ -8,14 +8,8 @@ from app.core.backend_crypto_tracker.utils.exceptions import APIException, Datab
 from app.core.backend_crypto_tracker.processor.blockchain_parser import BlockchainParser
 from app.core.backend_crypto_tracker.processor.database.models.transaction import Transaction
 from app.core.backend_crypto_tracker.processor.database.manager import DatabaseManager
-# Alte Importe (entfernen):
-# from app.core.backend_crypto_tracker.services.eth.etherscan_api import EtherscanAPI, BscScanAPI
-# from app.core.backend_crypto_tracker.services.sol.solana_api import SolanaAPI
-# from app.core.backend_crypto_tracker.services.sui.sui_api import SuiAPI
-# Neue Importe (hinzufügen):
-from app.core.backend_crypto_tracker.blockchain.ethereum_provider import EthereumProvider
-from app.core.backend_crypto_tracker.blockchain.solana_provider import SolanaProvider
-from app.core.backend_crypto_tracker.blockchain.sui_provider import SuiProvider
+
+from app.core.backend_crypto_tracker.blockchain import EthereumProvider, SolanaProvider, SuiProvider
 
 logger = get_logger(__name__)
 
