@@ -8,9 +8,14 @@ from app.core.backend_crypto_tracker.utils.exceptions import APIException, Datab
 from app.core.backend_crypto_tracker.processor.blockchain_parser import BlockchainParser
 from app.core.backend_crypto_tracker.processor.database.models.transaction import Transaction
 from app.core.backend_crypto_tracker.processor.database.manager import DatabaseManager
-from app.core.backend_crypto_tracker.services.eth.etherscan_api import EtherscanAPI, BscScanAPI
-from app.core.backend_crypto_tracker.services.sol.solana_api import SolanaAPI
-from app.core.backend_crypto_tracker.services.sui.sui_api import SuiAPI
+# Alte Importe (entfernen):
+# from app.core.backend_crypto_tracker.services.eth.etherscan_api import EtherscanAPI, BscScanAPI
+# from app.core.backend_crypto_tracker.services.sol.solana_api import SolanaAPI
+# from app.core.backend_crypto_tracker.services.sui.sui_api import SuiAPI
+# Neue Importe (hinzufügen):
+from app.core.backend_crypto_tracker.blockchain.providers.ethereum_provider import EthereumProvider
+from app.core.backend_crypto_tracker.blockchain.providers.solana_provider import SolanaProvider
+from app.core.backend_crypto_tracker.blockchain.providers.sui_provider import SuiProvider
 
 logger = get_logger(__name__)
 
@@ -57,10 +62,17 @@ class TransactionWorker:
             )
             
             # API-Clients für verschiedene Blockchains
-            self.etherscan_api = EtherscanAPI(self.config.get('etherscan_api_key'))
-            self.bscscan_api = BscScanAPI(self.config.get('bscscan_api_key'))
-            self.solana_api = SolanaAPI(self.config.get('solana_rpc'))
-            self.sui_api = SuiAPI(self.config.get('sui_rpc'))
+            # Alte Initialisierung (ersetzen):
+            # self.etherscan_api = EtherscanAPI(self.config.get('etherscan_api_key'))
+            # self.bscscan_api = BscScanAPI(self.config.get('bscscan_api_key'))
+            # self.solana_api = SolanaAPI(self.config.get('solana_rpc'))
+            # self.sui_api = SuiAPI(self.config.get('sui_rpc'))
+            
+            # Neue Initialisierung (hinzufügen):
+            self.ethereum_provider = EthereumProvider(self.config.get('etherscan_api_key'))
+            self.bsc_provider = EthereumProvider(self.config.get('bscscan_api_key'))  # BSC verwendet auch EthereumProvider
+            self.solana_provider = SolanaProvider(self.config.get('solana_rpc'))
+            self.sui_provider = SuiProvider(self.config.get('sui_rpc'))
             
             # Lade den zuletzt verarbeiteten Block aus der Datenbank
             await self._load_last_processed_blocks()
@@ -88,15 +100,21 @@ class TransactionWorker:
         """Holt die aktuelle Blocknummer für eine Blockchain"""
         try:
             if chain in ['ethereum', 'bsc']:
-                api = self.etherscan_api if chain == 'ethereum' else self.bscscan_api
+                # Alte Methode: api = self.etherscan_api if chain == 'ethereum' else self.bscscan_api
+                # Neue Methode:
+                api = self.ethereum_provider if chain == 'ethereum' else self.bsc_provider
                 async with api:
                     # Proxy-Methode, um die aktuelle Blocknummer zu erhalten
                     # Dies könnte über einen RPC-Aufruf effizienter sein
                     return await self.parsers[chain].get_latest_block_number()
             elif chain == 'solana':
-                return await self.solana_api.get_latest_slot()
+                # Alte Methode: return await self.solana_api.get_latest_slot()
+                # Neue Methode:
+                return await self.solana_provider.get_latest_slot()
             elif chain == 'sui':
-                return await self.sui_api.get_latest_checkpoint()
+                # Alte Methode: return await self.sui_api.get_latest_checkpoint()
+                # Neue Methode:
+                return await self.sui_provider.get_latest_checkpoint()
             else:
                 logger.warning(f"Unsupported chain: {chain}")
                 return 0
@@ -181,9 +199,13 @@ class TransactionWorker:
                 # Für EVM-Blockchains verwenden wir den Blockchain-Parser
                 return await self.parsers[chain].get_transactions_in_block_range(start_block, end_block)
             elif chain == 'solana':
-                return await self.solana_api.get_transactions_in_slot_range(start_block, end_block)
+                # Alte Methode: return await self.solana_api.get_transactions_in_slot_range(start_block, end_block)
+                # Neue Methode:
+                return await self.solana_provider.get_transactions_in_slot_range(start_block, end_block)
             elif chain == 'sui':
-                return await self.sui_api.get_transactions_in_checkpoint_range(start_block, end_block)
+                # Alte Methode: return await self.sui_api.get_transactions_in_checkpoint_range(start_block, end_block)
+                # Neue Methode:
+                return await self.sui_provider.get_transactions_in_checkpoint_range(start_block, end_block)
             else:
                 logger.warning(f"Unsupported chain: {chain}")
                 return []
