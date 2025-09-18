@@ -7,9 +7,14 @@ from app.core.backend_crypto_tracker.config.database import get_db
 from app.core.backend_crypto_tracker.processor.database.models.transaction import Transaction
 from app.core.backend_crypto_tracker.processor.database.models.address import Address
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
-from app.core.backend_crypto_tracker.services.eth.etherscan_api import EtherscanAPI
-from app.core.backend_crypto_tracker.services.sol.solana_api import SolanaAPIService
-from app.core.backend_crypto_tracker.services.sui.sui_api import SuiAPIService
+# Alte Importe (entfernen):
+# from app.core.backend_crypto_tracker.services.eth.etherscan_api import EtherscanAPI
+# from app.core.backend_crypto_tracker.services.sol.solana_api import SolanaAPIService
+# from app.core.backend_crypto_tracker.services.sui.sui_api import SuiAPIService
+# Neue Importe (hinzufügen):
+from app.core.backend_crypto_tracker.blockchain.providers.ethereum_provider import EthereumProvider
+from app.core.backend_crypto_tracker.blockchain.providers.solana_provider import SolanaProvider
+from app.core.backend_crypto_tracker.blockchain.providers.sui_provider import SuiProvider
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, InvalidAddressException
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from pydantic import BaseModel, Field
@@ -86,24 +91,54 @@ class TransactionController:
     """Controller für Transaktions-bezogene Operationen"""
     
     def __init__(self):
-        self.etherscan_api = None
-        self.solana_api = None
-        self.sui_api = None
+        # Alte Initialisierung (ersetzen):
+        # self.etherscan_api = None
+        # self.solana_api = None
+        # self.sui_api = None
+        
+        # Neue Initialisierung (hinzufügen):
+        self.ethereum_provider = None
+        self.bsc_provider = None
+        self.solana_provider = None
+        self.sui_provider = None
     
+    # Alte Methode (ersetzen):
+    # async def _get_api_for_chain(self, chain: str):
+    #     """Holt die passende API für die Blockchain"""
+    #     if chain in ['ethereum', 'bsc']:
+    #         if not self.etherscan_api:
+    #             self.etherscan_api = EtherscanAPI()
+    #         return self.etherscan_api
+    #     elif chain == 'solana':
+    #         if not self.solana_api:
+    #             self.solana_api = SolanaAPIService()
+    #         return self.solana_api
+    #     elif chain == 'sui':
+    #         if not self.sui_api:
+    #             self.sui_api = SuiAPIService()
+    #         return self.sui_api
+    #     else:
+    #         raise ValueError(f"Unsupported chain: {chain}")
+
+    # Neue Methode (hinzufügen):
     async def _get_api_for_chain(self, chain: str):
         """Holt die passende API für die Blockchain"""
-        if chain in ['ethereum', 'bsc']:
-            if not self.etherscan_api:
-                self.etherscan_api = EtherscanAPI()
-            return self.etherscan_api
+        if chain == 'ethereum':
+            if not self.ethereum_provider:
+                self.ethereum_provider = EthereumProvider()
+            return self.ethereum_provider
+        elif chain == 'bsc':
+            if not self.bsc_provider:
+                self.bsc_provider = EthereumProvider()  # BSC verwendet auch EthereumProvider
+            return self.bsc_provider
         elif chain == 'solana':
-            if not self.solana_api:
-                self.solana_api = SolanaAPIService()
-            return self.solana_api
+            if not self.solana_provider:
+                self.solana_provider = SolanaProvider()
+            return self.solana_provider
         elif chain == 'sui':
-            if not self.sui_api:
-                self.sui_api = SuiAPIService()
-            return self.sui_api
+            if not self.sui_provider:
+                self.sui_provider = SuiProvider()
+            return self.sui_provider
         else:
             raise ValueError(f"Unsupported chain: {chain}")
     
