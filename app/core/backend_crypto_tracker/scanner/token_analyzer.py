@@ -14,10 +14,17 @@ from functools import wraps
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, InvalidAddressException
 from app.core.backend_crypto_tracker.config.scanner_config import scanner_config
-from app.core.backend_crypto_tracker.services.multichain.price_service import PriceService, TokenPriceData
-from app.core.backend_crypto_tracker.services.eth.etherscan_api import EtherscanAPI
-from app.core.backend_crypto_tracker.services.sol.solana_api import SolanaAPIService
-from app.core.backend_crypto_tracker.services.sui.sui_api import SuiAPIService
+# Alte Importe (entfernen):
+# from app.core.backend_crypto_tracker.services.multichain.price_service import PriceService, TokenPriceData
+# from app.core.backend_crypto_tracker.services.eth.etherscan_api import EtherscanAPI
+# from app.core.backend_crypto_tracker.services.sol.solana_api import SolanaAPIService
+# from app.core.backend_crypto_tracker.services.sui.sui_api import SuiAPIService
+# Neue Importe (hinzufügen):
+from app.core.backend_crypto_tracker.blockchain.data_models import TokenPriceData
+from app.core.backend_crypto_tracker.blockchain.providers.ethereum_provider import EthereumProvider
+from app.core.backend_crypto_tracker.blockchain.providers.solana_provider import SolanaProvider
+from app.core.backend_crypto_tracker.blockchain.providers.sui_provider import SuiProvider
+from app.core.backend_crypto_tracker.blockchain.providers.coingecko_provider import CoinGeckoProvider
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 from app.core.backend_crypto_tracker.processor.database.models.wallet import WalletAnalysis, WalletTypeEnum
 
@@ -67,10 +74,19 @@ def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60):
 class TokenAnalyzer:
     def __init__(self, config: TokenAnalysisConfig = None):
         self.config = config or TokenAnalysisConfig()
-        self.price_service = None
-        self.etherscan_api = None
-        self.solana_api = None
-        self.sui_api = None
+        # Alte Initialisierung (ersetzen):
+        # self.price_service = None
+        # self.etherscan_api = None
+        # self.solana_api = None
+        # self.sui_api = None
+        
+        # Neue Initialisierung (hinzufügen):
+        self.coingecko_provider = None
+        self.ethereum_provider = None
+        self.bsc_provider = None
+        self.solana_provider = None
+        self.sui_provider = None
+        
         self.w3_eth = None
         self.w3_bsc = None
         
@@ -92,18 +108,34 @@ class TokenAnalyzer:
         self.cex_wallets = scanner_config.rpc_config.cex_wallets
     
     async def __aenter__(self):
-        self.price_service = PriceService(self.coingecko_key)
-        self.etherscan_api = EtherscanAPI(self.etherscan_key, self.bscscan_key)
-        self.solana_api = SolanaAPIService()
-        self.sui_api = SuiAPIService()
+        # Alte Methode:
+        # self.price_service = PriceService(self.coingecko_key)
+        # self.etherscan_api = EtherscanAPI(self.etherscan_key, self.bscscan_key)
+        # self.solana_api = SolanaAPIService()
+        # self.sui_api = SuiAPIService()
+        
+        # Neue Methode:
+        self.coingecko_provider = CoinGeckoProvider(self.coingecko_key)
+        self.ethereum_provider = EthereumProvider(self.etherscan_key)
+        self.bsc_provider = EthereumProvider(self.bscscan_key)  # BSC verwendet auch EthereumProvider
+        self.solana_provider = SolanaProvider()
+        self.sui_provider = SuiProvider()
         
         self.w3_eth = Web3(Web3.HTTPProvider(self.ethereum_rpc))
         self.w3_bsc = Web3(Web3.HTTPProvider(self.bsc_rpc))
         
-        await self.price_service.__aenter__()
-        await self.etherscan_api.__aenter__()
-        await self.solana_api.__aenter__()
-        await self.sui_api.__aenter__()
+        # Alte Methode:
+        # await self.price_service.__aenter__()
+        # await self.etherscan_api.__aenter__()
+        # await self.solana_api.__aenter__()
+        # await self.sui_api.__aenter__()
+        
+        # Neue Methode:
+        await self.coingecko_provider.__aenter__()
+        await self.ethereum_provider.__aenter__()
+        await self.bsc_provider.__aenter__()
+        await self.solana_provider.__aenter__()
+        await self.sui_provider.__aenter__()
         
         return self
     
@@ -111,17 +143,34 @@ class TokenAnalyzer:
         # Sicheres Schließen aller Ressourcen
         close_tasks = []
         
-        if self.price_service:
-            close_tasks.append(self._safe_close(self.price_service, exc_type, exc_val, exc_tb, "price_service"))
+        # Alte Methode:
+        # if self.price_service:
+        #     close_tasks.append(self._safe_close(self.price_service, exc_type, exc_val, exc_tb, "price_service"))
         
-        if self.etherscan_api:
-            close_tasks.append(self._safe_close(self.etherscan_api, exc_type, exc_val, exc_tb, "etherscan_api"))
+        # if self.etherscan_api:
+        #     close_tasks.append(self._safe_close(self.etherscan_api, exc_type, exc_val, exc_tb, "etherscan_api"))
         
-        if self.solana_api:
-            close_tasks.append(self._safe_close(self.solana_api, exc_type, exc_val, exc_tb, "solana_api"))
+        # if self.solana_api:
+        #     close_tasks.append(self._safe_close(self.solana_api, exc_type, exc_val, exc_tb, "solana_api"))
         
-        if self.sui_api:
-            close_tasks.append(self._safe_close(self.sui_api, exc_type, exc_val, exc_tb, "sui_api"))
+        # if self.sui_api:
+        #     close_tasks.append(self._safe_close(self.sui_api, exc_type, exc_val, exc_tb, "sui_api"))
+        
+        # Neue Methode:
+        if self.coingecko_provider:
+            close_tasks.append(self._safe_close(self.coingecko_provider, exc_type, exc_val, exc_tb, "coingecko_provider"))
+        
+        if self.ethereum_provider:
+            close_tasks.append(self._safe_close(self.ethereum_provider, exc_type, exc_val, exc_tb, "ethereum_provider"))
+        
+        if self.bsc_provider:
+            close_tasks.append(self._safe_close(self.bsc_provider, exc_type, exc_val, exc_tb, "bsc_provider"))
+        
+        if self.solana_provider:
+            close_tasks.append(self._safe_close(self.solana_provider, exc_type, exc_val, exc_tb, "solana_provider"))
+        
+        if self.sui_provider:
+            close_tasks.append(self._safe_close(self.sui_provider, exc_type, exc_val, exc_tb, "sui_provider"))
         
         # Alle Schließvorgänge parallel ausführen
         if close_tasks:
@@ -176,8 +225,12 @@ class TokenAnalyzer:
         logger.info(f"Starting low-cap token scan (max {max_tokens} tokens)...")
         
         # Hole Low-Cap Tokens
-        async with self.price_service:
-            tokens = await self.price_service.get_low_cap_tokens(
+        # Alte Methode: async with self.price_service:
+        # Neue Methode:
+        async with self.coingecko_provider:
+            # Alte Methode: tokens = await self.price_service.get_low_cap_tokens(
+            # Neue Methode:
+            tokens = await self.coingecko_provider.get_low_cap_tokens(
                 max_market_cap=self.config.max_market_cap,
                 limit=max_tokens
             )
@@ -298,8 +351,12 @@ class TokenAnalyzer:
             # Rate-Limit-Handling für CoinGecko
             await self._enforce_coingecko_rate_limit()
             
-            async with self.price_service:
-                price_data = await self.price_service.get_token_price(token_address, chain)
+            # Alte Methode: async with self.price_service:
+            # Neue Methode:
+            async with self.coingecko_provider:
+                # Alte Methode: price_data = await self.price_service.get_token_price(token_address, chain)
+                # Neue Methode:
+                price_data = await self.coingecko_provider.get_token_price(token_address, chain)
             
             # Erstelle Token-Objekt
             token = Token(
@@ -377,15 +434,25 @@ class TokenAnalyzer:
             # Prüfe, ob der Contract verifiziert ist
             try:
                 if token.chain == 'ethereum':
-                    token.contract_verified = await self.etherscan_api.is_contract_verified(token.address, 'ethereum')
+                    # Alte Methode: token.contract_verified = await self.etherscan_api.is_contract_verified(token.address, 'ethereum')
+                    # Neue Methode:
+                    token.contract_verified = await self.ethereum_provider.is_contract_verified(token.address, 'ethereum')
                 else:
-                    token.contract_verified = await self.etherscan_api.is_contract_verified(token.address, 'bsc')
+                    # Alte Methode: token.contract_verified = await self.etherscan_api.is_contract_verified(token.address, 'bsc')
+                    # Neue Methode:
+                    token.contract_verified = await self.bsc_provider.is_contract_verified(token.address, 'bsc')
             except Exception:
                 pass
             
             # Hole Erstellungsdatum des Contracts
             try:
-                creation_tx = await self.etherscan_api.get_contract_creation_tx(token.address, token.chain)
+                # Alte Methode: creation_tx = await self.etherscan_api.get_contract_creation_tx(token.address, token.chain)
+                # Neue Methode:
+                if token.chain == 'ethereum':
+                    creation_tx = await self.ethereum_provider.get_contract_creation_tx(token.address, token.chain)
+                else:
+                    creation_tx = await self.bsc_provider.get_contract_creation_tx(token.address, token.chain)
+                
                 if creation_tx:
                     tx_receipt = w3.eth.get_transaction_receipt(creation_tx)
                     if tx_receipt:
@@ -402,7 +469,9 @@ class TokenAnalyzer:
     async def _fetch_solana_token_data(self, token: Token) -> Token:
         """Holt zusätzliche Token-Daten für Solana"""
         try:
-            token_info = await self.solana_api.get_token_info(token.address)
+            # Alte Methode: token_info = await self.solana_api.get_token_info(token.address)
+            # Neue Methode:
+            token_info = await self.solana_provider.get_token_info(token.address)
             
             if token_info:
                 token.name = token_info.get('name', '')
@@ -417,7 +486,9 @@ class TokenAnalyzer:
     async def _fetch_sui_token_data(self, token: Token) -> Token:
         """Holt zusätzliche Token-Daten für Sui"""
         try:
-            token_info = await self.sui_api.get_token_info(token.address)
+            # Alte Methode: token_info = await self.sui_api.get_token_info(token.address)
+            # Neue Methode:
+            token_info = await self.sui_provider.get_token_info(token.address)
             
             if token_info:
                 token.name = token_info.get('name', '')
@@ -433,11 +504,20 @@ class TokenAnalyzer:
         """Holt Token-Holder für verschiedene Chains"""
         try:
             if chain in ['ethereum', 'bsc']:
-                return await self.etherscan_api.get_token_holders(token_address, chain)
+                # Alte Methode: return await self.etherscan_api.get_token_holders(token_address, chain)
+                # Neue Methode:
+                if chain == 'ethereum':
+                    return await self.ethereum_provider.get_token_holders(token_address, chain)
+                else:
+                    return await self.bsc_provider.get_token_holders(token_address, chain)
             elif chain == 'solana':
-                return await self.solana_api.get_token_holders(token_address)
+                # Alte Methode: return await self.solana_api.get_token_holders(token_address)
+                # Neue Methode:
+                return await self.solana_provider.get_token_holders(token_address)
             elif chain == 'sui':
-                return await self.sui_api.get_token_holders(token_address)
+                # Alte Methode: return await self.sui_api.get_token_holders(token_address)
+                # Neue Methode:
+                return await self.sui_provider.get_token_holders(token_address)
             else:
                 return []
         except Exception as e:
@@ -489,11 +569,20 @@ class TokenAnalyzer:
         """Holt Transaktionsdaten für eine Wallet"""
         try:
             if chain in ['ethereum', 'bsc']:
-                return await self.etherscan_api.get_wallet_transactions(wallet_address, chain)
+                # Alte Methode: return await self.etherscan_api.get_wallet_transactions(wallet_address, chain)
+                # Neue Methode:
+                if chain == 'ethereum':
+                    return await self.ethereum_provider.get_wallet_transactions(wallet_address, chain)
+                else:
+                    return await self.bsc_provider.get_wallet_transactions(wallet_address, chain)
             elif chain == 'solana':
-                return await self.solana_api.get_wallet_transactions(wallet_address)
+                # Alte Methode: return await self.solana_api.get_wallet_transactions(wallet_address)
+                # Neue Methode:
+                return await self.solana_provider.get_wallet_transactions(wallet_address)
             elif chain == 'sui':
-                return await self.sui_api.get_wallet_transactions(wallet_address)
+                # Alte Methode: return await self.sui_api.get_wallet_transactions(wallet_address)
+                # Neue Methode:
+                return await self.sui_provider.get_wallet_transactions(wallet_address)
             else:
                 return {}
         except Exception as e:
