@@ -22,7 +22,22 @@ from app.core.backend_crypto_tracker.config.scanner_config import scanner_config
 # Neue Importe (hinzufügen):
 from app.core.backend_crypto_tracker.blockchain.data_models import TokenPriceData
 from app.core.backend_crypto_tracker.blockchain import EthereumProvider, SolanaProvider, SuiProvider
-from app.core.backend_crypto_tracker.blockchain.coingecko_provider import CoinGeckoProvider
+# Import all providers
+from app.core.backend_crypto_tracker.blockchain import (
+    BaseAPIProvider,
+    CoinGeckoProvider,
+    BinanceProvider,
+    CryptoCompareProvider,
+    KrakenProvider,
+    BitqueryProvider,
+    CoinMarketCapProvider,
+    BitgetProvider,
+    CoinbaseProvider,
+    BitcoinProvider,
+    EthereumProvider,
+    SolanaProvider,
+    SuiProvider
+)
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 from app.core.backend_crypto_tracker.processor.database.models.wallet import WalletAnalysis, WalletTypeEnum
 
