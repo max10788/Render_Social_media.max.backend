@@ -13,8 +13,22 @@ from app.core.backend_crypto_tracker.config.blockchain_api_keys import chain_con
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 # Importe aktualisiert
 from app.core.backend_crypto_tracker.blockchain.data_models import TokenPriceData
-from app.core.backend_crypto_tracker.blockchain.providers import (
-    CoinGeckoProvider, EthereumProvider, SolanaProvider, SuiProvider
+from app.core.backend_crypto_tracker.blockchain import EthereumProvider, SolanaProvider, SuiProvider
+# Import all providers
+from app.core.backend_crypto_tracker.blockchain import (
+    BaseAPIProvider,
+    CoinGeckoProvider,
+    BinanceProvider,
+    CryptoCompareProvider,
+    KrakenProvider,
+    BitqueryProvider,
+    CoinMarketCapProvider,
+    BitgetProvider,
+    CoinbaseProvider,
+    BitcoinProvider,
+    EthereumProvider,
+    SolanaProvider,
+    SuiProvider
 )
 
 logger = get_logger(__name__)
