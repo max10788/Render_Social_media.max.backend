@@ -13,9 +13,9 @@ from app.core.backend_crypto_tracker.processor.database.manager import DatabaseM
 # from app.core.backend_crypto_tracker.services.sol.solana_api import SolanaAPI
 # from app.core.backend_crypto_tracker.services.sui.sui_api import SuiAPI
 # Neue Importe (hinzufügen):
-from app.core.backend_crypto_tracker.blockchain.providers.ethereum_provider import EthereumProvider
-from app.core.backend_crypto_tracker.blockchain.providers.solana_provider import SolanaProvider
-from app.core.backend_crypto_tracker.blockchain.providers.sui_provider import SuiProvider
+from app.core.backend_crypto_tracker.blockchain.ethereum_provider import EthereumProvider
+from app.core.backend_crypto_tracker.blockchain.solana_provider import SolanaProvider
+from app.core.backend_crypto_tracker.blockchain.sui_provider import SuiProvider
 
 logger = get_logger(__name__)
 
