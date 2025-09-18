@@ -12,9 +12,9 @@ from app.core.backend_crypto_tracker.processor.database.models.token import Toke
 # from app.core.backend_crypto_tracker.services.sol.solana_api import SolanaAPIService
 # from app.core.backend_crypto_tracker.services.sui.sui_api import SuiAPIService
 # Neue Importe (hinzufügen):
-from app.core.backend_crypto_tracker.blockchain.providers.ethereum_provider import EthereumProvider
-from app.core.backend_crypto_tracker.blockchain.providers.solana_provider import SolanaProvider
-from app.core.backend_crypto_tracker.blockchain.providers.sui_provider import SuiProvider
+from app.core.backend_crypto_tracker.blockchain.ethereum_provider import EthereumProvider
+from app.core.backend_crypto_tracker.blockchain.solana_provider import SolanaProvider
+from app.core.backend_crypto_tracker.blockchain.sui_provider import SuiProvider
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, InvalidAddressException
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from pydantic import BaseModel, Field
