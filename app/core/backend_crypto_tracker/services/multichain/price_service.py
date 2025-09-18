@@ -13,7 +13,9 @@ from app.core.backend_crypto_tracker.config.blockchain_api_keys import chain_con
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 # Importe aktualisiert
 from app.core.backend_crypto_tracker.blockchain.data_models import TokenPriceData
-from app.core.backend_crypto_tracker.blockchain import EthereumProvider, SolanaProvider, SuiProvider
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
 # Import all providers
 from app.core.backend_crypto_tracker.blockchain import (
     BaseAPIProvider,
