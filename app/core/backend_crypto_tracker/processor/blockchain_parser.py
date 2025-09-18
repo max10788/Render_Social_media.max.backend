@@ -4,9 +4,14 @@ from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, BlockchainException
-from app.core.backend_crypto_tracker.services.eth.etherscan_api import EtherscanAPI, BscScanAPI
-from app.core.backend_crypto_tracker.services.sol.solana_api import SolanaAPIService
-from app.core.backend_crypto_tracker.services.sui.sui_api import SuiAPIService
+# Alte Importe (entfernen):
+# from app.core.backend_crypto_tracker.services.eth.etherscan_api import EtherscanAPI, BscScanAPI
+# from app.core.backend_crypto_tracker.services.sol.solana_api import SolanaAPIService
+# from app.core.backend_crypto_tracker.services.sui.sui_api import SuiAPIService
+# Neue Importe (hinzufügen):
+from app.core.backend_crypto_tracker.blockchain.providers.ethereum_provider import EthereumProvider
+from app.core.backend_crypto_tracker.blockchain.providers.solana_provider import SolanaProvider
+from app.core.backend_crypto_tracker.blockchain.providers.sui_provider import SuiProvider
 from app.core.backend_crypto_tracker.processor.database.models.transaction import Transaction
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 
@@ -39,21 +44,46 @@ class ParsedWalletData:
 class BlockchainParser:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.ethereum_api = None
-        self.bsc_api = None
-        self.solana_api = None
-        self.sui_api = None
+        # Alte Initialisierung (ersetzen):
+        # self.ethereum_api = None
+        # self.bsc_api = None
+        # self.solana_api = None
+        # self.sui_api = None
+        
+        # Neue Initialisierung (hinzufügen):
+        self.ethereum_provider = None
+        self.bsc_provider = None
+        self.solana_provider = None
+        self.sui_provider = None
     
+    # Alte Methode (ersetzen):
+    # async def initialize(self):
+    #     """Initialisiert die Blockchain-APIs"""
+    #     try:
+    #         self.ethereum_api = EtherscanAPI(self.config.get('etherscan_api_key'))
+    #         self.bsc_api = BscScanAPI(self.config.get('bscscan_api_key'))
+    #         self.solana_api = SolanaAPIService(
+    #             self.config.get('solana_rpc'),
+    #             self.config.get('helius_api_key')
+    #         )
+    #         self.sui_api = SuiAPIService(self.config.get('sui_rpc'))
+            
+    #         logger.info("Blockchain parser initialized successfully")
+    #     except Exception as e:
+    #         logger.error(f"Error initializing blockchain parser: {e}")
+    #         raise
+
+    # Neue Methode (hinzufügen):
     async def initialize(self):
         """Initialisiert die Blockchain-APIs"""
         try:
-            self.ethereum_api = EtherscanAPI(self.config.get('etherscan_api_key'))
-            self.bsc_api = BscScanAPI(self.config.get('bscscan_api_key'))
-            self.solana_api = SolanaAPIService(
+            self.ethereum_provider = EthereumProvider(self.config.get('etherscan_api_key'))
+            self.bsc_provider = EthereumProvider(self.config.get('bscscan_api_key'))  # BSC verwendet auch EthereumProvider
+            self.solana_provider = SolanaProvider(
                 self.config.get('solana_rpc'),
                 self.config.get('helius_api_key')
             )
-            self.sui_api = SuiAPIService(self.config.get('sui_rpc'))
+            self.sui_provider = SuiProvider(self.config.get('sui_rpc'))
             
             logger.info("Blockchain parser initialized successfully")
         except Exception as e:
@@ -80,15 +110,21 @@ class BlockchainParser:
     async def _parse_ethereum_token(self, address: str) -> Optional[ParsedTokenData]:
         """Parst Ethereum-Token-Daten"""
         try:
-            async with self.ethereum_api:
+            # Alte Methode: async with self.ethereum_api:
+            # Neue Methode:
+            async with self.ethereum_provider:
                 # Token-Informationen abrufen
-                token_info = await self.ethereum_api.get_token_info(address)
+                # Alte Methode: token_info = await self.ethereum_api.get_token_info(address)
+                # Neue Methode:
+                token_info = await self.ethereum_provider.get_token_info(address)
                 
                 if not token_info:
                     return None
                 
                 # Token-Holder abrufen
-                holders = await self.ethereum_api.get_token_holders(address, limit=10)
+                # Alte Methode: holders = await self.ethereum_api.get_token_holders(address, limit=10)
+                # Neue Methode:
+                holders = await self.ethereum_provider.get_token_holders(address, limit=10)
                 
                 return ParsedTokenData(
                     address=address,
@@ -106,15 +142,21 @@ class BlockchainParser:
     async def _parse_bsc_token(self, address: str) -> Optional[ParsedTokenData]:
         """Parst BSC-Token-Daten"""
         try:
-            async with self.bsc_api:
+            # Alte Methode: async with self.bsc_api:
+            # Neue Methode:
+            async with self.bsc_provider:
                 # Token-Informationen abrufen
-                token_info = await self.bsc_api.get_token_info(address)
+                # Alte Methode: token_info = await self.bsc_api.get_token_info(address)
+                # Neue Methode:
+                token_info = await self.bsc_provider.get_token_info(address)
                 
                 if not token_info:
                     return None
                 
                 # Token-Holder abrufen
-                holders = await self.bsc_api.get_token_holders(address, limit=10)
+                # Alte Methode: holders = await self.bsc_api.get_token_holders(address, limit=10)
+                # Neue Methode:
+                holders = await self.bsc_provider.get_token_holders(address, limit=10)
                 
                 return ParsedTokenData(
                     address=address,
@@ -132,18 +174,26 @@ class BlockchainParser:
     async def _parse_solana_token(self, address: str) -> Optional[ParsedTokenData]:
         """Parst Solana-Token-Daten"""
         try:
-            async with self.solana_api:
+            # Alte Methode: async with self.solana_api:
+            # Neue Methode:
+            async with self.solana_provider:
                 # Token-Metadaten abrufen
-                metadata = await self.solana_api.get_token_metadata(address)
+                # Alte Methode: metadata = await self.solana_api.get_token_metadata(address)
+                # Neue Methode:
+                metadata = await self.solana_provider.get_token_metadata(address)
                 
                 if not metadata:
                     return None
                 
                 # Token-Supply abrufen
-                supply = await self.solana_api.get_token_supply(address)
+                # Alte Methode: supply = await self.solana_api.get_token_supply(address)
+                # Neue Methode:
+                supply = await self.solana_provider.get_token_supply(address)
                 
                 # Token-Holder abrufen
-                holders = await self.solana_api.get_token_holders(address, limit=10)
+                # Alte Methode: holders = await self.solana_api.get_token_holders(address, limit=10)
+                # Neue Methode:
+                holders = await self.solana_provider.get_token_holders(address, limit=10)
                 
                 # Extrahiere Token-Informationen aus den Daten
                 parsed_data = metadata.get('data', {}).get('parsed', {}).get('info', {})
@@ -164,18 +214,26 @@ class BlockchainParser:
     async def _parse_sui_token(self, address: str) -> Optional[ParsedTokenData]:
         """Parst Sui-Token-Daten"""
         try:
-            async with self.sui_api:
+            # Alte Methode: async with self.sui_api:
+            # Neue Methode:
+            async with self.sui_provider:
                 # Coin-Metadaten abrufen
-                metadata = await self.sui_api.get_coin_metadata(address)
+                # Alte Methode: metadata = await self.sui_api.get_coin_metadata(address)
+                # Neue Methode:
+                metadata = await self.sui_provider.get_coin_metadata(address)
                 
                 if not metadata:
                     return None
                 
                 # Total Supply abrufen
-                total_supply = await self.sui_api.get_total_supply(address)
+                # Alte Methode: total_supply = await self.sui_api.get_total_supply(address)
+                # Neue Methode:
+                total_supply = await self.sui_provider.get_total_supply(address)
                 
                 # Token-Holder abrufen
-                holders = await self.sui_api.get_token_holders(address, limit=10)
+                # Alte Methode: holders = await self.sui_api.get_token_holders(address, limit=10)
+                # Neue Methode:
+                holders = await self.sui_provider.get_token_holders(address, limit=10)
                 
                 return ParsedTokenData(
                     address=address,
@@ -210,9 +268,13 @@ class BlockchainParser:
     async def _parse_ethereum_wallet(self, address: str) -> Optional[ParsedWalletData]:
         """Parst Ethereum-Wallet-Daten"""
         try:
-            async with self.ethereum_api:
+            # Alte Methode: async with self.ethereum_api:
+            # Neue Methode:
+            async with self.ethereum_provider:
                 # Transaktionen abrufen
-                transactions = await self.ethereum_api.get_transactions_by_address(address, limit=1)
+                # Alte Methode: transactions = await self.ethereum_api.get_transactions_by_address(address, limit=1)
+                # Neue Methode:
+                transactions = await self.ethereum_provider.get_transactions_by_address(address, limit=1)
                 
                 if not transactions:
                     return ParsedWalletData(
@@ -239,9 +301,13 @@ class BlockchainParser:
     async def _parse_bsc_wallet(self, address: str) -> Optional[ParsedWalletData]:
         """Parst BSC-Wallet-Daten"""
         try:
-            async with self.bsc_api:
+            # Alte Methode: async with self.bsc_api:
+            # Neue Methode:
+            async with self.bsc_provider:
                 # Transaktionen abrufen
-                transactions = await self.bsc_api.get_transactions_by_address(address, limit=1)
+                # Alte Methode: transactions = await self.bsc_api.get_transactions_by_address(address, limit=1)
+                # Neue Methode:
+                transactions = await self.bsc_provider.get_transactions_by_address(address, limit=1)
                 
                 if not transactions:
                     return ParsedWalletData(
@@ -268,9 +334,13 @@ class BlockchainParser:
     async def _parse_solana_wallet(self, address: str) -> Optional[ParsedWalletData]:
         """Parst Solana-Wallet-Daten"""
         try:
-            async with self.solana_api:
+            # Alte Methode: async with self.solana_api:
+            # Neue Methode:
+            async with self.solana_provider:
                 # Account-Informationen abrufen
-                account_info = await self.solana_api.get_account_info(address)
+                # Alte Methode: account_info = await self.solana_api.get_account_info(address)
+                # Neue Methode:
+                account_info = await self.solana_provider.get_account_info(address)
                 
                 if not account_info:
                     return ParsedWalletData(
@@ -285,7 +355,9 @@ class BlockchainParser:
                 balance = lamports / 1_000_000_000  # SOL hat 9 Dezimalstellen
                 
                 # Transaktionen abrufen
-                signatures = await self.solana_api.get_signatures_for_address(address, limit=1)
+                # Alte Methode: signatures = await self.solana_api.get_signatures_for_address(address, limit=1)
+                # Neue Methode:
+                signatures = await self.solana_provider.get_signatures_for_address(address, limit=1)
                 
                 return ParsedWalletData(
                     address=address,
@@ -300,9 +372,13 @@ class BlockchainParser:
     async def _parse_sui_wallet(self, address: str) -> Optional[ParsedWalletData]:
         """Parst Sui-Wallet-Daten"""
         try:
-            async with self.sui_api:
+            # Alte Methode: async with self.sui_api:
+            # Neue Methode:
+            async with self.sui_provider:
                 # Balance abrufen
-                balance = await self.sui_api.get_balance(address)
+                # Alte Methode: balance = await self.sui_api.get_balance(address)
+                # Neue Methode:
+                balance = await self.sui_provider.get_balance(address)
                 
                 if balance is None:
                     return ParsedWalletData(
@@ -313,7 +389,9 @@ class BlockchainParser:
                     )
                 
                 # Alle Balances abrufen, um die Anzahl der Transaktionen zu schätzen
-                all_balances = await self.sui_api.get_all_balances(address)
+                # Alte Methode: all_balances = await self.sui_api.get_all_balances(address)
+                # Neue Methode:
+                all_balances = await self.sui_provider.get_all_balances(address)
                 
                 return ParsedWalletData(
                     address=address,
@@ -337,11 +415,19 @@ class BlockchainParser:
                 # Hier vereinfacht
                 return 0  # Placeholder
             elif chain.lower() == 'solana':
-                async with self.solana_api:
-                    return await self.solana_api.get_latest_slot()
+                # Alte Methode: async with self.solana_api:
+                # Neue Methode:
+                async with self.solana_provider:
+                    # Alte Methode: return await self.solana_api.get_latest_slot()
+                    # Neue Methode:
+                    return await self.solana_provider.get_latest_slot()
             elif chain.lower() == 'sui':
-                async with self.sui_api:
-                    return await self.sui_api.get_latest_checkpoint_sequence_number()
+                # Alte Methode: async with self.sui_api:
+                # Neue Methode:
+                async with self.sui_provider:
+                    # Alte Methode: return await self.sui_api.get_latest_checkpoint_sequence_number()
+                    # Neue Methode:
+                    return await self.sui_provider.get_latest_checkpoint_sequence_number()
             else:
                 raise BlockchainException(f"Unsupported chain: {chain}")
         except Exception as e:
@@ -360,11 +446,19 @@ class BlockchainParser:
                 # Hier vereinfacht
                 return []  # Placeholder
             elif chain.lower() == 'solana':
-                async with self.solana_api:
-                    return await self.solana_api.get_transactions_in_slot_range(start, end)
+                # Alte Methode: async with self.solana_api:
+                # Neue Methode:
+                async with self.solana_provider:
+                    # Alte Methode: return await self.solana_api.get_transactions_in_slot_range(start, end)
+                    # Neue Methode:
+                    return await self.solana_provider.get_transactions_in_slot_range(start, end)
             elif chain.lower() == 'sui':
-                async with self.sui_api:
-                    return await self.sui_api.get_transactions_in_checkpoint_range(start, end)
+                # Alte Methode: async with self.sui_api:
+                # Neue Methode:
+                async with self.sui_provider:
+                    # Alte Methode: return await self.sui_api.get_transactions_in_checkpoint_range(start, end)
+                    # Neue Methode:
+                    return await self.sui_provider.get_transactions_in_checkpoint_range(start, end)
             else:
                 raise BlockchainException(f"Unsupported chain: {chain}")
         except Exception as e:
