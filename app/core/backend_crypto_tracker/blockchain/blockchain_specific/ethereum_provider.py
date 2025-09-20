@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
-from ...data_models.token_price_data import 
+from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data import TokenPriceData
 
 logger = get_logger(__name__)
 
