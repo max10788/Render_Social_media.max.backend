@@ -12,7 +12,7 @@ from app.core.backend_crypto_tracker.utils.exceptions import APIException, RateL
 from app.core.backend_crypto_tracker.config.blockchain_api_keys import chain_config
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 # Importe aktualisiert
-from app.core.backend_crypto_tracker.blockchain.data_models import TokenPriceData
+from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data import TokenPriceData
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
