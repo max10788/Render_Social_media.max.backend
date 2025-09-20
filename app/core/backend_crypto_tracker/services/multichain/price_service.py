@@ -17,8 +17,8 @@ from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_pro
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
 # Import all providers
+from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
 from app.core.backend_crypto_tracker.blockchain import (
-    BaseAPIProvider,
     CoinGeckoProvider,
     BinanceProvider,
     CryptoCompareProvider,
