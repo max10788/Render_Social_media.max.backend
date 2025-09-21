@@ -1,16 +1,17 @@
-# scanner/token_analyzer.py
 import asyncio
 import aiohttp
 import logging
 from datetime import datetime, timedelta
-import time  # FEHLENDES IMPORT
-import random  # FEHLENDES IMPORT
+import time  # Bereits vorhanden
+import random  # Bereits vorhanden
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 from web3 import Web3
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import wraps
+import os  # FEHLT - HINZUFÜGEN
+
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, InvalidAddressException
 from app.core.backend_crypto_tracker.config.scanner_config import scanner_config
@@ -18,18 +19,16 @@ from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data imp
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
+
 # Import all providers
 from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
-
 from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
 from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap_provider import CoinMarketCapProvider
 from app.core.backend_crypto_tracker.blockchain.aggregators.cryptocompare_provider import CryptoCompareProvider
-
 from app.core.backend_crypto_tracker.blockchain.exchanges.bitget_provider import BitgetProvider
 from app.core.backend_crypto_tracker.blockchain.exchanges.kraken_provider import KrakenProvider
 from app.core.backend_crypto_tracker.blockchain.exchanges.binance_provider import BinanceProvider
 from app.core.backend_crypto_tracker.blockchain.exchanges.coinbase_provider import CoinbaseProvider
-
 from app.core.backend_crypto_tracker.blockchain.onchain.bitquery_provider import BitqueryProvider
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 from app.core.backend_crypto_tracker.processor.database.models.wallet import WalletAnalysis, WalletTypeEnum
@@ -77,117 +76,78 @@ def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60):
         return wrapper
     return decorator
 
-class TokenAnalyzer:
-    def __init__(self, config: TokenAnalysisConfig = None):
-        self.config = config or TokenAnalysisConfig()
-        # Alte Initialisierung (ersetzen):
-        # self.price_service = None
-        # self.etherscan_api = None
-        # self.solana_api = None
-        # self.sui_api = None
-        
-        # Neue Initialisierung (hinzufügen):
-        self.coingecko_provider = None
-        self.ethereum_provider = None
-        self.bsc_provider = None
-        self.solana_provider = None
-        self.sui_provider = None
-        
+def __init__(self, config: TokenAnalysisConfig = None):
+    self.config = config or TokenAnalysisConfig()
+    
+    # Provider-Initialisierung
+    self.coingecko_provider = None
+    self.ethereum_provider = None
+    self.bsc_provider = None
+    self.solana_provider = None
+    self.sui_provider = None
+    
+    self.w3_eth = None
+    self.w3_bsc = None
+    
+    # Konfiguration laden
+    self.ethereum_rpc = scanner_config.rpc_config.ethereum_rpc
+    self.bsc_rpc = scanner_config.rpc_config.bsc_rpc
+    self.etherscan_key = scanner_config.rpc_config.etherscan_api_key
+    self.bscscan_key = scanner_config.rpc_config.bscscan_api_key
+    
+    # Bekannte Contract-Adressen
+    self.known_contracts = scanner_config.rpc_config.known_contracts
+    self.cex_wallets = scanner_config.rpc_config.cex_wallets
+    
+async def __aenter__(self):
+    # Provider initialisieren
+    self.coingecko_provider = CoinGeckoProvider()  # KEIN PARAMETER MEHR
+    self.ethereum_provider = EthereumProvider(self.etherscan_key)
+    self.bsc_provider = EthereumProvider(self.bscscan_key)  # BSC verwendet auch EthereumProvider
+    self.solana_provider = SolanaProvider()
+    self.sui_provider = SuiProvider()
+    
+    self.w3_eth = Web3(Web3.HTTPProvider(self.ethereum_rpc))
+    self.w3_bsc = Web3(Web3.HTTPProvider(self.bsc_rpc))
+    
+    # Provider-Sessions initialisieren
+    await self.coingecko_provider.__aenter__()
+    await self.ethereum_provider.__aenter__()
+    await self.bsc_provider.__aenter__()
+    await self.solana_provider.__aenter__()
+    await self.sui_provider.__aenter__()
+    
+    return self
+    
+async def __aexit__(self, exc_type, exc_val, exc_tb):
+    # Sicheres Schließen aller Ressourcen
+    close_tasks = []
+    
+    if self.coingecko_provider:
+        close_tasks.append(self._safe_close(self.coingecko_provider, exc_type, exc_val, exc_tb, "coingecko_provider"))
+    
+    if self.ethereum_provider:
+        close_tasks.append(self._safe_close(self.ethereum_provider, exc_type, exc_val, exc_tb, "ethereum_provider"))
+    
+    if self.bsc_provider:
+        close_tasks.append(self._safe_close(self.bsc_provider, exc_type, exc_val, exc_tb, "bsc_provider"))
+    
+    if self.solana_provider:
+        close_tasks.append(self._safe_close(self.solana_provider, exc_type, exc_val, exc_tb, "solana_provider"))
+    
+    if self.sui_provider:
+        close_tasks.append(self._safe_close(self.sui_provider, exc_type, exc_val, exc_tb, "sui_provider"))
+    
+    # Alle Schließvorgänge parallel ausführen
+    if close_tasks:
+        await asyncio.gather(*close_tasks, return_exceptions=True)
+    
+    # Web3-Verbindungen trennen
+    if hasattr(self, 'w3_eth') and self.w3_eth:
         self.w3_eth = None
+    
+    if hasattr(self, 'w3_bsc') and self.w3_bsc:
         self.w3_bsc = None
-        
-        # Konfiguration laden
-        self.ethereum_rpc = scanner_config.rpc_config.ethereum_rpc
-        self.bsc_rpc = scanner_config.rpc_config.bsc_rpc
-        self.etherscan_key = scanner_config.rpc_config.etherscan_api_key
-        self.bscscan_key = scanner_config.rpc_config.bscscan_api_key
-        self.coingecko_key = scanner_config.rpc_config.coingecko_api_key
-        
-        # Rate-Limit-Tracking für CoinGecko
-        self.coingecko_last_request_time = 0
-        self.coingecko_min_interval = 1.2  # 50 Anfragen pro Minute = 1.2 Sekunden zwischen Anfragen
-        self.coingecko_request_count = 0
-        self.coingecko_reset_time = datetime.utcnow() + timedelta(minutes=1)
-        
-        # Bekannte Contract-Adressen
-        self.known_contracts = scanner_config.rpc_config.known_contracts
-        self.cex_wallets = scanner_config.rpc_config.cex_wallets
-    
-    async def __aenter__(self):
-        # Alte Methode:
-        # self.price_service = PriceService(self.coingecko_key)
-        # self.etherscan_api = EtherscanAPI(self.etherscan_key, self.bscscan_key)
-        # self.solana_api = SolanaAPIService()
-        # self.sui_api = SuiAPIService()
-        
-        # Neue Methode:
-        self.coingecko_provider = CoinGeckoProvider(self.coingecko_key)
-        self.ethereum_provider = EthereumProvider(self.etherscan_key)
-        self.bsc_provider = EthereumProvider(self.bscscan_key)  # BSC verwendet auch EthereumProvider
-        self.solana_provider = SolanaProvider()
-        self.sui_provider = SuiProvider()
-        
-        self.w3_eth = Web3(Web3.HTTPProvider(self.ethereum_rpc))
-        self.w3_bsc = Web3(Web3.HTTPProvider(self.bsc_rpc))
-        
-        # Alte Methode:
-        # await self.price_service.__aenter__()
-        # await self.etherscan_api.__aenter__()
-        # await self.solana_api.__aenter__()
-        # await self.sui_api.__aenter__()
-        
-        # Neue Methode:
-        await self.coingecko_provider.__aenter__()
-        await self.ethereum_provider.__aenter__()
-        await self.bsc_provider.__aenter__()
-        await self.solana_provider.__aenter__()
-        await self.sui_provider.__aenter__()
-        
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # Sicheres Schließen aller Ressourcen
-        close_tasks = []
-        
-        # Alte Methode:
-        # if self.price_service:
-        #     close_tasks.append(self._safe_close(self.price_service, exc_type, exc_val, exc_tb, "price_service"))
-        
-        # if self.etherscan_api:
-        #     close_tasks.append(self._safe_close(self.etherscan_api, exc_type, exc_val, exc_tb, "etherscan_api"))
-        
-        # if self.solana_api:
-        #     close_tasks.append(self._safe_close(self.solana_api, exc_type, exc_val, exc_tb, "solana_api"))
-        
-        # if self.sui_api:
-        #     close_tasks.append(self._safe_close(self.sui_api, exc_type, exc_val, exc_tb, "sui_api"))
-        
-        # Neue Methode:
-        if self.coingecko_provider:
-            close_tasks.append(self._safe_close(self.coingecko_provider, exc_type, exc_val, exc_tb, "coingecko_provider"))
-        
-        if self.ethereum_provider:
-            close_tasks.append(self._safe_close(self.ethereum_provider, exc_type, exc_val, exc_tb, "ethereum_provider"))
-        
-        if self.bsc_provider:
-            close_tasks.append(self._safe_close(self.bsc_provider, exc_type, exc_val, exc_tb, "bsc_provider"))
-        
-        if self.solana_provider:
-            close_tasks.append(self._safe_close(self.solana_provider, exc_type, exc_val, exc_tb, "solana_provider"))
-        
-        if self.sui_provider:
-            close_tasks.append(self._safe_close(self.sui_provider, exc_type, exc_val, exc_tb, "sui_provider"))
-        
-        # Alle Schließvorgänge parallel ausführen
-        if close_tasks:
-            await asyncio.gather(*close_tasks, return_exceptions=True)
-        
-        # Web3-Verbindungen trennen
-        if hasattr(self, 'w3_eth') and self.w3_eth:
-            self.w3_eth = None
-        
-        if hasattr(self, 'w3_bsc') and self.w3_bsc:
-            self.w3_bsc = None
     
     async def _safe_close(self, service, exc_type, exc_val, exc_tb, service_name):
         """Sicheres Schließen einer Service-Verbindung"""
