@@ -2,6 +2,7 @@
 CoinMarketCap API provider implementation.
 """
 
+import json
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -18,6 +19,37 @@ class CoinMarketCapProvider(BaseAPIProvider):
     def __init__(self, api_key: Optional[str] = None):
         super().__init__("CoinMarketCap", "https://pro-api.coinmarketcap.com/v1", api_key, "COINMARKETCAP_API_KEY")
         self.min_request_interval = 1.2  # Etwas länger für CoinMarketCap
+    
+    async def _make_request(self, url: str, params: Dict = None, headers: Dict = None) -> Dict:
+        """
+        Führt eine API-Anfrage durch und loggt die direkte Antwort.
+        
+        Args:
+            url: Die URL für die API-Anfrage
+            params: Die Parameter für die Anfrage
+            headers: Die Header für die Anfrage
+            
+        Returns:
+            Die JSON-Antwort als Dictionary
+        """
+        try:
+            # Führe die eigentliche Anfrage durch
+            response = await super()._make_request(url, params, headers)
+            
+            # Logge die direkte API-Antwort
+            logger.info(f"CoinMarketCap API Response - URL: {url}")
+            logger.info(f"Parameters: {params}")
+            logger.info(f"Headers: {headers}")
+            logger.info(f"Response: {json.dumps(response, indent=2)}")
+            
+            return response
+        except Exception as e:
+            # Logge den Fehler bei der Anfrage
+            logger.error(f"CoinMarketCap API Request Failed - URL: {url}")
+            logger.error(f"Parameters: {params}")
+            logger.error(f"Headers: {headers}")
+            logger.error(f"Error: {str(e)}")
+            raise
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
         try:
