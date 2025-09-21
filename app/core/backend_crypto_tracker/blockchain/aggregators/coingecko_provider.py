@@ -38,7 +38,12 @@ class CoinGeckoProvider(BaseAPIProvider):
         
         # Initialisiere die Basisklasse mit der Umgebungsvariable
         super().__init__("CoinGecko", base_url, None, "COINGECKO_API_KEY")
-        self.min_request_interval = 0.5  # Höheres Rate-Limiting
+        
+        # Passe das Min Request Interval basierend auf dem API-Schlüssel an
+        if self.api_key and not self._is_demo_api_key(self.api_key):
+            self.min_request_interval = 0.12  # Pro API: ca. 500 Anfragen/Minute
+        else:
+            self.min_request_interval = 6.0   # Free API: ca. 10 Anfragen/Minute
     
     def _is_demo_api_key(self, api_key: str) -> bool:
         """
@@ -89,6 +94,10 @@ class CoinGeckoProvider(BaseAPIProvider):
             logger.error(f"Parameters: {params}")
             logger.error(f"Headers: {headers}")
             logger.error(f"Error: {str(e)}")
+            
+            # Spezielle Behandlung für Rate-Limit-Fehler
+            if "429" in str(e) or "rate limit" in str(e).lower():
+                logger.error("Rate limit exceeded. Consider upgrading to a Pro plan or reducing request frequency.")
             
             # Spezielle Behandlung für API-URL-Fehler
             error_msg = str(e)
@@ -286,6 +295,108 @@ class CoinGeckoProvider(BaseAPIProvider):
         
         return None
     
+    async def get_token_holders(self, token_address: str, chain: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Holt die Top-Token-Halter für einen bestimmten Token.
+        Nutzt CoinGecko Pro On-Chain API, falls verfügbar, sonst GeckoTerminal.
+        
+        Args:
+            token_address: Die Token-Vertragsadresse
+            chain: Die Blockchain (z.B. 'ethereum', 'bsc')
+            limit: Maximale Anzahl an Haltern, die abgerufen werden sollen
+            
+        Returns:
+            Eine Liste von Dictionaries mit Halter-Informationen
+        """
+        try:
+            # Wenn wir einen CoinGecko Pro-API-Schlüssel haben, nutzen wir den On-Chain Endpunkt
+            if self.api_key and not self._is_demo_api_key(self.api_key):
+                return await self._get_holders_from_coingecko(token_address, chain, limit)
+            else:
+                # Ansonsten nutzen wir GeckoTerminal
+                return await self._get_holders_from_geckoterminal(token_address, chain, limit)
+                
+        except Exception as e:
+            logger.error(f"Error fetching token holders for {token_address} on {chain}: {e}")
+            return []
+    
+    async def _get_holders_from_coingecko(self, token_address: str, chain: str, limit: int) -> List[Dict[str, Any]]:
+        """Nutzt CoinGecko Pro On-Chain API für Token-Halter"""
+        try:
+            # Bestimme die Netzwerk-ID für CoinGecko
+            network_mapping = {
+                'ethereum': 'ethereum',
+                'bsc': 'binance-smart-chain',
+                'polygon': 'polygon-pos',
+                'avalanche': 'avalanche',
+                'arbitrum': 'arbitrum-one'
+            }
+            network_id = network_mapping.get(chain, chain)
+            
+            url = f"https://pro-api.coingecko.com/api/v3/onchain/addresses/{network_id}/token_holders_rankings_by_token"
+            params = {
+                'token_addresses': token_address,
+                'limit': limit
+            }
+            headers = {
+                'x-cg-pro-api-key': self.api_key
+            }
+            
+            response = await self._make_request(url, params, headers)
+            
+            if response and response.get('data'):
+                holders = []
+                for holder_data in response['data']:
+                    holders.append({
+                        'address': holder_data.get('address'),
+                        'amount': holder_data.get('token_balance'),
+                        'percentage': holder_data.get('percentage'),
+                        'rank': holder_data.get('rank')
+                    })
+                return holders
+                
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error fetching holders from CoinGecko: {e}")
+            return []
+    
+    async def _get_holders_from_geckoterminal(self, token_address: str, chain: str, limit: int) -> List[Dict[str, Any]]:
+        """Nutzt GeckoTerminal API für Token-Halter"""
+        try:
+            # Bestimme die Netzwerk-ID für GeckoTerminal
+            network_mapping = {
+                'ethereum': 'eth',
+                'bsc': 'bsc',
+                'polygon': 'polygon',
+                'avalanche': 'avax',
+                'arbitrum': 'arbitrum'
+            }
+            network_id = network_mapping.get(chain, chain)
+            
+            url = f"https://api.geckoterminal.com/api/v2/networks/{network_id}/tokens/{token_address}"
+            params = {}
+            
+            response = await self._make_request(url, params)
+            
+            if response and response.get('data'):
+                token_data = response['data']
+                if token_data.get('top_holders'):
+                    holders = []
+                    for holder_data in token_data['top_holders'][:limit]:
+                        holders.append({
+                            'address': holder_data.get('address'),
+                            'amount': holder_data.get('amount'),
+                            'percentage': holder_data.get('percentage')
+                        })
+                    return holders
+                
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error fetching holders from GeckoTerminal: {e}")
+            return []
+    
     async def _get_coin_id_from_address(self, token_address: str, chain: str) -> Optional[str]:
         """Holt die Coin-ID von einer Contract-Adresse"""
         try:
@@ -322,5 +433,11 @@ class CoinGeckoProvider(BaseAPIProvider):
             # Pro API hat höhere Limits
             return {"requests_per_minute": 500, "requests_per_hour": 3000}
         else:
-            # Free/Demo API hat niedrigere Limits
-            return {"requests_per_minute": 100, "requests_per_hour": 1000}
+            # Free/Demo API hat deutlich niedrigere Limits
+            return {"requests_per_minute": 10, "requests_per_hour": 100}
+    
+    async def close(self):
+        """Schließt alle offenen Ressourcen wie Client-Sessions."""
+        if hasattr(self, 'client_session') and self.client_session:
+            await self.client_session.close()
+            logger.info("CoinGeckoProvider client session closed successfully")
