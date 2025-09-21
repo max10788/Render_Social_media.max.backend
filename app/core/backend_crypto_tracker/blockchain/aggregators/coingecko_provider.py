@@ -17,8 +17,39 @@ class CoinGeckoProvider(BaseAPIProvider):
     """CoinGecko API-Anbieter - umfangreichste kostenlose API"""
     
     def __init__(self, api_key: Optional[str] = None):
-        super().__init__("CoinGecko", "https://api.coingecko.com/api/v3", api_key, "COINGECKO_API_KEY")
+        super().__init__("COINGECKO_API_KEY")
         self.min_request_interval = 0.5  # Höheres Rate-Limiting
+    
+    async def _make_request(self, url: str, params: Dict = None, headers: Dict = None) -> Dict:
+        """
+        Führt eine API-Anfrage durch und loggt die direkte Antwort.
+        
+        Args:
+            url: Die URL für die API-Anfrage
+            params: Die Parameter für die Anfrage
+            headers: Die Header für die Anfrage
+            
+        Returns:
+            Die JSON-Antwort als Dictionary
+        """
+        try:
+            # Führe die eigentliche Anfrage durch
+            response = await super()._make_request(url, params, headers)
+            
+            # Logge die direkte API-Antwort
+            logger.info(f"CoinGecko API Response - URL: {url}")
+            logger.info(f"Parameters: {params}")
+            logger.info(f"Headers: {headers}")
+            logger.info(f"Response: {json.dumps(response, indent=2)}")
+            
+            return response
+        except Exception as e:
+            # Logge den Fehler bei der Anfrage
+            logger.error(f"CoinGecko API Request Failed - URL: {url}")
+            logger.error(f"Parameters: {params}")
+            logger.error(f"Headers: {headers}")
+            logger.error(f"Error: {str(e)}")
+            raise
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
         try:
