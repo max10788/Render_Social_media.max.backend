@@ -282,14 +282,10 @@ async def __aexit__(self, exc_type, exc_val, exc_tb):
     async def _fetch_custom_token_data(self, token_address: str, chain: str) -> Optional[Token]:
         """Holt Token-Daten für verschiedene Chains mit Rate-Limit-Handling"""
         try:
-            # Rate-Limit-Handling für CoinGecko
-            await self._enforce_coingecko_rate_limit()
+            # ENTFERNEN: await self._enforce_coingecko_rate_limit()
             
-            # Alte Methode: async with self.price_service:
-            # Neue Methode:
+            # Hole Token-Daten von CoinGecko
             async with self.coingecko_provider:
-                # Alte Methode: price_data = await self.price_service.get_token_price(token_address, chain)
-                # Neue Methode:
                 price_data = await self.coingecko_provider.get_token_price(token_address, chain)
             
             # Erstelle Token-Objekt
@@ -318,7 +314,7 @@ async def __aexit__(self, exc_type, exc_val, exc_tb):
             return token
         except Exception as e:
             logger.error(f"Error fetching token data for {token_address} on {chain}: {e}")
-            return None
+        return None
     
     async def _fetch_evm_token_data(self, token: Token) -> Token:
         """Holt zusätzliche Token-Daten für EVM-Chains"""
