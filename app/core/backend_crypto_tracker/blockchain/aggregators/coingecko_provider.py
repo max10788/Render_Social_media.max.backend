@@ -441,3 +441,49 @@ class CoinGeckoProvider(BaseAPIProvider):
         if hasattr(self, 'client_session') and self.client_session:
             await self.client_session.close()
             logger.info("CoinGeckoProvider client session closed successfully")
+
+
+class EthereumProvider(BaseAPIProvider):
+    """Ethereum API-Anbieter - nutzt verschiedene Datenquellen"""
+    
+    def __init__(self):
+        # Initialisiere die Basisklasse
+        super().__init__("Ethereum", "https://api.etherscan.io/api", None, "ETHERSCAN_API_KEY")
+        
+        # Initialisiere den CoinGecko Provider für Preisdaten und Token-Halter
+        self.coingecko_provider = CoinGeckoProvider()
+        
+        # Mindestabstand zwischen Anfragen
+        self.min_request_interval = 0.2
+    
+    async def get_token_price(self, token_address: str, chain: str = 'ethereum') -> Optional[TokenPriceData]:
+        """Holt Token-Preisdaten von CoinGecko"""
+        return await self.coingecko_provider.get_token_price(token_address, chain)
+    
+    async def get_token_holders(self, token_address: str, chain: str = 'ethereum', limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Holt die Top-Token-Halter für einen bestimmten Token.
+        Delegiert an CoinGeckoProvider.
+        
+        Args:
+            token_address: Die Token-Vertragsadresse
+            chain: Die Blockchain (Standard: ethereum)
+            limit: Maximale Anzahl an Haltern, die abgerufen werden sollen
+            
+        Returns:
+            Eine Liste von Dictionaries mit Halter-Informationen
+        """
+        try:
+            return await self.coingecko_provider.get_token_holders(token_address, chain, limit)
+        except Exception as e:
+            logger.error(f"Error fetching token holders from EthereumProvider: {e}")
+            return []
+    
+    async def close(self):
+        """Schließt alle offenen Ressourcen wie Client-Sessions."""
+        if hasattr(self, 'client_session') and self.client_session:
+            await self.client_session.close()
+            logger.info("EthereumProvider client session closed successfully")
+        
+        # Schließe auch den CoinGeckoProvider
+        await self.coingecko_provider.close()
