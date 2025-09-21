@@ -2,7 +2,9 @@
 CoinGecko API provider implementation.
 """
 
+import asyncio
 import json
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -17,9 +19,11 @@ class CoinGeckoProvider(BaseAPIProvider):
     """CoinGecko API-Anbieter - umfangreichste kostenlose API"""
     
     def __init__(self, api_key: Optional[str] = None):
-        # Korrigierte Initialisierung mit allen erforderlichen Parametern
         super().__init__("CoinGecko", "https://api.coingecko.com/api/v3", api_key, "COINGECKO_API_KEY")
-        self.min_request_interval = 0.5  # Höheres Rate-Limiting
+        self.min_request_interval = 2.0  # Erhöht auf 2 Sekunden zwischen Anfragen
+        self.last_request_time = 0
+        self.rate_limit_retry_count = 0
+        self.max_retries = 3
     
     async def _make_request(self, url: str, params: Dict = None, headers: Dict = None) -> Dict:
         """
@@ -34,8 +38,19 @@ class CoinGeckoProvider(BaseAPIProvider):
             Die JSON-Antwort als Dictionary
         """
         try:
+            # Zusätzliche Rate-Limit-Prüfung
+            current_time = time.time()
+            time_since_last_request = current_time - self.last_request_time
+            
+            if time_since_last_request < self.min_request_interval:
+                wait_time = self.min_request_interval - time_since_last_request
+                logger.info(f"Rate limiting: Waiting {wait_time:.2f} seconds before next request to CoinGecko")
+                await asyncio.sleep(wait_time)
+            
             # Führe die eigentliche Anfrage durch
             response = await super()._make_request(url, params, headers)
+            self.last_request_time = time.time()
+            self.rate_limit_retry_count = 0  # Reset bei erfolgreicher Anfrage
             
             # Logge die direkte API-Antwort
             logger.info(f"CoinGecko API Response - URL: {url}")
@@ -50,6 +65,17 @@ class CoinGeckoProvider(BaseAPIProvider):
             logger.error(f"Parameters: {params}")
             logger.error(f"Headers: {headers}")
             logger.error(f"Error: {str(e)}")
+            
+            # Bei Rate-Limit-Fehlern Retry-Logik
+            if "rate limit" in str(e).lower() or "429" in str(e):
+                self.rate_limit_retry_count += 1
+                if self.rate_limit_retry_count <= self.max_retries:
+                    # Exponentielles Backoff bei Rate-Limit
+                    wait_time = min(60, 5 * (2 ** (self.rate_limit_retry_count - 1)))
+                    logger.warning(f"Rate limit exceeded. Retry {self.rate_limit_retry_count}/{self.max_retries} after {wait_time} seconds")
+                    await asyncio.sleep(wait_time)
+                    return await self._make_request(url, params, headers)
+            
             raise
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
@@ -71,6 +97,11 @@ class CoinGeckoProvider(BaseAPIProvider):
             
             data = await self._make_request(url, params, headers)
             
+            # Überprüfen, ob Daten für den Token vorhanden sind
+            if not data or token_address.lower() not in data:
+                logger.warning(f"No data found for token {token_address} on {chain}")
+                return None
+            
             token_data = data.get(token_address.lower(), {})
             if token_data:
                 return TokenPriceData(
@@ -85,6 +116,7 @@ class CoinGeckoProvider(BaseAPIProvider):
             logger.error(f"Error fetching from CoinGecko: {e}")
         
         return None
+    
     
     async def get_token_metadata(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
         """Holt Token-Metadaten wie Beschreibung, Website, Social Links"""
