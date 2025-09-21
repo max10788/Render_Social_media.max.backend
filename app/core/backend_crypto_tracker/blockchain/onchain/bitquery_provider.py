@@ -2,6 +2,7 @@
 Bitquery API provider implementation.
 """
 
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,37 @@ class BitqueryProvider(BaseAPIProvider):
     def __init__(self, api_key: Optional[str] = None):
         super().__init__("Bitquery", "https://graphql.bitquery.io", api_key, "BITQUERY_API_KEY")
         self.min_request_interval = 0.5  # Höheres Rate-Limiting für GraphQL
+    
+    async def _make_post_request(self, url: str, payload: Dict, headers: Dict = None) -> Dict:
+        """
+        Führt eine POST-Anfrage durch und loggt die direkte Antwort.
+        
+        Args:
+            url: Die URL für die API-Anfrage
+            payload: Die Payload für die Anfrage
+            headers: Die Header für die Anfrage
+            
+        Returns:
+            Die JSON-Antwort als Dictionary
+        """
+        try:
+            # Führe die eigentliche Anfrage durch
+            response = await super()._make_post_request(url, payload, headers)
+            
+            # Logge die direkte API-Antwort
+            logger.info(f"Bitquery API Response - URL: {url}")
+            logger.info(f"Payload: {json.dumps(payload, indent=2)}")
+            logger.info(f"Headers: {headers}")
+            logger.info(f"Response: {json.dumps(response, indent=2)}")
+            
+            return response
+        except Exception as e:
+            # Logge den Fehler bei der Anfrage
+            logger.error(f"Bitquery API Request Failed - URL: {url}")
+            logger.error(f"Payload: {json.dumps(payload, indent=2)}")
+            logger.error(f"Headers: {headers}")
+            logger.error(f"Error: {str(e)}")
+            raise
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
         try:
