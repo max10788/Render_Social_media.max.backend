@@ -2,9 +2,7 @@
 CoinGecko API provider implementation.
 """
 
-import asyncio
 import json
-import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -19,11 +17,22 @@ class CoinGeckoProvider(BaseAPIProvider):
     """CoinGecko API-Anbieter - umfangreichste kostenlose API"""
     
     def __init__(self, api_key: Optional[str] = None):
-        super().__init__("CoinGecko", "https://api.coingecko.com/api/v3", api_key, "COINGECKO_API_KEY")
-        self.min_request_interval = 2.0  # Erhöht auf 2 Sekunden zwischen Anfragen
-        self.last_request_time = 0
-        self.rate_limit_retry_count = 0
-        self.max_retries = 3
+        # Bestimme die richtige Basis-URL basierend auf dem API-Schlüssel
+        if api_key:
+            # Bei Pro-API-Schlüssel die Pro-URL verwenden
+            base_url = "https://pro-api.coingecko.com/api/v3"
+        else:
+            # Ansonsten die Standard-URL für kostenlose Anfragen
+            base_url = "https://api.coingecko.com/api/v3"
+        
+        super().__init__("CoinGecko", base_url, api_key, "COINGECKO_API_KEY")
+        self.min_request_interval = 0.5  # Höheres Rate-Limiting
+        
+        # Logging für URL-Auswahl
+        if api_key:
+            logger.info("CoinGeckoProvider: Using Pro API URL (pro-api.coingecko.com)")
+        else:
+            logger.info("CoinGeckoProvider: Using Standard API URL (api.coingecko.com)")
     
     async def _make_request(self, url: str, params: Dict = None, headers: Dict = None) -> Dict:
         """
@@ -38,19 +47,8 @@ class CoinGeckoProvider(BaseAPIProvider):
             Die JSON-Antwort als Dictionary
         """
         try:
-            # Zusätzliche Rate-Limit-Prüfung
-            current_time = time.time()
-            time_since_last_request = current_time - self.last_request_time
-            
-            if time_since_last_request < self.min_request_interval:
-                wait_time = self.min_request_interval - time_since_last_request
-                logger.info(f"Rate limiting: Waiting {wait_time:.2f} seconds before next request to CoinGecko")
-                await asyncio.sleep(wait_time)
-            
             # Führe die eigentliche Anfrage durch
             response = await super()._make_request(url, params, headers)
-            self.last_request_time = time.time()
-            self.rate_limit_retry_count = 0  # Reset bei erfolgreicher Anfrage
             
             # Logge die direkte API-Antwort
             logger.info(f"CoinGecko API Response - URL: {url}")
@@ -66,15 +64,10 @@ class CoinGeckoProvider(BaseAPIProvider):
             logger.error(f"Headers: {headers}")
             logger.error(f"Error: {str(e)}")
             
-            # Bei Rate-Limit-Fehlern Retry-Logik
-            if "rate limit" in str(e).lower() or "429" in str(e):
-                self.rate_limit_retry_count += 1
-                if self.rate_limit_retry_count <= self.max_retries:
-                    # Exponentielles Backoff bei Rate-Limit
-                    wait_time = min(60, 5 * (2 ** (self.rate_limit_retry_count - 1)))
-                    logger.warning(f"Rate limit exceeded. Retry {self.rate_limit_retry_count}/{self.max_retries} after {wait_time} seconds")
-                    await asyncio.sleep(wait_time)
-                    return await self._make_request(url, params, headers)
+            # Spezielle Behandlung für Pro-API-URL-Fehler
+            if "error_code:10010" in str(e) or "pro-api.coingecko.com" in str(e):
+                logger.error("CoinGecko Pro API URL error detected. Please check if you're using the correct API key and URL.")
+                logger.error("When using a Pro API key, the base URL must be: https://pro-api.coingecko.com/api/v3/")
             
             raise
     
@@ -116,7 +109,6 @@ class CoinGeckoProvider(BaseAPIProvider):
             logger.error(f"Error fetching from CoinGecko: {e}")
         
         return None
-    
     
     async def get_token_metadata(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
         """Holt Token-Metadaten wie Beschreibung, Website, Social Links"""
@@ -271,4 +263,10 @@ class CoinGeckoProvider(BaseAPIProvider):
         return mapping.get(chain, 'ethereum')
     
     def get_rate_limits(self) -> Dict[str, int]:
-        return {"requests_per_minute": 30, "requests_per_hour": 1800}
+        # Unterschiedliche Rate-Limits für Free vs Pro API
+        if self.api_key:
+            # Pro API hat höhere Limits
+            return {"requests_per_minute": 50, "requests_per_hour": 3000}
+        else:
+            # Free API hat niedrigere Limits
+            return {"requests_per_minute": 10, "requests_per_hour": 100}
