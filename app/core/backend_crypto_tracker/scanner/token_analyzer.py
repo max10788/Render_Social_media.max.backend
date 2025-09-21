@@ -2,15 +2,15 @@ import asyncio
 import aiohttp
 import logging
 from datetime import datetime, timedelta
-import time  # Bereits vorhanden
-import random  # Bereits vorhanden
+import time
+import random
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 from web3 import Web3
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import wraps
-import os  # FEHLT - HINZUFÜGEN
+import os
 
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, InvalidAddressException
@@ -76,78 +76,79 @@ def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60):
         return wrapper
     return decorator
 
-def __init__(self, config: TokenAnalysisConfig = None):
-    self.config = config or TokenAnalysisConfig()
-    
-    # Provider-Initialisierung
-    self.coingecko_provider = None
-    self.ethereum_provider = None
-    self.bsc_provider = None
-    self.solana_provider = None
-    self.sui_provider = None
-    
-    self.w3_eth = None
-    self.w3_bsc = None
-    
-    # Konfiguration laden
-    self.ethereum_rpc = scanner_config.rpc_config.ethereum_rpc
-    self.bsc_rpc = scanner_config.rpc_config.bsc_rpc
-    self.etherscan_key = scanner_config.rpc_config.etherscan_api_key
-    self.bscscan_key = scanner_config.rpc_config.bscscan_api_key
-    
-    # Bekannte Contract-Adressen
-    self.known_contracts = scanner_config.rpc_config.known_contracts
-    self.cex_wallets = scanner_config.rpc_config.cex_wallets
-    
-async def __aenter__(self):
-    # Provider initialisieren
-    self.coingecko_provider = CoinGeckoProvider()  # KEIN PARAMETER MEHR
-    self.ethereum_provider = EthereumProvider(self.etherscan_key)
-    self.bsc_provider = EthereumProvider(self.bscscan_key)  # BSC verwendet auch EthereumProvider
-    self.solana_provider = SolanaProvider()
-    self.sui_provider = SuiProvider()
-    
-    self.w3_eth = Web3(Web3.HTTPProvider(self.ethereum_rpc))
-    self.w3_bsc = Web3(Web3.HTTPProvider(self.bsc_rpc))
-    
-    # Provider-Sessions initialisieren
-    await self.coingecko_provider.__aenter__()
-    await self.ethereum_provider.__aenter__()
-    await self.bsc_provider.__aenter__()
-    await self.solana_provider.__aenter__()
-    await self.sui_provider.__aenter__()
-    
-    return self
-    
-async def __aexit__(self, exc_type, exc_val, exc_tb):
-    # Sicheres Schließen aller Ressourcen
-    close_tasks = []
-    
-    if self.coingecko_provider:
-        close_tasks.append(self._safe_close(self.coingecko_provider, exc_type, exc_val, exc_tb, "coingecko_provider"))
-    
-    if self.ethereum_provider:
-        close_tasks.append(self._safe_close(self.ethereum_provider, exc_type, exc_val, exc_tb, "ethereum_provider"))
-    
-    if self.bsc_provider:
-        close_tasks.append(self._safe_close(self.bsc_provider, exc_type, exc_val, exc_tb, "bsc_provider"))
-    
-    if self.solana_provider:
-        close_tasks.append(self._safe_close(self.solana_provider, exc_type, exc_val, exc_tb, "solana_provider"))
-    
-    if self.sui_provider:
-        close_tasks.append(self._safe_close(self.sui_provider, exc_type, exc_val, exc_tb, "sui_provider"))
-    
-    # Alle Schließvorgänge parallel ausführen
-    if close_tasks:
-        await asyncio.gather(*close_tasks, return_exceptions=True)
-    
-    # Web3-Verbindungen trennen
-    if hasattr(self, 'w3_eth') and self.w3_eth:
+class TokenAnalyzer:
+    def __init__(self, config: TokenAnalysisConfig = None):
+        self.config = config or TokenAnalysisConfig()
+        
+        # Provider-Initialisierung
+        self.coingecko_provider = None
+        self.ethereum_provider = None
+        self.bsc_provider = None
+        self.solana_provider = None
+        self.sui_provider = None
+        
         self.w3_eth = None
-    
-    if hasattr(self, 'w3_bsc') and self.w3_bsc:
         self.w3_bsc = None
+        
+        # Konfiguration laden
+        self.ethereum_rpc = scanner_config.rpc_config.ethereum_rpc
+        self.bsc_rpc = scanner_config.rpc_config.bsc_rpc
+        self.etherscan_key = scanner_config.rpc_config.etherscan_api_key
+        self.bscscan_key = scanner_config.rpc_config.bscscan_api_key
+        
+        # Bekannte Contract-Adressen
+        self.known_contracts = scanner_config.rpc_config.known_contracts
+        self.cex_wallets = scanner_config.rpc_config.cex_wallets
+    
+    async def __aenter__(self):
+        # Provider initialisieren
+        self.coingecko_provider = CoinGeckoProvider()  # KEIN PARAMETER MEHR
+        self.ethereum_provider = EthereumProvider(self.etherscan_key)
+        self.bsc_provider = EthereumProvider(self.bscscan_key)  # BSC verwendet auch EthereumProvider
+        self.solana_provider = SolanaProvider()
+        self.sui_provider = SuiProvider()
+        
+        self.w3_eth = Web3(Web3.HTTPProvider(self.ethereum_rpc))
+        self.w3_bsc = Web3(Web3.HTTPProvider(self.bsc_rpc))
+        
+        # Provider-Sessions initialisieren
+        await self.coingecko_provider.__aenter__()
+        await self.ethereum_provider.__aenter__()
+        await self.bsc_provider.__aenter__()
+        await self.solana_provider.__aenter__()
+        await self.sui_provider.__aenter__()
+        
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # Sicheres Schließen aller Ressourcen
+        close_tasks = []
+        
+        if self.coingecko_provider:
+            close_tasks.append(self._safe_close(self.coingecko_provider, exc_type, exc_val, exc_tb, "coingecko_provider"))
+        
+        if self.ethereum_provider:
+            close_tasks.append(self._safe_close(self.ethereum_provider, exc_type, exc_val, exc_tb, "ethereum_provider"))
+        
+        if self.bsc_provider:
+            close_tasks.append(self._safe_close(self.bsc_provider, exc_type, exc_val, exc_tb, "bsc_provider"))
+        
+        if self.solana_provider:
+            close_tasks.append(self._safe_close(self.solana_provider, exc_type, exc_val, exc_tb, "solana_provider"))
+        
+        if self.sui_provider:
+            close_tasks.append(self._safe_close(self.sui_provider, exc_type, exc_val, exc_tb, "sui_provider"))
+        
+        # Alle Schließvorgänge parallel ausführen
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+        
+        # Web3-Verbindungen trennen
+        if hasattr(self, 'w3_eth') and self.w3_eth:
+            self.w3_eth = None
+        
+        if hasattr(self, 'w3_bsc') and self.w3_bsc:
+            self.w3_bsc = None
     
     async def _safe_close(self, service, exc_type, exc_val, exc_tb, service_name):
         """Sicheres Schließen einer Service-Verbindung"""
@@ -282,8 +283,6 @@ async def __aexit__(self, exc_type, exc_val, exc_tb):
     async def _fetch_custom_token_data(self, token_address: str, chain: str) -> Optional[Token]:
         """Holt Token-Daten für verschiedene Chains mit Rate-Limit-Handling"""
         try:
-            # ENTFERNEN: await self._enforce_coingecko_rate_limit()
-            
             # Hole Token-Daten von CoinGecko
             async with self.coingecko_provider:
                 price_data = await self.coingecko_provider.get_token_price(token_address, chain)
@@ -364,20 +363,14 @@ async def __aexit__(self, exc_type, exc_val, exc_tb):
             # Prüfe, ob der Contract verifiziert ist
             try:
                 if token.chain == 'ethereum':
-                    # Alte Methode: token.contract_verified = await self.etherscan_api.is_contract_verified(token.address, 'ethereum')
-                    # Neue Methode:
                     token.contract_verified = await self.ethereum_provider.is_contract_verified(token.address, 'ethereum')
                 else:
-                    # Alte Methode: token.contract_verified = await self.etherscan_api.is_contract_verified(token.address, 'bsc')
-                    # Neue Methode:
                     token.contract_verified = await self.bsc_provider.is_contract_verified(token.address, 'bsc')
             except Exception:
                 pass
             
             # Hole Erstellungsdatum des Contracts
             try:
-                # Alte Methode: creation_tx = await self.etherscan_api.get_contract_creation_tx(token.address, token.chain)
-                # Neue Methode:
                 if token.chain == 'ethereum':
                     creation_tx = await self.ethereum_provider.get_contract_creation_tx(token.address, token.chain)
                 else:
@@ -399,8 +392,6 @@ async def __aexit__(self, exc_type, exc_val, exc_tb):
     async def _fetch_solana_token_data(self, token: Token) -> Token:
         """Holt zusätzliche Token-Daten für Solana"""
         try:
-            # Alte Methode: token_info = await self.solana_api.get_token_info(token.address)
-            # Neue Methode:
             token_info = await self.solana_provider.get_token_info(token.address)
             
             if token_info:
@@ -416,8 +407,6 @@ async def __aexit__(self, exc_type, exc_val, exc_tb):
     async def _fetch_sui_token_data(self, token: Token) -> Token:
         """Holt zusätzliche Token-Daten für Sui"""
         try:
-            # Alte Methode: token_info = await self.sui_api.get_token_info(token.address)
-            # Neue Methode:
             token_info = await self.sui_provider.get_token_info(token.address)
             
             if token_info:
@@ -434,19 +423,13 @@ async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Holt Token-Holder für verschiedene Chains"""
         try:
             if chain in ['ethereum', 'bsc']:
-                # Alte Methode: return await self.etherscan_api.get_token_holders(token_address, chain)
-                # Neue Methode:
                 if chain == 'ethereum':
                     return await self.ethereum_provider.get_token_holders(token_address, chain)
                 else:
                     return await self.bsc_provider.get_token_holders(token_address, chain)
             elif chain == 'solana':
-                # Alte Methode: return await self.solana_api.get_token_holders(token_address)
-                # Neue Methode:
                 return await self.solana_provider.get_token_holders(token_address)
             elif chain == 'sui':
-                # Alte Methode: return await self.sui_api.get_token_holders(token_address)
-                # Neue Methode:
                 return await self.sui_provider.get_token_holders(token_address)
             else:
                 return []
@@ -499,19 +482,13 @@ async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Holt Transaktionsdaten für eine Wallet"""
         try:
             if chain in ['ethereum', 'bsc']:
-                # Alte Methode: return await self.etherscan_api.get_wallet_transactions(wallet_address, chain)
-                # Neue Methode:
                 if chain == 'ethereum':
                     return await self.ethereum_provider.get_wallet_transactions(wallet_address, chain)
                 else:
                     return await self.bsc_provider.get_wallet_transactions(wallet_address, chain)
             elif chain == 'solana':
-                # Alte Methode: return await self.solana_api.get_wallet_transactions(wallet_address)
-                # Neue Methode:
                 return await self.solana_provider.get_wallet_transactions(wallet_address)
             elif chain == 'sui':
-                # Alte Methode: return await self.sui_api.get_wallet_transactions(wallet_address)
-                # Neue Methode:
                 return await self.sui_provider.get_wallet_transactions(wallet_address)
             else:
                 return {}
