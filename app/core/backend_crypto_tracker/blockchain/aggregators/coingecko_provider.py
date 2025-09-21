@@ -17,7 +17,8 @@ class CoinGeckoProvider(BaseAPIProvider):
     """CoinGecko API-Anbieter - umfangreichste kostenlose API"""
     
     def __init__(self, api_key: Optional[str] = None):
-        super().__init__("COINGECKO_API_KEY")
+        # Korrigierte Initialisierung mit allen erforderlichen Parametern
+        super().__init__("CoinGecko", "https://api.coingecko.com/api/v3", api_key, "COINGECKO_API_KEY")
         self.min_request_interval = 0.5  # Höheres Rate-Limiting
     
     async def _make_request(self, url: str, params: Dict = None, headers: Dict = None) -> Dict:
