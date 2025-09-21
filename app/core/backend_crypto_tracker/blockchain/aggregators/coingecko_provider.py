@@ -3,6 +3,7 @@ CoinGecko API provider implementation.
 """
 
 import json
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -16,23 +17,21 @@ logger = get_logger(__name__)
 class CoinGeckoProvider(BaseAPIProvider):
     """CoinGecko API-Anbieter - umfangreichste kostenlose API"""
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self):
+        # Lese API-Schlüssel ausschließlich aus der Umgebungsvariable
+        api_key_from_env = os.getenv("COINGECKO_API_KEY")
+        
         # Bestimme die richtige Basis-URL basierend auf dem API-Schlüssel
-        if api_key:
-            # Bei Pro-API-Schlüssel die Pro-URL verwenden
+        if api_key_from_env:
             base_url = "https://pro-api.coingecko.com/api/v3"
+            logger.info("CoinGeckoProvider: Using Pro API URL (pro-api.coingecko.com) with API key from COINGECKO_API_KEY")
         else:
-            # Ansonsten die Standard-URL für kostenlose Anfragen
             base_url = "https://api.coingecko.com/api/v3"
+            logger.info("CoinGeckoProvider: Using Standard API URL (api.coingecko.com) without API key")
         
-        super().__init__("CoinGecko", base_url, api_key, "COINGECKO_API_KEY")
+        # Initialisiere die Basisklasse mit der Umgebungsvariable
+        super().__init__("CoinGecko", base_url, None, "COINGECKO_API_KEY")
         self.min_request_interval = 0.5  # Höheres Rate-Limiting
-        
-        # Logging für URL-Auswahl
-        if api_key:
-            logger.info("CoinGeckoProvider: Using Pro API URL (pro-api.coingecko.com)")
-        else:
-            logger.info("CoinGeckoProvider: Using Standard API URL (api.coingecko.com)")
     
     async def _make_request(self, url: str, params: Dict = None, headers: Dict = None) -> Dict:
         """
@@ -87,6 +86,9 @@ class CoinGeckoProvider(BaseAPIProvider):
             headers = {}
             if self.api_key:
                 headers['x-cg-pro-api-key'] = self.api_key
+                logger.debug(f"Using CoinGecko Pro API key for request to {url}")
+            else:
+                logger.debug(f"Making CoinGecko request without API key to {url}")
             
             data = await self._make_request(url, params, headers)
             
