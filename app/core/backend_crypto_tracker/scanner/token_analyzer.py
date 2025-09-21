@@ -156,46 +156,42 @@ async def __aexit__(self, exc_type, exc_val, exc_tb):
         except Exception as e:
             logger.warning(f"Error closing {service_name}: {str(e)}")
     
-    async def scan_low_cap_tokens(self, max_tokens: int = None) -> List[Dict[str, Any]]:
-        """Hauptfunktion zum Scannen von Low-Cap Tokens"""
-        max_tokens = max_tokens or self.config.max_tokens_per_scan
-        
-        logger.info(f"Starting low-cap token scan (max {max_tokens} tokens)...")
-        
-        # Hole Low-Cap Tokens
-        # Alte Methode: async with self.price_service:
-        # Neue Methode:
-        async with self.coingecko_provider:
-            # Alte Methode: tokens = await self.price_service.get_low_cap_tokens(
-            # Neue Methode:
-            tokens = await self.coingecko_provider.get_low_cap_tokens(
-                max_market_cap=self.config.max_market_cap,
-                limit=max_tokens
-            )
-        
-        if not tokens:
-            logger.error("No tokens found")
-            return []
-        
-        # Analysiere Tokens
-        results = []
-        for i, token in enumerate(tokens):
-            try:
-                logger.info(f"Processing token {i+1}/{len(tokens)}: {token.symbol}")
-                
-                # Rate limiting
-                if i > 0:
-                    await asyncio.sleep(self.config.request_delay_seconds)
-                
-                analysis = await self.analyze_token(token)
-                if analysis:
-                    results.append(analysis)
-            except Exception as e:
-                logger.error(f"Error analyzing {token.symbol}: {e}")
-                continue
-        
-        logger.info(f"Analysis completed. {len(results)} tokens successfully analyzed.")
-        return results
+async def scan_low_cap_tokens(self, max_tokens: int = None) -> List[Dict[str, Any]]:
+    """Hauptfunktion zum Scannen von Low-Cap Tokens"""
+    max_tokens = max_tokens or self.config.max_tokens_per_scan
+    
+    logger.info(f"Starting low-cap token scan (max {max_tokens} tokens)...")
+    
+    # Hole Low-Cap Tokens
+    async with self.coingecko_provider:
+        tokens = await self.coingecko_provider.get_low_cap_tokens(
+            max_market_cap=self.config.max_market_cap,
+            limit=max_tokens
+        )
+    
+    if not tokens:
+        logger.error("No tokens found")
+        return []
+    
+    # Analysiere Tokens
+    results = []
+    for i, token in enumerate(tokens):
+        try:
+            logger.info(f"Processing token {i+1}/{len(tokens)}: {token.symbol}")
+            
+            # Rate limiting
+            if i > 0:
+                await asyncio.sleep(self.config.request_delay_seconds)
+            
+            analysis = await self.analyze_token(token)
+            if analysis:
+                results.append(analysis)
+        except Exception as e:
+            logger.error(f"Error analyzing {token.symbol}: {e}")
+            continue
+    
+    logger.info(f"Analysis completed. {len(results)} tokens successfully analyzed.")
+    return results
     
     async def analyze_token(self, token_data: Token) -> Optional[Dict[str, Any]]:
         """Vollständige Analyse eines Tokens"""
