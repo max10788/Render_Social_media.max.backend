@@ -33,6 +33,8 @@ class BaseAPIProvider(ABC):
         self.last_request_time = 0
         self.min_request_interval = 1.0  # Sekunden zwischen Anfragen
         self.is_available = True
+        self.retry_count = 0
+        self.max_retries = 3
         
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -53,7 +55,7 @@ class BaseAPIProvider(ABC):
         pass
     
     async def _make_request(self, url: str, params: Dict[str, Any], headers: Dict[str, str] = None) -> Dict[str, Any]:
-        """Interne Methode für HTTP-Anfragen mit Rate-Limiting"""
+        """Interne Methode für HTTP-Anfragen mit Rate-Limiting und Retry-Logik"""
         # Rate-Limiting prüfen
         rate_limits = self.get_rate_limits()
         if not await self.rate_limiter.acquire(self.name, rate_limits.get("requests_per_minute", 10), 60):
@@ -67,20 +69,49 @@ class BaseAPIProvider(ABC):
         self.last_request_time = time.time()
         
         try:
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+                
             async with self.session.get(url, params=params, headers=headers) as response:
                 if response.status == 429:
                     error_text = await response.text()
                     logger.warning(f"Rate limit exceeded for {self.name}: {error_text}")
-                    raise RateLimitExceededException(self.name, rate_limits.get("requests_per_minute", 10), "minute")
+                    
+                    # Retry-Logik für Rate-Limit-Fehler
+                    self.retry_count += 1
+                    if self.retry_count <= self.max_retries:
+                        # Exponentielles Backoff
+                        retry_after = int(response.headers.get('Retry-After', 5 * (2 ** (self.retry_count - 1))))
+                        logger.warning(f"Rate limit exceeded. Retry {self.retry_count}/{self.max_retries} after {retry_after} seconds")
+                        await asyncio.sleep(retry_after)
+                        return await self._make_request(url, params, headers)
+                    else:
+                        self.retry_count = 0  # Reset retry count
+                        raise RateLimitExceededException(self.name, rate_limits.get("requests_per_minute", 10), "minute")
                 
-                response.raise_for_status()
-                return await response.json()
+                # Reset retry count bei erfolgreicher Anfrage
+                self.retry_count = 0
+                
+                if response.status >= 400:
+                    error_text = await response.text()
+                    logger.error(f"HTTP error {response.status} for {self.name}: {error_text}")
+                    raise APIException(f"HTTP error {response.status}: {error_text}")
+                
+                try:
+                    return await response.json()
+                except Exception as e:
+                    logger.error(f"Error parsing JSON response from {self.name}: {e}")
+                    raise APIException(f"Error parsing response: {str(e)}")
+                    
         except aiohttp.ClientError as e:
             logger.error(f"Network error for {self.name}: {e}")
             raise APIException(f"Network error: {str(e)}")
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout error for {self.name}")
+            raise APIException(f"Timeout error for {self.name}")
     
     async def _make_post_request(self, url: str, json_data: Dict[str, Any], headers: Dict[str, str] = None) -> Dict[str, Any]:
-        """Interne Methode für POST-Anfragen mit Rate-Limiting"""
+        """Interne Methode für POST-Anfragen mit Rate-Limiting und Retry-Logik"""
         # Rate-Limiting prüfen
         rate_limits = self.get_rate_limits()
         if not await self.rate_limiter.acquire(self.name, rate_limits.get("requests_per_minute", 10), 60):
@@ -94,17 +125,46 @@ class BaseAPIProvider(ABC):
         self.last_request_time = time.time()
         
         try:
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+                
             async with self.session.post(url, json=json_data, headers=headers) as response:
                 if response.status == 429:
                     error_text = await response.text()
                     logger.warning(f"Rate limit exceeded for {self.name}: {error_text}")
-                    raise RateLimitExceededException(self.name, rate_limits.get("requests_per_minute", 10), "minute")
+                    
+                    # Retry-Logik für Rate-Limit-Fehler
+                    self.retry_count += 1
+                    if self.retry_count <= self.max_retries:
+                        # Exponentielles Backoff
+                        retry_after = int(response.headers.get('Retry-After', 5 * (2 ** (self.retry_count - 1))))
+                        logger.warning(f"Rate limit exceeded. Retry {self.retry_count}/{self.max_retries} after {retry_after} seconds")
+                        await asyncio.sleep(retry_after)
+                        return await self._make_post_request(url, json_data, headers)
+                    else:
+                        self.retry_count = 0  # Reset retry count
+                        raise RateLimitExceededException(self.name, rate_limits.get("requests_per_minute", 10), "minute")
                 
-                response.raise_for_status()
-                return await response.json()
+                # Reset retry count bei erfolgreicher Anfrage
+                self.retry_count = 0
+                
+                if response.status >= 400:
+                    error_text = await response.text()
+                    logger.error(f"HTTP error {response.status} for {self.name}: {error_text}")
+                    raise APIException(f"HTTP error {response.status}: {error_text}")
+                
+                try:
+                    return await response.json()
+                except Exception as e:
+                    logger.error(f"Error parsing JSON response from {self.name}: {e}")
+                    raise APIException(f"Error parsing response: {str(e)}")
+                    
         except aiohttp.ClientError as e:
             logger.error(f"Network error for {self.name}: {e}")
             raise APIException(f"Network error: {str(e)}")
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout error for {self.name}")
+            raise APIException(f"Timeout error for {self.name}")
     
     def check_availability(self) -> bool:
         """Prüft, ob der Anbieter verfügbar ist"""
