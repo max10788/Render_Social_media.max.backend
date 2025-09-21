@@ -4,6 +4,7 @@ CoinGecko API provider implementation.
 
 import json
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -23,15 +24,41 @@ class CoinGeckoProvider(BaseAPIProvider):
         
         # Bestimme die richtige Basis-URL basierend auf dem API-Schlüssel
         if api_key_from_env:
-            base_url = "https://pro-api.coingecko.com/api/v3"
-            logger.info("CoinGeckoProvider: Using Pro API URL (pro-api.coingecko.com) with API key from COINGECKO_API_KEY")
+            # Prüfe, ob es ein Demo/Free API-Schlüssel ist
+            if self._is_demo_api_key(api_key_from_env):
+                base_url = "https://api.coingecko.com/api/v3"
+                logger.info("CoinGeckoProvider: Using Demo/Free API URL (api.coingecko.com) with API key from COINGECKO_API_KEY")
+            else:
+                base_url = "https://pro-api.coingecko.com/api/v3"
+                logger.info("CoinGeckoProvider: Using Pro API URL (pro-api.coingecko.com) with API key from COINGECKO_API_KEY")
         else:
+            # Kein API-Schlüssel - Standard-URL verwenden
             base_url = "https://api.coingecko.com/api/v3"
             logger.info("CoinGeckoProvider: Using Standard API URL (api.coingecko.com) without API key")
         
         # Initialisiere die Basisklasse mit der Umgebungsvariable
         super().__init__("CoinGecko", base_url, None, "COINGECKO_API_KEY")
         self.min_request_interval = 0.5  # Höheres Rate-Limiting
+    
+    def _is_demo_api_key(self, api_key: str) -> bool:
+        """
+        Prüft, ob es sich um einen Demo/Free API-Schlüssel handelt.
+        
+        CoinGecko Demo-API-Schlüssel beginnen normalerweise mit "CG-" 
+        und haben eine bestimmte Länge/Struktur.
+        """
+        if not api_key:
+            return True
+        
+        # Demo-API-Schlüssel beginnen mit "CG-" und sind kürzer als Pro-Schlüssel
+        if api_key.startswith("CG-") and len(api_key) <= 34:
+            return True
+        
+        # Wenn der Schlüssel "demo" in Kleinbuchstaben enthält
+        if "demo" in api_key.lower():
+            return True
+        
+        return False
     
     async def _make_request(self, url: str, params: Dict = None, headers: Dict = None) -> Dict:
         """
@@ -63,10 +90,14 @@ class CoinGeckoProvider(BaseAPIProvider):
             logger.error(f"Headers: {headers}")
             logger.error(f"Error: {str(e)}")
             
-            # Spezielle Behandlung für Pro-API-URL-Fehler
-            if "error_code:10010" in str(e) or "pro-api.coingecko.com" in str(e):
-                logger.error("CoinGecko Pro API URL error detected. Please check if you're using the correct API key and URL.")
-                logger.error("When using a Pro API key, the base URL must be: https://pro-api.coingecko.com/api/v3/")
+            # Spezielle Behandlung für API-URL-Fehler
+            error_msg = str(e)
+            if "pro-api.coingecko.com" in error_msg and "demo" in error_msg.lower():
+                logger.error("CoinGecko API URL mismatch detected. You might be using a demo API key with the pro-api URL.")
+                logger.error("Please check your API key type or remove the API key to use the free tier.")
+            elif "api.coingecko.com" in error_msg and "pro-api" in error_msg.lower():
+                logger.error("CoinGecko API URL mismatch detected. You might be using a pro API key with the standard API URL.")
+                logger.error("Please check your API key type or upgrade to a pro plan.")
             
             raise
     
@@ -86,7 +117,7 @@ class CoinGeckoProvider(BaseAPIProvider):
             headers = {}
             if self.api_key:
                 headers['x-cg-pro-api-key'] = self.api_key
-                logger.debug(f"Using CoinGecko Pro API key for request to {url}")
+                logger.debug(f"Using CoinGecko API key for request to {url}")
             else:
                 logger.debug(f"Making CoinGecko request without API key to {url}")
             
@@ -266,9 +297,9 @@ class CoinGeckoProvider(BaseAPIProvider):
     
     def get_rate_limits(self) -> Dict[str, int]:
         # Unterschiedliche Rate-Limits für Free vs Pro API
-        if self.api_key:
+        if self.api_key and not self._is_demo_api_key(self.api_key):
             # Pro API hat höhere Limits
             return {"requests_per_minute": 50, "requests_per_hour": 3000}
         else:
-            # Free API hat niedrigere Limits
+            # Free/Demo API hat niedrigere Limits
             return {"requests_per_minute": 10, "requests_per_hour": 100}
