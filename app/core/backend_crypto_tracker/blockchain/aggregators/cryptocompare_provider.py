@@ -2,6 +2,7 @@
 CryptoCompare API provider implementation.
 """
 
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +18,37 @@ class CryptoCompareProvider(BaseAPIProvider):
     
     def __init__(self, api_key: Optional[str] = None):
         super().__init__("CryptoCompare", "https://min-api.cryptocompare.com/data", api_key, "CRYPTOCOMPARE_API_KEY")
+    
+    async def _make_request(self, url: str, params: Dict = None, headers: Dict = None) -> Dict:
+        """
+        Führt eine API-Anfrage durch und loggt die direkte Antwort.
+        
+        Args:
+            url: Die URL für die API-Anfrage
+            params: Die Parameter für die Anfrage
+            headers: Die Header für die Anfrage
+            
+        Returns:
+            Die JSON-Antwort als Dictionary
+        """
+        try:
+            # Führe die eigentliche Anfrage durch
+            response = await super()._make_request(url, params, headers)
+            
+            # Logge die direkte API-Antwort
+            logger.info(f"CryptoCompare API Response - URL: {url}")
+            logger.info(f"Parameters: {params}")
+            logger.info(f"Headers: {headers}")
+            logger.info(f"Response: {json.dumps(response, indent=2)}")
+            
+            return response
+        except Exception as e:
+            # Logge den Fehler bei der Anfrage
+            logger.error(f"CryptoCompare API Request Failed - URL: {url}")
+            logger.error(f"Parameters: {params}")
+            logger.error(f"Headers: {headers}")
+            logger.error(f"Error: {str(e)}")
+            raise
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
         try:
