@@ -116,8 +116,14 @@ class CoinGeckoProvider(BaseAPIProvider):
             
             headers = {}
             if self.api_key:
-                headers['x-cg-pro-api-key'] = self.api_key
-                logger.debug(f"Using CoinGecko API key for request to {url}")
+                if self._is_demo_api_key(self.api_key):
+                    # Für kostenlose API-Schlüssel: x-cg-api-key
+                    headers['x-cg-api-key'] = self.api_key
+                    logger.debug(f"Using CoinGecko Free API key for request to {url}")
+                else:
+                    # Für Pro-API-Schlüssel: x-cg-pro-api-key
+                    headers['x-cg-pro-api-key'] = self.api_key
+                    logger.debug(f"Using CoinGecko Pro API key for request to {url}")
             else:
                 logger.debug(f"Making CoinGecko request without API key to {url}")
             
@@ -162,7 +168,10 @@ class CoinGeckoProvider(BaseAPIProvider):
             
             headers = {}
             if self.api_key:
-                headers['x-cg-pro-api-key'] = self.api_key
+                if self._is_demo_api_key(self.api_key):
+                    headers['x-cg-api-key'] = self.api_key
+                else:
+                    headers['x-cg-pro-api-key'] = self.api_key
             
             data = await self._make_request(url, params, headers)
             
@@ -199,7 +208,10 @@ class CoinGeckoProvider(BaseAPIProvider):
             
             headers = {}
             if self.api_key:
-                headers['x-cg-pro-api-key'] = self.api_key
+                if self._is_demo_api_key(self.api_key):
+                    headers['x-cg-api-key'] = self.api_key
+                else:
+                    headers['x-cg-pro-api-key'] = self.api_key
             
             data = await self._make_request(url, params, headers)
             
@@ -223,7 +235,10 @@ class CoinGeckoProvider(BaseAPIProvider):
             
             headers = {}
             if self.api_key:
-                headers['x-cg-pro-api-key'] = self.api_key
+                if self._is_demo_api_key(self.api_key):
+                    headers['x-cg-api-key'] = self.api_key
+                else:
+                    headers['x-cg-pro-api-key'] = self.api_key
             
             data = await self._make_request(url, {}, headers)
             
@@ -247,7 +262,10 @@ class CoinGeckoProvider(BaseAPIProvider):
             
             headers = {}
             if self.api_key:
-                headers['x-cg-pro-api-key'] = self.api_key
+                if self._is_demo_api_key(self.api_key):
+                    headers['x-cg-api-key'] = self.api_key
+                else:
+                    headers['x-cg-pro-api-key'] = self.api_key
             
             data = await self._make_request(url, {}, headers)
             
@@ -276,7 +294,10 @@ class CoinGeckoProvider(BaseAPIProvider):
             
             headers = {}
             if self.api_key:
-                headers['x-cg-pro-api-key'] = self.api_key
+                if self._is_demo_api_key(self.api_key):
+                    headers['x-cg-api-key'] = self.api_key
+                else:
+                    headers['x-cg-pro-api-key'] = self.api_key
             
             data = await self._make_request(url, {}, headers)
             
@@ -299,7 +320,7 @@ class CoinGeckoProvider(BaseAPIProvider):
         # Unterschiedliche Rate-Limits für Free vs Pro API
         if self.api_key and not self._is_demo_api_key(self.api_key):
             # Pro API hat höhere Limits
-            return {"requests_per_minute": 50, "requests_per_hour": 3000}
+            return {"requests_per_minute": 500, "requests_per_hour": 3000}
         else:
             # Free/Demo API hat niedrigere Limits
-            return {"requests_per_minute": 10, "requests_per_hour": 100}
+            return {"requests_per_minute": 100, "requests_per_hour": 1000}
