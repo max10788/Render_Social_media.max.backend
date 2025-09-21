@@ -1,4 +1,3 @@
-# app/core/backend_crypto_tracker/scanner/low_cap_analyzer.py
 """
 Low-Cap-Token-Analysator, der verschiedene Analysekomponenten integriert.
 """
@@ -7,6 +6,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 import asyncio
 import logging
+import aiohttp
 
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import (
@@ -17,35 +17,30 @@ from app.core.backend_crypto_tracker.utils.exceptions import (
 )
 
 # Importiere die Klassen aus den bestehenden Dateien
-# TokenAnalyzer aus token_analyzer.py
 from app.core.backend_crypto_tracker.scanner.token_analyzer import (
     TokenAnalyzer,
     TokenAnalysisConfig
 )
 
-# Wallet-Komponenten aus wallet_classifier.py
-# Beachte: Die Hauptklasse heißt EnhancedWalletClassifier, aber wir importieren sie als WalletClassifier
-# WalletTypeEnum und WalletAnalysis sind auch dort definiert
 from app.core.backend_crypto_tracker.scanner.wallet_classifier import (
     EnhancedWalletClassifier as WalletClassifier,
     WalletTypeEnum,
     WalletAnalysis
 )
 
-# RiskAssessment aus risk_assessor.py
 from app.core.backend_crypto_tracker.scanner.risk_assessor import (
     AdvancedRiskAssessor,
     RiskAssessment
 )
 
-# Scoring-Komponenten aus scoring_engine.py
 from app.core.backend_crypto_tracker.scanner.scoring_engine import (
     MultiChainScoringEngine,
     ScanConfig
 )
 
-# Token-Modell (wird in token_analyzer.py verwendet)
-# from app.core.backend_crypto_tracker.processor.database.models.token import Token
+from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
+from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap_provider import CoinMarketCapProvider
+from app.core.backend_crypto_tracker.blockchain.aggregators.cryptocompare_provider import CryptoCompareProvider
 
 
 class LowCapAnalyzer:
@@ -68,12 +63,19 @@ class LowCapAnalyzer:
         self.scoring_engine: Optional[MultiChainScoringEngine] = None
         self.wallet_classifier: Optional[WalletClassifier] = None
         
+        # Provider für API-Anfragen
+        self.providers = []
+        self.session = None
+        
         self.logger.info("LowCapAnalyzer initialisiert")
 
     async def __aenter__(self):
         """Initialisiert asynchrone Ressourcen"""
         self.logger.info("Initialisiere asynchrone Ressourcen für LowCapAnalyzer")
         try:
+            # Erstelle eine gemeinsame Session für HTTP-Anfragen
+            self.session = aiohttp.ClientSession()
+            
             # Erstelle Instanzen der Komponenten mit asynchroner Initialisierung
             self.token_analyzer = TokenAnalyzer(self.config)
             await self.token_analyzer.__aenter__()
@@ -82,6 +84,18 @@ class LowCapAnalyzer:
             self.scoring_engine = MultiChainScoringEngine()
             self.wallet_classifier = WalletClassifier()
             await self.wallet_classifier.__aenter__()
+            
+            # Initialisiere Provider
+            self.providers = [
+                CoinGeckoProvider(),
+                CoinMarketCapProvider(),
+                CryptoCompareProvider()
+            ]
+            
+            # Provider-Sessions initialisieren
+            for provider in self.providers:
+                if hasattr(provider, '__aenter__'):
+                    await provider.__aenter__()
             
             self.logger.info("Asynchrone Ressourcen erfolgreich initialisiert")
             return self
@@ -97,6 +111,12 @@ class LowCapAnalyzer:
         # Schließe alle Komponenten in umgekehrter Reihenfolge der Erstellung
         close_tasks = []
         
+        # Schließe Provider
+        for provider in self.providers:
+            close_tasks.append(self._safe_close_component(
+                provider, exc_type, exc_val, exc_tb, f"provider_{provider.__class__.__name__}"))
+        
+        # Schließe Hauptkomponenten
         if self.wallet_classifier and hasattr(self.wallet_classifier, '__aexit__'):
             close_tasks.append(self._safe_close_component(
                 self.wallet_classifier, exc_type, exc_val, exc_tb, "wallet_classifier"))
@@ -105,9 +125,19 @@ class LowCapAnalyzer:
             close_tasks.append(self._safe_close_component(
                 self.token_analyzer, exc_type, exc_val, exc_tb, "token_analyzer"))
         
+        # Schließe Session
+        if self.session:
+            close_tasks.append(self._safe_close_session(self.session))
+        
         # Alle Schließvorgänge parallel ausführen
         if close_tasks:
-            await asyncio.gather(*close_tasks, return_exceptions=True)
+            results = await asyncio.gather(*close_tasks, return_exceptions=True)
+            
+            # Logge Fehler beim Schließen
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    component_name = close_tasks[i].__name__ if hasattr(close_tasks[i], '__name__') else "unknown"
+                    self.logger.error(f"Fehler beim Schließen von {component_name}: {str(result)}")
         
         self.logger.info("Asynchrone Ressourcen erfolgreich geschlossen")
 
@@ -116,7 +146,16 @@ class LowCapAnalyzer:
         try:
             await component.__aexit__(exc_type, exc_val, exc_tb)
         except Exception as e:
-            self.logger.warning(f"Fehler beim Schließen von {component_name}: {str(e)}")
+            self.logger.error(f"Fehler beim Schließen von {component_name}: {str(e)}")
+            raise
+
+    async def _safe_close_session(self, session):
+        """Sicheres Schließen einer Session"""
+        try:
+            await session.close()
+        except Exception as e:
+            self.logger.error(f"Fehler beim Schließen der Session: {str(e)}")
+            raise
 
     async def analyze_custom_token(self, token_address: str, chain: str) -> Dict[str, Any]:
         """Zentrale Analyse-Methode für einen einzelnen Token"""
@@ -247,4 +286,3 @@ class LowCapAnalyzer:
             return {"total_score": 50.0, "metrics": {}, "risk_flags": ["scoring_failed"]}
 
 # Alias für Kompatibilität, falls andere Module "LowCapAnalyzer" erwarten
-# LowCapAnalyzer = LowCapAnalyzer # Dies ist redundant, aber zeigt die Absicht
