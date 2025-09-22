@@ -52,22 +52,6 @@ class DatabaseConfig:
 # Globale Instanz
 database_config = DatabaseConfig()
 
-# Synchrone Engine und Session für FastAPI-Routen
-engine = create_engine(
-    database_config.database_url,
-    pool_size=database_config.pool_size,
-    max_overflow=database_config.max_overflow,
-    pool_timeout=database_config.pool_timeout,
-    pool_recycle=database_config.pool_recycle,
-    echo=os.getenv("DB_ECHO", "false").lower() == "true",
-    connect_args={
-        "options": f"-csearch_path={database_config.schema_name},public",
-        "sslmode": database_config.ssl_mode  # SSL-Modus in connect_args
-    }
-)
-
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-
 # Asynchrone Engine und Session
 async_engine = create_async_engine(
     database_config.async_database_url,
