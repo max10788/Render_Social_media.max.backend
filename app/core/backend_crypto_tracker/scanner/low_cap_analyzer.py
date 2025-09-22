@@ -111,6 +111,10 @@ class LowCapAnalyzer:
         # Schließe alle Komponenten in umgekehrter Reihenfolge der Erstellung
         close_tasks = []
         
+        # Schließe TokenAnalyzer (wichtig, da dieser die Provider verwaltet)
+        if self.token_analyzer:
+            close_tasks.append(self._safe_close_token_analyzer(self.token_analyzer, exc_type, exc_val, exc_tb))
+        
         # Schließe Provider
         for provider in self.providers:
             close_tasks.append(self._safe_close_component(
@@ -120,10 +124,6 @@ class LowCapAnalyzer:
         if self.wallet_classifier and hasattr(self.wallet_classifier, '__aexit__'):
             close_tasks.append(self._safe_close_component(
                 self.wallet_classifier, exc_type, exc_val, exc_tb, "wallet_classifier"))
-        
-        if self.token_analyzer and hasattr(self.token_analyzer, '__aexit__'):
-            close_tasks.append(self._safe_close_component(
-                self.token_analyzer, exc_type, exc_val, exc_tb, "token_analyzer"))
         
         # Schließe Session
         if self.session:
@@ -144,20 +144,41 @@ class LowCapAnalyzer:
     async def _safe_close_component(self, component, exc_type, exc_val, exc_tb, component_name):
         """Sicheres Schließen einer Komponente"""
         try:
-            await component.__aexit__(exc_type, exc_val, exc_tb)
+            if hasattr(component, '__aexit__'):
+                await component.__aexit__(exc_type, exc_val, exc_tb)
+            # Zusätzlich: Explizite close-Methode aufrufen, falls vorhanden
+            if hasattr(component, 'close'):
+                await component.close()
         except Exception as e:
             self.logger.error(f"Fehler beim Schließen von {component_name}: {str(e)}")
-            raise
+            # Kein raise hier, um andere Schließvorgänge nicht zu blockieren
 
     async def _safe_close_session(self, session):
         """Sicheres Schließen einer Session"""
         try:
-            await session.close()
+            if session:
+                # Schließe zuerst den Connector
+                if hasattr(session, 'connector') and session.connector:
+                    await session.connector.close()
+                # Dann schließe die Session
+                await session.close()
         except Exception as e:
             self.logger.error(f"Fehler beim Schließen der Session: {str(e)}")
-            raise
+            # Kein raise hier, um andere Schließvorgänge nicht zu blockieren
+
+    async def _safe_close_token_analyzer(self, token_analyzer, exc_type, exc_val, exc_tb):
+        """Sicheres Schließen des TokenAnalyzers"""
+        try:
+            if hasattr(token_analyzer, '__aexit__'):
+                await token_analyzer.__aexit__(exc_type, exc_val, exc_tb)
+            if hasattr(token_analyzer, 'close'):
+                await token_analyzer.close()
+        except Exception as e:
+            self.logger.error(f"Fehler beim Schließen des TokenAnalyzers: {str(e)}")
+            # Kein raise hier, um andere Schließvorgänge nicht zu blockieren
 
     async def analyze_custom_token(self, token_address: str, chain: str) -> Dict[str, Any]:
+        """Zentrale Analyse-Methode für einen einzelnen Token"""
         self.logger.info(f"Starte Analyse für Token {token_address} auf Chain {chain}")
         
         # Validierung der Eingabeparameter
