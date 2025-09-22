@@ -42,6 +42,10 @@ class BaseAPIProvider(ABC):
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.session:
+            # Schließe zuerst den Connector
+            if hasattr(self.session, 'connector') and self.session.connector:
+                await self.session.connector.close()
+            # Dann schließe die Session
             await self.session.close()
     
     @abstractmethod
@@ -169,3 +173,13 @@ class BaseAPIProvider(ABC):
     def check_availability(self) -> bool:
         """Prüft, ob der Anbieter verfügbar ist"""
         return self.is_available
+    
+    async def close(self):
+        """Schließt alle offenen Ressourcen wie Client-Sessions."""
+        if hasattr(self, 'session') and self.session:
+            # Schließe zuerst den Connector
+            if hasattr(self.session, 'connector') and self.session.connector:
+                await self.session.connector.close()
+            # Dann schließe die Session
+            await self.session.close()
+            logger.info(f"{self.name} provider client session closed successfully")
