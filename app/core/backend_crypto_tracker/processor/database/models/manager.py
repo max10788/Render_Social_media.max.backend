@@ -79,7 +79,7 @@ class DatabaseManager:
     
     @contextmanager
     def get_session(self):
-        """Context Manager for synchronous database sessions"""
+        """Context Manager für synchrone Datenbank-Sessions"""
         if not self.SessionLocal:
             raise RuntimeError("DatabaseManager not initialized for synchronous mode.")
         
@@ -96,7 +96,7 @@ class DatabaseManager:
     
     @asynccontextmanager
     async def get_async_session(self):
-        """Async Context Manager for database sessions"""
+        """Async Context Manager für Datenbank-Sessions"""
         if not self.AsyncSessionLocal:
             raise RuntimeError("DatabaseManager not initialized for asynchronous mode.")
         
