@@ -43,7 +43,7 @@ class CoinGeckoProvider(BaseAPIProvider):
         if self.api_key and not self._is_demo_api_key(self.api_key):
             self.min_request_interval = 0.12  # Pro API: ca. 500 Anfragen/Minute
         else:
-            self.min_request_interval = 6.0   # Free API: ca. 10 Anfragen/Minute
+            self.min_request_interval = 6.5   # Free API: ca. 9 Anfragen/Minute (etwas unter dem Limit)
     
     def _is_demo_api_key(self, api_key: str) -> bool:
         """
