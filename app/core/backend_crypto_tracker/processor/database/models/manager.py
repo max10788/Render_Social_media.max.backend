@@ -39,12 +39,12 @@ class DatabaseConfig:
         }
         
     def get_postgres_url(self) -> str:
-        # SSL-Parameter zur Verbindungszeichenfolge hinzugefügt
-        return f"postgresql://{self.postgres_config['username']}:{self.postgres_config['password']}@{self.postgres_config['host']}:{self.postgres_config['port']}/{self.postgres_config['database']}?sslmode={self.postgres_config['sslmode']}"
+        # Entferne sslmode aus der URL, da wir es in connect_args übergeben
+        return f"postgresql://{self.postgres_config['username']}:{self.postgres_config['password']}@{self.postgres_config['host']}:{self.postgres_config['port']}/{self.postgres_config['database']}"
     
     def get_async_postgres_url(self) -> str:
-        # SSL-Parameter zur asynchronen Verbindungszeichenfolge hinzugefügt
-        return f"postgresql+asyncpg://{self.postgres_config['username']}:{self.postgres_config['password']}@{self.postgres_config['host']}:{self.postgres_config['port']}/{self.postgres_config['database']}?sslmode={self.postgres_config['sslmode']}"
+        # Entferne sslmode aus der URL, da wir es in connect_args übergeben
+        return f"postgresql+asyncpg://{self.postgres_config['username']}:{self.postgres_config['password']}@{self.postgres_config['host']}:{self.postgres_config['port']}/{self.postgres_config['database']}"
 
 class DatabaseManager:
     def __init__(self):
