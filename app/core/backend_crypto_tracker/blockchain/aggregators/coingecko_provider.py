@@ -438,8 +438,12 @@ class CoinGeckoProvider(BaseAPIProvider):
     
     async def close(self):
         """Schließt alle offenen Ressourcen wie Client-Sessions."""
-        if hasattr(self, 'client_session') and self.client_session:
-            await self.client_session.close()
+        if hasattr(self, 'session') and self.session:
+            # Schließe zuerst den Connector
+            if hasattr(self.session, 'connector') and self.session.connector:
+                await self.session.connector.close()
+            # Dann schließe die Session
+            await self.session.close()
             logger.info("CoinGeckoProvider client session closed successfully")
 
 
@@ -481,9 +485,14 @@ class EthereumProvider(BaseAPIProvider):
     
     async def close(self):
         """Schließt alle offenen Ressourcen wie Client-Sessions."""
-        if hasattr(self, 'client_session') and self.client_session:
-            await self.client_session.close()
+        if hasattr(self, 'session') and self.session:
+            # Schließe zuerst den Connector
+            if hasattr(self.session, 'connector') and self.session.connector:
+                await self.session.connector.close()
+            # Dann schließe die Session
+            await self.session.close()
             logger.info("EthereumProvider client session closed successfully")
         
         # Schließe auch den CoinGeckoProvider
-        await self.coingecko_provider.close()
+        if hasattr(self, 'coingecko_provider'):
+            await self.coingecko_provider.close()
