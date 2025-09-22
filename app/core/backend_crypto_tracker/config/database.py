@@ -61,13 +61,31 @@ async_engine = create_async_engine(
     pool_recycle=database_config.pool_recycle,
     echo=os.getenv("DB_ECHO", "false").lower() == "true",
     connect_args={
-        "sslmode": database_config.ssl_mode  # SSL-Modus in connect_args
+        "sslmode": database_config.ssl_mode
     }
 )
 
 AsyncSessionLocal = async_sessionmaker(
     bind=async_engine, 
     class_=AsyncSession, 
+    expire_on_commit=False
+)
+
+# Synchronous Engine und Session (DAS FEHLT)
+engine = create_engine(
+    database_config.database_url,
+    pool_size=database_config.pool_size,
+    max_overflow=database_config.max_overflow,
+    pool_timeout=database_config.pool_timeout,
+    pool_recycle=database_config.pool_recycle,
+    echo=os.getenv("DB_ECHO", "false").lower() == "true",
+    connect_args={
+        "sslmode": database_config.ssl_mode
+    }
+)
+
+SessionLocal = sessionmaker(
+    bind=engine,
     expire_on_commit=False
 )
 
