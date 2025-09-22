@@ -160,8 +160,8 @@ class EthereumProvider(BaseAPIProvider):
         
         return None
     
-    # In der get_token_price-Methode (ca. Zeile 200), füge eine Antwortprüfung hinzu:
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
+        """Ethereum-spezifische Token-Preisabfrage"""
         try:
             # Versuche zuerst, den Preis über CoinGecko zu erhalten (genauere Daten)
             coingecko_price = await self.coingecko_provider.get_token_price(token_address, chain)
@@ -199,7 +199,8 @@ class EthereumProvider(BaseAPIProvider):
             )
         except Exception as e:
             logger.error(f"Error fetching Ethereum token price: {e}")
-            return None
+        
+        return None
     
     async def get_token_holders(self, token_address: str, chain: str = 'ethereum', limit: int = 100) -> List[Dict[str, Any]]:
         """
@@ -306,8 +307,12 @@ class EthereumProvider(BaseAPIProvider):
     
     async def close(self):
         """Schließt alle offenen Ressourcen wie Client-Sessions."""
-        if hasattr(self, 'client_session') and self.client_session:
-            await self.client_session.close()
+        if hasattr(self, 'session') and self.session:
+            # Schließe zuerst den Connector
+            if hasattr(self.session, 'connector') and self.session.connector:
+                await self.session.connector.close()
+            # Dann schließe die Session
+            await self.session.close()
             logger.info("EthereumProvider client session closed successfully")
         
         # Schließe auch den CoinGeckoProvider
