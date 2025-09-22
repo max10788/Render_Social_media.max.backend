@@ -281,20 +281,24 @@ class TokenAnalyzer:
     
     @retry_with_backoff(max_retries=3, base_delay=2, max_delay=30)
     async def _fetch_custom_token_data(self, token_address: str, chain: str) -> Optional[Token]:
-        """Holt Token-Daten für verschiedene Chains mit Rate-Limit-Handling"""
         try:
             # Hole Token-Daten von CoinGecko
             async with self.coingecko_provider:
                 price_data = await self.coingecko_provider.get_token_price(token_address, chain)
             
-            # Erstelle Token-Objekt
+            # PRÜFEN, OB price_data None IST
+            if price_data is None:
+                logger.warning(f"Keine Preisdaten für Token {token_address} auf {chain} verfügbar")
+                return None
+            
+            # Erstelle Token-Objekt mit getattr für sicheren Attributzugriff
             token = Token(
                 address=token_address,
                 name="",  # Wird später gefüllt
                 symbol="",  # Wird später gefüllt
                 chain=chain,
-                market_cap=price_data.market_cap,
-                volume_24h=price_data.volume_24h,
+                market_cap=getattr(price_data, 'market_cap', 0),
+                volume_24h=getattr(price_data, 'volume_24h', 0),
                 liquidity=0,  # Wird später berechnet
                 holders_count=0,  # Wird später geholt
                 contract_verified=False,  # Wird später geprüft
