@@ -158,7 +158,6 @@ class LowCapAnalyzer:
             raise
 
     async def analyze_custom_token(self, token_address: str, chain: str) -> Dict[str, Any]:
-        """Zentrale Analyse-Methode für einen einzelnen Token"""
         self.logger.info(f"Starte Analyse für Token {token_address} auf Chain {chain}")
         
         # Validierung der Eingabeparameter
@@ -184,6 +183,11 @@ class LowCapAnalyzer:
         try:
             # Delegiere die Analyse an den TokenAnalyzer
             result = await self.token_analyzer.analyze_custom_token(token_address, chain)
+            
+            # Zusätzliche Prüfung des Ergebnisses
+            if not result or 'token_info' not in result:
+                raise CustomAnalysisException("Ungültiges Analyseergebnis erhalten")
+                
             self.logger.info(f"Analyse für Token {token_address} auf Chain {chain} abgeschlossen")
             return result
         except ValueError as e:
