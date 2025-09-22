@@ -154,6 +154,9 @@ class TokenAnalyzer:
         """Sicheres Schließen einer Service-Verbindung"""
         try:
             await service.__aexit__(exc_type, exc_val, exc_tb)
+            # Zusätzlich: Explizite close-Methode aufrufen, falls vorhanden
+            if hasattr(service, 'close'):
+                await service.close()
         except Exception as e:
             logger.warning(f"Error closing {service_name}: {str(e)}")
     
@@ -281,6 +284,7 @@ class TokenAnalyzer:
     
     @retry_with_backoff(max_retries=3, base_delay=2, max_delay=30)
     async def _fetch_custom_token_data(self, token_address: str, chain: str) -> Optional[Token]:
+        """Holt Token-Daten für verschiedene Chains mit Rate-Limit-Handling"""
         try:
             # Hole Token-Daten von CoinGecko
             async with self.coingecko_provider:
@@ -670,3 +674,36 @@ class TokenAnalyzer:
             'metrics': metrics,
             'risk_flags': risk_flags
         }
+    
+    async def close(self):
+        """Schließt alle offenen Ressourcen wie Provider-Sessions."""
+        close_tasks = []
+        
+        # Schließe alle Provider
+        providers = [
+            self.coingecko_provider,
+            self.ethereum_provider,
+            self.bsc_provider,
+            self.solana_provider,
+            self.sui_provider
+        ]
+        
+        for provider in providers:
+            if provider:
+                close_tasks.append(self._safe_close_provider(provider, provider.__class__.__name__))
+        
+        # Führe alle Schließvorgänge parallel aus
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+        
+        logger.info("TokenAnalyzer resources closed successfully")
+
+    async def _safe_close_provider(self, provider, provider_name):
+        """Sicheres Schließen eines Providers"""
+        try:
+            if hasattr(provider, '__aexit__'):
+                await provider.__aexit__(None, None, None)
+            if hasattr(provider, 'close'):
+                await provider.close()
+        except Exception as e:
+            logger.error(f"Error closing {provider_name}: {str(e)}")
