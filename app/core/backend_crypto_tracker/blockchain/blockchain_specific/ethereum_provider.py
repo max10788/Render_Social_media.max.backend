@@ -160,8 +160,8 @@ class EthereumProvider(BaseAPIProvider):
         
         return None
     
+    # In der get_token_price-Methode (ca. Zeile 200), füge eine Antwortprüfung hinzu:
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
-        """Ethereum-spezifische Token-Preisabfrage"""
         try:
             # Versuche zuerst, den Preis über CoinGecko zu erhalten (genauere Daten)
             coingecko_price = await self.coingecko_provider.get_token_price(token_address, chain)
@@ -179,21 +179,27 @@ class EthereumProvider(BaseAPIProvider):
             
             data = await self._make_request(url, params)
             
-            if data and data.get('status') == '1':
-                result = data.get('result', {})
-                if result and result.get('ethusd'):
-                    return TokenPriceData(
-                        price=float(result.get('ethusd', 0)),
-                        market_cap=0,  # Nicht verfügbar
-                        volume_24h=0,  # Nicht verfügbar
-                        price_change_percentage_24h=0,  # Nicht verfügbar
-                        source=self.name,
-                        last_updated=datetime.now()
-                    )
+            # Prüfe, ob die Antwort gültig ist
+            if not data or data.get('status') != '1':
+                logger.warning(f"Ungültige Antwort von Etherscan für Token {token_address}")
+                return None
+                
+            result = data.get('result', {})
+            if not result or not result.get('ethusd'):
+                logger.warning(f"Keine Preisdaten von Etherscan für Token {token_address}")
+                return None
+                
+            return TokenPriceData(
+                price=float(result.get('ethusd', 0)),
+                market_cap=0,  # Nicht verfügbar
+                volume_24h=0,  # Nicht verfügbar
+                price_change_percentage_24h=0,  # Nicht verfügbar
+                source=self.name,
+                last_updated=datetime.now()
+            )
         except Exception as e:
             logger.error(f"Error fetching Ethereum token price: {e}")
-        
-        return None
+            return None
     
     async def get_token_holders(self, token_address: str, chain: str = 'ethereum', limit: int = 100) -> List[Dict[str, Any]]:
         """
