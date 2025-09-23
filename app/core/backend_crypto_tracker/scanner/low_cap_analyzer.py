@@ -38,9 +38,7 @@ from app.core.backend_crypto_tracker.scanner.scoring_engine import (
     ScanConfig
 )
 
-from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
-from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap_provider import CoinMarketCapProvider
-from app.core.backend_crypto_tracker.blockchain.aggregators.cryptocompare_provider import CryptoCompareProvider
+from app.core.backend_crypto_tracker.utils.cache import TokenCache
 
 
 class LowCapAnalyzer:
@@ -51,11 +49,18 @@ class LowCapAnalyzer:
     def __init__(
         self,
         config: Optional[TokenAnalysisConfig] = None,
-        scan_config: Optional[ScanConfig] = None
+        scan_config: Optional[ScanConfig] = None,
+        enable_cache: bool = True,
+        cache_ttl: int = 300
     ):
         self.logger = get_logger(__name__)
         self.config = config or TokenAnalysisConfig()
         self.scan_config = scan_config or ScanConfig()
+        
+        # Cache-Einstellungen
+        self.enable_cache = enable_cache
+        self.cache_ttl = cache_ttl
+        self.cache = TokenCache(default_ttl=cache_ttl) if enable_cache else None
         
         # Initialisiere die Komponenten (Ressourcen werden in __aenter__ erstellt)
         self.token_analyzer: Optional[TokenAnalyzer] = None
@@ -63,8 +68,6 @@ class LowCapAnalyzer:
         self.scoring_engine: Optional[MultiChainScoringEngine] = None
         self.wallet_classifier: Optional[WalletClassifier] = None
         
-        # Provider für API-Anfragen
-        self.providers = []
         self.session = None
         
         self.logger.info("LowCapAnalyzer initialisiert")
@@ -76,6 +79,10 @@ class LowCapAnalyzer:
             # Erstelle eine gemeinsame Session für HTTP-Anfragen
             self.session = aiohttp.ClientSession()
             
+            # Aktualisiere die Konfiguration mit Cache-Einstellungen
+            self.config.enable_cache = self.enable_cache
+            self.config.cache_ttl_seconds = self.cache_ttl
+            
             # Erstelle Instanzen der Komponenten mit asynchroner Initialisierung
             self.token_analyzer = TokenAnalyzer(self.config)
             await self.token_analyzer.__aenter__()
@@ -84,18 +91,6 @@ class LowCapAnalyzer:
             self.scoring_engine = MultiChainScoringEngine()
             self.wallet_classifier = WalletClassifier()
             await self.wallet_classifier.__aenter__()
-            
-            # Initialisiere Provider
-            self.providers = [
-                CoinGeckoProvider(),
-                CoinMarketCapProvider(),
-                CryptoCompareProvider()
-            ]
-            
-            # Provider-Sessions initialisieren
-            for provider in self.providers:
-                if hasattr(provider, '__aenter__'):
-                    await provider.__aenter__()
             
             self.logger.info("Asynchrone Ressourcen erfolgreich initialisiert")
             return self
@@ -115,11 +110,6 @@ class LowCapAnalyzer:
         if self.token_analyzer:
             close_tasks.append(self._safe_close_token_analyzer(self.token_analyzer, exc_type, exc_val, exc_tb))
         
-        # Schließe Provider
-        for provider in self.providers:
-            close_tasks.append(self._safe_close_component(
-                provider, exc_type, exc_val, exc_tb, f"provider_{provider.__class__.__name__}"))
-        
         # Schließe Hauptkomponenten
         if self.wallet_classifier and hasattr(self.wallet_classifier, '__aexit__'):
             close_tasks.append(self._safe_close_component(
@@ -138,6 +128,11 @@ class LowCapAnalyzer:
                 if isinstance(result, Exception):
                     component_name = close_tasks[i].__name__ if hasattr(close_tasks[i], '__name__') else "unknown"
                     self.logger.error(f"Fehler beim Schließen von {component_name}: {str(result)}")
+        
+        # Gib Cache-Statistiken aus, falls Cache aktiviert ist
+        if self.cache:
+            cache_stats = self.cache.get_stats()
+            self.logger.info(f"Cache-Statistiken: {cache_stats}")
         
         self.logger.info("Asynchrone Ressourcen erfolgreich geschlossen")
 
@@ -177,9 +172,22 @@ class LowCapAnalyzer:
             self.logger.error(f"Fehler beim Schließen des TokenAnalyzers: {str(e)}")
             # Kein raise hier, um andere Schließvorgänge nicht zu blockieren
 
-    async def analyze_custom_token(self, token_address: str, chain: str) -> Dict[str, Any]:
+    async def analyze_custom_token(self, token_address: str, chain: str, use_cache: Optional[bool] = None) -> Dict[str, Any]:
         """Zentrale Analyse-Methode für einen einzelnen Token"""
         self.logger.info(f"Starte Analyse für Token {token_address} auf Chain {chain}")
+        
+        # Bestimme, ob Cache verwendet werden soll
+        should_use_cache = use_cache if use_cache is not None else self.enable_cache
+        
+        # Cache-Schlüssel für diese Anfrage
+        cache_key = f"lowcap_analyzer_custom_{token_address}_{chain}"
+        
+        # Prüfe, ob die Daten im Cache vorhanden sind
+        if should_use_cache and self.cache:
+            cached_result = await self.cache.get(cache_key)
+            if cached_result:
+                self.logger.info(f"Returning cached analysis for {token_address} on {chain}")
+                return cached_result
         
         # Validierung der Eingabeparameter
         if not token_address or not isinstance(token_address, str) or not token_address.strip():
@@ -208,6 +216,84 @@ class LowCapAnalyzer:
             # Zusätzliche Prüfung des Ergebnisses
             if not result or 'token_info' not in result:
                 raise CustomAnalysisException("Ungültiges Analyseergebnis erhalten")
+            
+            # Führe erweiterte Risikobewertung durch, falls verfügbar
+            if self.risk_assessor and 'wallet_analysis' in result:
+                try:
+                    # Extrahiere die notwendigen Daten für die Risikobewertung
+                    token_data = result['token_info']
+                    wallet_analyses = []
+                    
+                    # Rekonstruiere WalletAnalysis-Objekte aus den serialisierten Daten
+                    for wallet_data in result.get('wallet_analysis', {}).get('top_holders', []):
+                        wallet_type = WalletTypeEnum.UNKNOWN
+                        for wt in WalletTypeEnum:
+                            if wt.value == wallet_data.get('type', 'unknown'):
+                                wallet_type = wt
+                                break
+                        
+                        wallet_analysis = WalletAnalysis(
+                            wallet_address=wallet_data.get('address', ''),
+                            wallet_type=wallet_type,
+                            balance=wallet_data.get('balance', 0),
+                            percentage_of_supply=wallet_data.get('percentage', 0),
+                            transaction_count=0,  # Nicht in den serialisierten Daten enthalten
+                            first_transaction=None,  # Nicht in den serialisierten Daten enthalten
+                            last_transaction=None,  # Nicht in den serialisierten Daten enthalten
+                            risk_score=0  # Wird neu berechnet
+                        )
+                        wallet_analyses.append(wallet_analysis)
+                    
+                    # Führe die erweiterte Risikobewertung durch
+                    risk_assessment = await self._perform_advanced_risk_assessment(token_data, wallet_analyses)
+                    
+                    # Füge die Risikobewertung zum Ergebnis hinzu
+                    result['risk_assessment'] = {
+                        'overall_risk': risk_assessment.overall_risk,
+                        'risk_factors': risk_assessment.risk_factors,
+                        'recommendation': risk_assessment.recommendation
+                    }
+                except Exception as e:
+                    self.logger.warning(f"Fehler bei der erweiterten Risikobewertung: {str(e)}")
+            
+            # Führe erweiterte Scoring-Berechnung durch, falls verfügbar
+            if self.scoring_engine and 'wallet_analysis' in result:
+                try:
+                    # Extrahiere die notwendigen Daten für das Scoring
+                    token_data = result['token_info']
+                    wallet_analyses = []
+                    
+                    # Rekonstruiere WalletAnalysis-Objekte aus den serialisierten Daten
+                    for wallet_data in result.get('wallet_analysis', {}).get('top_holders', []):
+                        wallet_type = WalletTypeEnum.UNKNOWN
+                        for wt in WalletTypeEnum:
+                            if wt.value == wallet_data.get('type', 'unknown'):
+                                wallet_type = wt
+                                break
+                        
+                        wallet_analysis = WalletAnalysis(
+                            wallet_address=wallet_data.get('address', ''),
+                            wallet_type=wallet_type,
+                            balance=wallet_data.get('balance', 0),
+                            percentage_of_supply=wallet_data.get('percentage', 0),
+                            transaction_count=0,  # Nicht in den serialisierten Daten enthalten
+                            first_transaction=None,  # Nicht in den serialisierten Daten enthalten
+                            last_transaction=None,  # Nicht in den serialisierten Daten enthalten
+                            risk_score=0  # Wird neu berechnet
+                        )
+                        wallet_analyses.append(wallet_analysis)
+                    
+                    # Führe die erweiterte Scoring-Berechnung durch
+                    score_result = await self._calculate_advanced_score(token_data, wallet_analyses, chain)
+                    
+                    # Füge das Scoring-Ergebnis zum Ergebnis hinzu
+                    result['advanced_score'] = score_result
+                except Exception as e:
+                    self.logger.warning(f"Fehler bei der erweiterten Scoring-Berechnung: {str(e)}")
+            
+            # Speichere das Ergebnis im Cache
+            if should_use_cache and self.cache:
+                await self.cache.set(cache_key, result)
                 
             self.logger.info(f"Analyse für Token {token_address} auf Chain {chain} abgeschlossen")
             return result
@@ -226,18 +312,32 @@ class LowCapAnalyzer:
             self.logger.error(f"Unerwarteter Fehler bei der Token-Analyse: {str(e)}", exc_info=True)
             raise CustomAnalysisException(f"Unerwarteter Fehler bei der Analyse: {str(e)}") from e
 
-    async def scan_low_cap_tokens(self, max_tokens: Optional[int] = None) -> List[Dict[str, Any]]:
+    async def scan_low_cap_tokens(self, max_tokens: Optional[int] = None, use_cache: Optional[bool] = None) -> List[Dict[str, Any]]:
         """
         Massenanalyse-Methode für mehrere Tokens (z.B. für periodische Scans).
         Diese Methode delegiert die Arbeit an den bereits instanziierten TokenAnalyzer.
 
         Args:
             max_tokens: Maximale Anzahl von Tokens, die analysiert werden sollen
+            use_cache: Ob der Cache verwendet werden soll (überschreibt die Instanzeinstellung)
 
         Returns:
             Eine Liste von Dictionaries mit Analyseergebnissen für jeden Token
         """
         self.logger.info(f"Starte Low-Cap-Token-Scan mit max_tokens={max_tokens}")
+
+        # Bestimme, ob Cache verwendet werden soll
+        should_use_cache = use_cache if use_cache is not None else self.enable_cache
+        
+        # Cache-Schlüssel für diese Anfrage
+        cache_key = f"lowcap_analyzer_scan_{max_tokens or 'default'}"
+        
+        # Prüfe, ob die Daten im Cache vorhanden sind
+        if should_use_cache and self.cache:
+            cached_result = await self.cache.get(cache_key)
+            if cached_result:
+                self.logger.info(f"Returning cached scan results for max_tokens={max_tokens}")
+                return cached_result
 
         # Prüfe, ob der TokenAnalyzer initialisiert ist
         if not self.token_analyzer:
@@ -249,6 +349,10 @@ class LowCapAnalyzer:
             # Delegiere den Scan an den TokenAnalyzer
             # TokenAnalyzer.scan_low_cap_tokens erwartet max_tokens als int oder None
             results = await self.token_analyzer.scan_low_cap_tokens(max_tokens)
+            
+            # Speichere das Ergebnis im Cache
+            if should_use_cache and self.cache:
+                await self.cache.set(cache_key, results)
 
             self.logger.info(f"Low-Cap-Token-Scan abgeschlossen. {len(results)} Tokens erfolgreich analysiert")
             return results
@@ -256,6 +360,28 @@ class LowCapAnalyzer:
         except Exception as e:
             self.logger.error(f"Fehler beim Low-Cap-Token-Scan: {str(e)}", exc_info=True)
             raise CustomAnalysisException(f"Scan fehlgeschlagen: {str(e)}") from e
+    
+    async def invalidate_cache(self, pattern: str = None) -> None:
+        """
+        Invalidiert Cache-Einträge, optional mit Muster.
+        
+        Args:
+            pattern: Muster für die zu invalidierenden Schlüssel. Wenn None, wird der gesamte Cache geleert.
+        """
+        if self.cache:
+            await self.cache.invalidate(pattern)
+            self.logger.info(f"Cache invalidated with pattern: {pattern}")
+    
+    async def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Gibt Cache-Statistiken zurück.
+        
+        Returns:
+            Dictionary mit Cache-Statistiken
+        """
+        if self.cache:
+            return self.cache.get_stats()
+        return {"message": "Cache is disabled"}
 
     # Optional: Erweiterte Analysemethoden, die die anderen Komponenten nutzen
     # Diese könnten verwendet werden, um zusätzliche Analysen durchzuführen,
@@ -309,5 +435,3 @@ class LowCapAnalyzer:
             self.logger.error(f"Fehler bei der erweiterten Scoring-Berechnung: {str(e)}")
             # Fallback auf ein einfaches Scoring
             return {"total_score": 50.0, "metrics": {}, "risk_flags": ["scoring_failed"]}
-
-# Alias für Kompatibilität, falls andere Module "LowCapAnalyzer" erwarten
