@@ -2,7 +2,7 @@
 import asyncio
 import time
 import json
-from typing import Any, Optional, Dict, Union
+from typing import Any, Optional, Dict, Union, List
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from app.core.backend_crypto_tracker.utils.logger import get_logger
