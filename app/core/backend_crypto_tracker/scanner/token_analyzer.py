@@ -19,6 +19,7 @@ from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data imp
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
+from app.core.backend_crypto_tracker.utils.cache import TokenCache
 
 # Import all providers
 from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
@@ -46,6 +47,8 @@ class TokenAnalysisConfig:
     rugpull_sell_threshold_percentage: float = 50.0
     max_holders_to_analyze: int = 100
     request_delay_seconds: float = 1.0
+    enable_cache: bool = True
+    cache_ttl_seconds: int = 300  # 5 Minuten
 
 def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60):
     """Decorator für Retry mit exponentiellem Backoff"""
@@ -76,12 +79,143 @@ def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60):
         return wrapper
     return decorator
 
+class APIManager:
+    """Zentralisiert den Zugriff auf verschiedene API-Provider mit Lastverteilung und Fehlerbehandlung"""
+    
+    def __init__(self):
+        self.providers = {
+            'coingecko': None,
+            'coinmarketcap': None,
+            'cryptocompare': None,
+            'bitget': None,
+            'kraken': None,
+            'binance': None,
+            'coinbase': None,
+            'bitquery': None
+        }
+        self.active_provider = None
+        self.provider_failures = {}
+        self.session = None
+        
+    async def initialize(self):
+        """Initialisiert alle Provider und die HTTP-Session"""
+        self.session = aiohttp.ClientSession()
+        
+        # Provider initialisieren
+        self.providers['coingecko'] = CoinGeckoProvider()
+        self.providers['coinmarketcap'] = CoinMarketCapProvider()
+        self.providers['cryptocompare'] = CryptoCompareProvider()
+        self.providers['bitget'] = BitgetProvider()
+        self.providers['kraken'] = KrakenProvider()
+        self.providers['binance'] = BinanceProvider()
+        self.providers['coinbase'] = CoinbaseProvider()
+        self.providers['bitquery'] = BitqueryProvider()
+        
+        # Provider-Sessions initialisieren
+        for provider in self.providers.values():
+            if hasattr(provider, '__aenter__'):
+                await provider.__aenter__()
+        
+        # Zufälligen aktiven Provider auswählen
+        self.active_provider = random.choice(['coingecko', 'coinmarketcap', 'cryptocompare'])
+        
+    async def get_token_price(self, token_address: str, chain: str):
+        """Ruft Token-Preisdaten vom aktiven Provider oder Fallback-Provider ab"""
+        providers_to_try = [self.active_provider]
+        
+        # Fallback-Provider hinzufügen
+        fallback_providers = [p for p in ['coingecko', 'coinmarketcap', 'cryptocompare'] 
+                            if p != self.active_provider]
+        providers_to_try.extend(fallback_providers)
+        
+        last_exception = None
+        for provider_name in providers_to_try:
+            provider = self.providers.get(provider_name)
+            if not provider:
+                continue
+                
+            try:
+                # Prüfe, ob der Provider in den letzten 5 Minuten mehr als 3 Fehler hatte
+                if self.provider_failures.get(provider_name, 0) > 3:
+                    failure_time = self.provider_failures.get(f"{provider_name}_time", 0)
+                    if time.time() - failure_time < 300:  # 5 Minuten
+                        continue
+                
+                price_data = await provider.get_token_price(token_address, chain)
+                
+                # Erfolgreiche Anfrage, Fehlerzähler zurücksetzen
+                if provider_name in self.provider_failures:
+                    self.provider_failures[provider_name] = 0
+                
+                # Aktualisiere den aktiven Provider bei Erfolg
+                self.active_provider = provider_name
+                return price_data
+                
+            except Exception as e:
+                last_exception = e
+                # Fehlerzähler erhöhen
+                self.provider_failures[provider_name] = self.provider_failures.get(provider_name, 0) + 1
+                self.provider_failures[f"{provider_name}_time"] = time.time()
+                logger.warning(f"Error with provider {provider_name}: {str(e)}")
+        
+        # Wenn alle Provider fehlschlagen, werfe die letzte Exception
+        raise last_exception or APIException("All price providers failed")
+    
+    async def get_low_cap_tokens(self, max_market_cap: float, limit: int):
+        """Ruft Low-Cap-Token-Daten vom aktiven Provider oder Fallback-Provider ab"""
+        # Nur CoinGecko und CoinMarketCap unterstützen diese Funktion
+        providers_to_try = [self.active_provider] if self.active_provider in ['coingecko', 'coinmarketcap'] else ['coingecko', 'coinmarketcap']
+        
+        last_exception = None
+        for provider_name in providers_to_try:
+            provider = self.providers.get(provider_name)
+            if not provider:
+                continue
+                
+            try:
+                # Prüfe, ob der Provider in den letzten 5 Minuten mehr als 3 Fehler hatte
+                if self.provider_failures.get(provider_name, 0) > 3:
+                    failure_time = self.provider_failures.get(f"{provider_name}_time", 0)
+                    if time.time() - failure_time < 300:  # 5 Minuten
+                        continue
+                
+                tokens = await provider.get_low_cap_tokens(max_market_cap, limit)
+                
+                # Erfolgreiche Anfrage, Fehlerzähler zurücksetzen
+                if provider_name in self.provider_failures:
+                    self.provider_failures[provider_name] = 0
+                
+                # Aktualisiere den aktiven Provider bei Erfolg
+                self.active_provider = provider_name
+                return tokens
+                
+            except Exception as e:
+                last_exception = e
+                # Fehlerzähler erhöhen
+                self.provider_failures[provider_name] = self.provider_failures.get(provider_name, 0) + 1
+                self.provider_failures[f"{provider_name}_time"] = time.time()
+                logger.warning(f"Error with provider {provider_name}: {str(e)}")
+        
+        # Wenn alle Provider fehlschlagen, werfe die letzte Exception
+        raise last_exception or APIException("All token providers failed")
+    
+    async def close(self):
+        """Schließt alle Provider und die Session"""
+        for provider in self.providers.values():
+            if provider and hasattr(provider, '__aexit__'):
+                await provider.__aexit__(None, None, None)
+            if provider and hasattr(provider, 'close'):
+                await provider.close()
+        
+        if self.session:
+            await self.session.close()
+
 class TokenAnalyzer:
     def __init__(self, config: TokenAnalysisConfig = None):
         self.config = config or TokenAnalysisConfig()
         
         # Provider-Initialisierung
-        self.coingecko_provider = None
+        self.api_manager = APIManager()
         self.ethereum_provider = None
         self.bsc_provider = None
         self.solana_provider = None
@@ -89,6 +223,9 @@ class TokenAnalyzer:
         
         self.w3_eth = None
         self.w3_bsc = None
+        
+        # Cache initialisieren, falls aktiviert
+        self.cache = TokenCache(default_ttl=self.config.cache_ttl_seconds) if self.config.enable_cache else None
         
         # Konfiguration laden
         self.ethereum_rpc = scanner_config.rpc_config.ethereum_rpc
@@ -101,8 +238,10 @@ class TokenAnalyzer:
         self.cex_wallets = scanner_config.rpc_config.cex_wallets
     
     async def __aenter__(self):
-        # Provider initialisieren
-        self.coingecko_provider = CoinGeckoProvider()  # KEIN PARAMETER MEHR
+        # API-Manager initialisieren
+        await self.api_manager.initialize()
+        
+        # Blockchain-Provider initialisieren
         self.ethereum_provider = EthereumProvider(self.etherscan_key)
         self.bsc_provider = EthereumProvider(self.bscscan_key)  # BSC verwendet auch EthereumProvider
         self.solana_provider = SolanaProvider()
@@ -112,7 +251,6 @@ class TokenAnalyzer:
         self.w3_bsc = Web3(Web3.HTTPProvider(self.bsc_rpc))
         
         # Provider-Sessions initialisieren
-        await self.coingecko_provider.__aenter__()
         await self.ethereum_provider.__aenter__()
         await self.bsc_provider.__aenter__()
         await self.solana_provider.__aenter__()
@@ -124,8 +262,8 @@ class TokenAnalyzer:
         # Sicheres Schließen aller Ressourcen
         close_tasks = []
         
-        if self.coingecko_provider:
-            close_tasks.append(self._safe_close(self.coingecko_provider, exc_type, exc_val, exc_tb, "coingecko_provider"))
+        if self.api_manager:
+            close_tasks.append(self._safe_close_api_manager())
         
         if self.ethereum_provider:
             close_tasks.append(self._safe_close(self.ethereum_provider, exc_type, exc_val, exc_tb, "ethereum_provider"))
@@ -160,18 +298,34 @@ class TokenAnalyzer:
         except Exception as e:
             logger.warning(f"Error closing {service_name}: {str(e)}")
     
+    async def _safe_close_api_manager(self):
+        """Sicheres Schließen des API-Managers"""
+        try:
+            await self.api_manager.close()
+        except Exception as e:
+            logger.warning(f"Error closing API manager: {str(e)}")
+    
     async def scan_low_cap_tokens(self, max_tokens: int = None) -> List[Dict[str, Any]]:
         """Hauptfunktion zum Scannen von Low-Cap Tokens"""
         max_tokens = max_tokens or self.config.max_tokens_per_scan
         
         logger.info(f"Starting low-cap token scan (max {max_tokens} tokens)...")
         
-        # Hole Low-Cap Tokens
-        async with self.coingecko_provider:
-            tokens = await self.coingecko_provider.get_low_cap_tokens(
-                max_market_cap=self.config.max_market_cap,
-                limit=max_tokens
-            )
+        # Cache-Schlüssel für diese Anfrage
+        cache_key = f"low_cap_tokens_{max_tokens}_{self.config.max_market_cap}"
+        
+        # Prüfe, ob die Daten im Cache vorhanden sind
+        if self.cache:
+            cached_result = await self.cache.get(cache_key)
+            if cached_result:
+                logger.info(f"Returning cached low-cap tokens data")
+                return cached_result
+        
+        # Hole Low-Cap Tokens über den API-Manager
+        tokens = await self.api_manager.get_low_cap_tokens(
+            max_market_cap=self.config.max_market_cap,
+            limit=max_tokens
+        )
         
         if not tokens:
             logger.error("No tokens found")
@@ -194,6 +348,10 @@ class TokenAnalyzer:
                 logger.error(f"Error analyzing {token.symbol}: {e}")
                 continue
         
+        # Speichere das Ergebnis im Cache
+        if self.cache:
+            await self.cache.set(cache_key, results)
+        
         logger.info(f"Analysis completed. {len(results)} tokens successfully analyzed.")
         return results
     
@@ -202,6 +360,16 @@ class TokenAnalyzer:
         logger.info(f"Analyzing token: {token_data.symbol} ({token_data.address})")
         
         try:
+            # Cache-Schlüssel für diese Anfrage
+            cache_key = f"token_analysis_{token_data.address}_{token_data.chain}"
+            
+            # Prüfe, ob die Daten im Cache vorhanden sind
+            if self.cache:
+                cached_result = await self.cache.get(cache_key)
+                if cached_result:
+                    logger.info(f"Returning cached token analysis for {token_data.symbol}")
+                    return cached_result
+            
             # Hole Token-Holder
             holders = await self._fetch_token_holders(token_data.address, token_data.chain)
             
@@ -215,7 +383,7 @@ class TokenAnalyzer:
             # Berechne Token-Score
             score_data = self._calculate_token_score(token_data, wallet_analyses)
             
-            return {
+            result = {
                 'token_data': token_data,
                 'wallet_analyses': wallet_analyses,
                 'token_score': score_data['total_score'],
@@ -223,6 +391,12 @@ class TokenAnalyzer:
                 'metrics': score_data['metrics'],
                 'risk_flags': score_data['risk_flags']
             }
+            
+            # Speichere das Ergebnis im Cache
+            if self.cache:
+                await self.cache.set(cache_key, result)
+            
+            return result
         except Exception as e:
             logger.error(f"Error analyzing token {token_data.symbol}: {e}")
             return None
@@ -231,6 +405,16 @@ class TokenAnalyzer:
     async def analyze_custom_token(self, token_address: str, chain: str) -> Dict[str, Any]:
         """Analysiert einen einzelnen, benutzerdefinierten Token"""
         try:
+            # Cache-Schlüssel für diese Anfrage
+            cache_key = f"custom_token_analysis_{token_address}_{chain}"
+            
+            # Prüfe, ob die Daten im Cache vorhanden sind
+            if self.cache:
+                cached_result = await self.cache.get(cache_key)
+                if cached_result:
+                    logger.info(f"Returning cached custom token analysis for {token_address}")
+                    return cached_result
+            
             # 1. Token-Metadaten abrufen
             token_data = await self._fetch_custom_token_data(token_address, chain)
             if not token_data:
@@ -277,6 +461,10 @@ class TokenAnalyzer:
                 }
             }
             
+            # Speichere das Ergebnis im Cache
+            if self.cache:
+                await self.cache.set(cache_key, analysis_result)
+            
             return analysis_result
         except Exception as e:
             logger.error(f"Error analyzing custom token {token_address} on {chain}: {e}")
@@ -286,9 +474,18 @@ class TokenAnalyzer:
     async def _fetch_custom_token_data(self, token_address: str, chain: str) -> Optional[Token]:
         """Holt Token-Daten für verschiedene Chains mit Rate-Limit-Handling"""
         try:
-            # Hole Token-Daten von CoinGecko
-            async with self.coingecko_provider:
-                price_data = await self.coingecko_provider.get_token_price(token_address, chain)
+            # Cache-Schlüssel für diese Anfrage
+            cache_key = f"token_data_{token_address}_{chain}"
+            
+            # Prüfe, ob die Daten im Cache vorhanden sind
+            if self.cache:
+                cached_result = await self.cache.get(cache_key)
+                if cached_result:
+                    logger.info(f"Returning cached token data for {token_address}")
+                    return cached_result
+            
+            # Hole Token-Daten vom API-Manager
+            price_data = await self.api_manager.get_token_price(token_address, chain)
             
             # PRÜFEN, OB price_data None IST
             if price_data is None:
@@ -312,11 +509,15 @@ class TokenAnalyzer:
             
             # Zusätzliche Token-Informationen abrufen
             if chain in ['ethereum', 'bsc']:
-                return await self._fetch_evm_token_data(token)
+                token = await self._fetch_evm_token_data(token)
             elif chain == 'solana':
-                return await self._fetch_solana_token_data(token)
+                token = await self._fetch_solana_token_data(token)
             elif chain == 'sui':
-                return await self._fetch_sui_token_data(token)
+                token = await self._fetch_sui_token_data(token)
+            
+            # Speichere das Ergebnis im Cache
+            if self.cache:
+                await self.cache.set(cache_key, token)
             
             return token
         except Exception as e:
@@ -326,6 +527,16 @@ class TokenAnalyzer:
     async def _fetch_evm_token_data(self, token: Token) -> Token:
         """Holt zusätzliche Token-Daten für EVM-Chains"""
         try:
+            # Cache-Schlüssel für diese Anfrage
+            cache_key = f"evm_token_data_{token.address}_{token.chain}"
+            
+            # Prüfe, ob die Daten im Cache vorhanden sind
+            if self.cache:
+                cached_result = await self.cache.get(cache_key)
+                if cached_result:
+                    logger.info(f"Returning cached EVM token data for {token.address}")
+                    return cached_result
+            
             # Wähle den richtigen Web3-Provider
             w3 = self.w3_eth if token.chain == 'ethereum' else self.w3_bsc
             
@@ -392,6 +603,10 @@ class TokenAnalyzer:
             except Exception:
                 pass
             
+            # Speichere das Ergebnis im Cache
+            if self.cache:
+                await self.cache.set(cache_key, token)
+            
             return token
         except Exception as e:
             logger.error(f"Error fetching EVM token data for {token.address}: {e}")
@@ -400,12 +615,26 @@ class TokenAnalyzer:
     async def _fetch_solana_token_data(self, token: Token) -> Token:
         """Holt zusätzliche Token-Daten für Solana"""
         try:
+            # Cache-Schlüssel für diese Anfrage
+            cache_key = f"solana_token_data_{token.address}"
+            
+            # Prüfe, ob die Daten im Cache vorhanden sind
+            if self.cache:
+                cached_result = await self.cache.get(cache_key)
+                if cached_result:
+                    logger.info(f"Returning cached Solana token data for {token.address}")
+                    return cached_result
+            
             token_info = await self.solana_provider.get_token_info(token.address)
             
             if token_info:
                 token.name = token_info.get('name', '')
                 token.symbol = token_info.get('symbol', '')
                 token.creation_date = token_info.get('creation_date')
+            
+            # Speichere das Ergebnis im Cache
+            if self.cache:
+                await self.cache.set(cache_key, token)
             
             return token
         except Exception as e:
@@ -415,12 +644,26 @@ class TokenAnalyzer:
     async def _fetch_sui_token_data(self, token: Token) -> Token:
         """Holt zusätzliche Token-Daten für Sui"""
         try:
+            # Cache-Schlüssel für diese Anfrage
+            cache_key = f"sui_token_data_{token.address}"
+            
+            # Prüfe, ob die Daten im Cache vorhanden sind
+            if self.cache:
+                cached_result = await self.cache.get(cache_key)
+                if cached_result:
+                    logger.info(f"Returning cached Sui token data for {token.address}")
+                    return cached_result
+            
             token_info = await self.sui_provider.get_token_info(token.address)
             
             if token_info:
                 token.name = token_info.get('name', '')
                 token.symbol = token_info.get('symbol', '')
                 token.creation_date = token_info.get('creation_date')
+            
+            # Speichere das Ergebnis im Cache
+            if self.cache:
+                await self.cache.set(cache_key, token)
             
             return token
         except Exception as e:
@@ -430,17 +673,33 @@ class TokenAnalyzer:
     async def _fetch_token_holders(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
         """Holt Token-Holder für verschiedene Chains"""
         try:
+            # Cache-Schlüssel für diese Anfrage
+            cache_key = f"token_holders_{token_address}_{chain}"
+            
+            # Prüfe, ob die Daten im Cache vorhanden sind
+            if self.cache:
+                cached_result = await self.cache.get(cache_key)
+                if cached_result:
+                    logger.info(f"Returning cached token holders for {token_address}")
+                    return cached_result
+            
+            holders = []
+            
             if chain in ['ethereum', 'bsc']:
                 if chain == 'ethereum':
-                    return await self.ethereum_provider.get_token_holders(token_address, chain)
+                    holders = await self.ethereum_provider.get_token_holders(token_address, chain)
                 else:
-                    return await self.bsc_provider.get_token_holders(token_address, chain)
+                    holders = await self.bsc_provider.get_token_holders(token_address, chain)
             elif chain == 'solana':
-                return await self.solana_provider.get_token_holders(token_address)
+                holders = await self.solana_provider.get_token_holders(token_address)
             elif chain == 'sui':
-                return await self.sui_provider.get_token_holders(token_address)
-            else:
-                return []
+                holders = await self.sui_provider.get_token_holders(token_address)
+            
+            # Speichere das Ergebnis im Cache
+            if self.cache:
+                await self.cache.set(cache_key, holders)
+            
+            return holders
         except Exception as e:
             logger.error(f"Error fetching token holders for {token_address} on {chain}: {e}")
             return []
@@ -461,6 +720,17 @@ class TokenAnalyzer:
                 percentage = (balance / total_supply) * 100 if total_supply > 0 else 0
                 wallet_address = holder.get('TokenHolderAddress', '')
                 
+                # Cache-Schlüssel für diese Anfrage
+                cache_key = f"wallet_analysis_{wallet_address}_{token_data.address}"
+                
+                # Prüfe, ob die Daten im Cache vorhanden sind
+                if self.cache:
+                    cached_result = await self.cache.get(cache_key)
+                    if cached_result:
+                        logger.info(f"Returning cached wallet analysis for {wallet_address}")
+                        wallet_analyses.append(cached_result)
+                        continue
+                
                 # Hole Transaktionsdaten für die Wallet
                 transaction_data = await self._fetch_wallet_transaction_data(wallet_address, token_data.chain)
                 
@@ -480,6 +750,11 @@ class TokenAnalyzer:
                 )
                 
                 wallet_analyses.append(wallet_analysis)
+                
+                # Speichere das Ergebnis im Cache
+                if self.cache:
+                    await self.cache.set(cache_key, wallet_analysis)
+                    
             except Exception as e:
                 logger.error(f"Error analyzing wallet {holder.get('TokenHolderAddress', 'Unknown')}: {e}")
                 continue
@@ -489,17 +764,33 @@ class TokenAnalyzer:
     async def _fetch_wallet_transaction_data(self, wallet_address: str, chain: str) -> Dict[str, Any]:
         """Holt Transaktionsdaten für eine Wallet"""
         try:
+            # Cache-Schlüssel für diese Anfrage
+            cache_key = f"wallet_transactions_{wallet_address}_{chain}"
+            
+            # Prüfe, ob die Daten im Cache vorhanden sind
+            if self.cache:
+                cached_result = await self.cache.get(cache_key)
+                if cached_result:
+                    logger.info(f"Returning cached wallet transactions for {wallet_address}")
+                    return cached_result
+            
+            transaction_data = {}
+            
             if chain in ['ethereum', 'bsc']:
                 if chain == 'ethereum':
-                    return await self.ethereum_provider.get_wallet_transactions(wallet_address, chain)
+                    transaction_data = await self.ethereum_provider.get_wallet_transactions(wallet_address, chain)
                 else:
-                    return await self.bsc_provider.get_wallet_transactions(wallet_address, chain)
+                    transaction_data = await self.bsc_provider.get_wallet_transactions(wallet_address, chain)
             elif chain == 'solana':
-                return await self.solana_provider.get_wallet_transactions(wallet_address)
+                transaction_data = await self.solana_provider.get_wallet_transactions(wallet_address)
             elif chain == 'sui':
-                return await self.sui_provider.get_wallet_transactions(wallet_address)
-            else:
-                return {}
+                transaction_data = await self.sui_provider.get_wallet_transactions(wallet_address)
+            
+            # Speichere das Ergebnis im Cache
+            if self.cache:
+                await self.cache.set(cache_key, transaction_data)
+            
+            return transaction_data
         except Exception as e:
             logger.error(f"Error fetching transaction data for {wallet_address} on {chain}: {e}")
             return {}
@@ -679,9 +970,12 @@ class TokenAnalyzer:
         """Schließt alle offenen Ressourcen wie Provider-Sessions."""
         close_tasks = []
         
-        # Schließe alle Provider
+        # Schließe API-Manager
+        if self.api_manager:
+            close_tasks.append(self._safe_close_api_manager())
+        
+        # Schließe Blockchain-Provider
         providers = [
-            self.coingecko_provider,
             self.ethereum_provider,
             self.bsc_provider,
             self.solana_provider,
