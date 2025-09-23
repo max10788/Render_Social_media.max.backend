@@ -1,4 +1,3 @@
-# app/main.py
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,6 +13,9 @@ from pydantic import BaseModel
 import json
 import asyncio
 import time
+import signal
+import sys
+
 # Router-Imports
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
     router as custom_analysis_router,
@@ -23,106 +25,148 @@ from app.core.backend_crypto_tracker.api.routes import token_routes
 from app.core.backend_crypto_tracker.api.routes import transaction_routes
 from app.core.backend_crypto_tracker.api.routes import scanner_routes
 from app.core.backend_crypto_tracker.api.routes.frontend_routes import router as frontend_router
+
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
 from app.core.backend_crypto_tracker.processor.database.models.manager import DatabaseManager
 from app.core.backend_crypto_tracker.utils.logger import get_logger
+
 logger = get_logger(__name__)
+
 # Frontend-Verzeichnisse konfigurieren
 BASE_DIR = Path(__file__).resolve().parent  # app/
 FRONTEND_DIR = BASE_DIR / "crypto-token-analysis-dashboard"  # app/crypto-token-analysis-dashboard
 BUILD_DIR = FRONTEND_DIR / ".next" / "standalone"  # Next.js standalone build
 STATIC_DIR = FRONTEND_DIR / ".next" / "static"     # Next.js static files
 PUBLIC_DIR = FRONTEND_DIR / "public"               # Next.js public files
+
 # Pydantic-Modelle für die neuen Endpunkte
 class AssetInfo(BaseModel):
     id: str
     name: str
     symbol: str
+
 class ExchangeInfo(BaseModel):
     id: str
     name: str
     trading_pairs: int
+
 class BlockchainInfo(BaseModel):
     id: str
     name: str
     block_time: float
+
 class SystemConfig(BaseModel):
     minScore: int
     maxAnalysesPerHour: int
     cacheTTL: int
     supportedChains: List[str]
+
 class AssetPriceRequest(BaseModel):
     assets: List[str]
     base_currency: str = "USD"
+
 class AssetPriceResponse(BaseModel):
     prices: Dict[str, float]
     timestamp: int
+
 class VolatilityRequest(BaseModel):
     asset: str
     timeframe: str = "1d"
+
 class VolatilityResponse(BaseModel):
     volatility: float
     timeframe: str
+
 class CorrelationRequest(BaseModel):
     assets: List[str]
     timeframe: str = "1d"
+
 class CorrelationResponse(BaseModel):
     correlation_matrix: Dict[str, Dict[str, float]]
     timeframe: str
+
 class OptionPricingRequest(BaseModel):
     underlying: str
     strike: float
     maturity: str
     option_type: str  # "call" or "put"
+
 class OptionPricingResponse(BaseModel):
     price: float
     greeks: Dict[str, float]
+
 class ImpliedVolatilityRequest(BaseModel):
     underlying: str
     strike: float
     maturity: str
     option_type: str
     market_price: float
+
 class ImpliedVolatilityResponse(BaseModel):
     implied_volatility: float
+
 class RiskMetricsRequest(BaseModel):
     assets: List[str]
     timeframe: str = "1d"
     confidence_level: float = 0.95
+
 class RiskMetricsResponse(BaseModel):
     var: float
     expected_shortfall: float
     beta: Dict[str, float]
+
 class SimulationProgress(BaseModel):
     simulation_id: str
     status: str  # "pending", "running", "completed", "failed"
     progress: float
     message: str
+
 class SimulationStatusResponse(BaseModel):
     simulations: List[SimulationProgress]
+
 # WebSocket Connection Manager
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
+
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
         logger.info(f"WebSocket connection established. Total connections: {len(self.active_connections)}")
+
     async def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
         logger.info(f"WebSocket connection closed. Total connections: {len(self.active_connections)}")
+
     async def broadcast(self, message: str):
         for connection in self.active_connections:
             try:
                 await connection.send_text(message)
             except Exception as e:
                 logger.error(f"Error broadcasting message: {e}")
+
 manager = ConnectionManager()
+
+# Globale Variablen für die Ressourcenverwaltung
+db_manager = None
+shutdown_event = asyncio.Event()
+
+def handle_signal(signum, frame):
+    """Handler für Shutdown-Signale"""
+    logger.info(f"Received signal {signum}, shutting down...")
+    shutdown_event.set()
+
+# Registriere Signal-Handler
+signal.signal(signal.SIGINT, handle_signal)
+signal.signal(signal.SIGTERM, handle_signal)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for FastAPI application."""
+    global db_manager
+    
     logger.info("Starting Low-Cap Token Analyzer")
     
     # Initialisiere die Datenbank
@@ -133,9 +177,37 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         logger.info("Continuing without database...")
+        db_manager = None
     
     yield
+    
     logger.info("Shutting down Low-Cap Token Analyzer")
+    
+    # Schließe die Datenbankverbindung
+    if db_manager:
+        try:
+            await db_manager.close()
+            logger.info("Database connection closed successfully")
+        except Exception as e:
+            logger.error(f"Error closing database connection: {e}")
+    
+    # Warte auf alle ausstehenden Aufgaben
+    try:
+        # Gib anderen Coroutines Zeit, sich ordnungsgemäß zu beenden
+        await asyncio.sleep(1)
+        
+        # Schließe alle verbleibenden Aufgaben
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        if tasks:
+            logger.info(f"Cancelling {len(tasks)} outstanding tasks")
+            for task in tasks:
+                task.cancel()
+            
+            # Warte, bis alle Aufgaben abgebrochen sind
+            await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
+
 # ------------------------------------------------------------------
 # FastAPI-Instanz
 # ------------------------------------------------------------------
@@ -145,6 +217,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
 # ------------------------------------------------------------------
 # CORS-Konfiguration (Nur FastAPI-Middleware)
 # ------------------------------------------------------------------
@@ -155,6 +228,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 # ------------------------------------------------------------------
 # API Routes (mount first to prevent conflicts)
 # ------------------------------------------------------------------
@@ -164,6 +238,7 @@ app.include_router(transaction_routes.router, prefix="/api/v1")
 app.include_router(scanner_routes.router, prefix="/api/v1")
 app.include_router(contracts_router, prefix="/api/v1")
 app.include_router(frontend_router)
+
 # ------------------------------------------------------------------
 # WebSocket Endpoint
 # ------------------------------------------------------------------
@@ -178,43 +253,50 @@ async def websocket_endpoint(websocket: WebSocket):
             "timestamp": time.time()
         }))
         
-        while True:
-            # Wait for messages from client
-            data = await websocket.receive_text()
+        while not shutdown_event.is_set():
             try:
-                message = json.loads(data)
-                logger.info(f"Received WebSocket message: {message}")
+                # Setze ein Timeout für receive_text, um regelmäßig auf shutdown_event zu prüfen
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                try:
+                    message = json.loads(data)
+                    logger.info(f"Received WebSocket message: {message}")
+                    
+                    # Process message and send response
+                    response = {
+                        "type": "response",
+                        "message": f"Received: {message.get('type', 'unknown')}",
+                        "timestamp": time.time()
+                    }
+                    
+                    await websocket.send_text(json.dumps(response))
+                except json.JSONDecodeError:
+                    error_response = {
+                        "type": "error",
+                        "message": "Invalid JSON format",
+                        "timestamp": time.time()
+                    }
+                    await websocket.send_text(json.dumps(error_response))
                 
-                # Process message and send response
-                response = {
-                    "type": "response",
-                    "message": f"Received: {message.get('type', 'unknown')}",
-                    "timestamp": time.time()
-                }
-                
-                await websocket.send_text(json.dumps(response))
-            except json.JSONDecodeError:
-                error_response = {
-                    "type": "error",
-                    "message": "Invalid JSON format",
-                    "timestamp": time.time()
-                }
-                await websocket.send_text(json.dumps(error_response))
-            
-    except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected")
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        try:
-            await websocket.send_text(json.dumps({
-                "type": "error",
-                "message": str(e),
-                "timestamp": time.time()
-            }))
-        except:
-            pass
+            except asyncio.TimeoutError:
+                # Timeout ist normal, um shutdown_event zu prüfen
+                continue
+            except WebSocketDisconnect:
+                logger.info("WebSocket client disconnected")
+                break
+            except Exception as e:
+                logger.error(f"WebSocket error: {e}")
+                try:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "message": str(e),
+                        "timestamp": time.time()
+                    }))
+                except:
+                    pass
+                break
     finally:
         manager.disconnect(websocket)
+
 # ------------------------------------------------------------------
 # API-Health-Check
 # ------------------------------------------------------------------
@@ -253,6 +335,7 @@ async def api_health_check():
             "schema": database_config.schema_name,
         }
     }
+
 # ------------------------------------------------------------------
 # System Information Endpoints
 # ------------------------------------------------------------------
@@ -342,6 +425,7 @@ async def get_settings():
     except Exception as e:
         logger.error(f"Error fetching settings: {e}")
         return {"settings": {}, "status": "error", "message": str(e)}
+
 # ------------------------------------------------------------------
 # Token Endpoints
 # ------------------------------------------------------------------
@@ -383,6 +467,7 @@ async def get_tokens_trending(limit: int = 5):
     except Exception as e:
         logger.error(f"Error fetching trending tokens: {e}")
         return {"tokens": [], "status": "error", "message": str(e)}
+
 # ------------------------------------------------------------------
 # Asset Prices Endpoints
 # ------------------------------------------------------------------
@@ -392,10 +477,11 @@ async def get_asset_prices(request: AssetPriceRequest):
     try:
         # Placeholder-Implementierung
         prices = {asset: 50000.0 if asset == "bitcoin" else 3000.0 for asset in request.assets}
-        return {"prices": prices, "timestamp": 1625097600}
+        return {"prices": prices, "timestamp": int(time.time())}
     except Exception as e:
         logger.error(f"Error fetching asset prices: {e}")
         return {"prices": {}, "timestamp": 0}
+
 # ------------------------------------------------------------------
 # Volatility Endpoints
 # ------------------------------------------------------------------
@@ -408,6 +494,7 @@ async def get_volatility(request: VolatilityRequest):
     except Exception as e:
         logger.error(f"Error calculating volatility: {e}")
         return {"volatility": 0.0, "timeframe": request.timeframe}
+
 # ------------------------------------------------------------------
 # Correlation Endpoints
 # ------------------------------------------------------------------
@@ -426,6 +513,7 @@ async def get_correlation(request: CorrelationRequest):
     except Exception as e:
         logger.error(f"Error calculating correlation: {e}")
         return {"correlation_matrix": {}, "timeframe": request.timeframe}
+
 # ------------------------------------------------------------------
 # Option Pricing Endpoints
 # ------------------------------------------------------------------
@@ -439,6 +527,7 @@ async def start_option_pricing(request: OptionPricingRequest):
     except Exception as e:
         logger.error(f"Error starting option pricing: {e}")
         return {"simulation_id": ""}
+
 @app.get("/api/price_option/status/{simulation_id}", response_model=SimulationProgress)
 async def get_option_pricing_status(simulation_id: str):
     """Get option pricing simulation status"""
@@ -458,6 +547,7 @@ async def get_option_pricing_status(simulation_id: str):
             "progress": 0.0,
             "message": str(e)
         }
+
 @app.get("/api/price_option/result/{simulation_id}", response_model=OptionPricingResponse)
 async def get_option_pricing_result(simulation_id: str):
     """Get option pricing result"""
@@ -476,6 +566,7 @@ async def get_option_pricing_result(simulation_id: str):
     except Exception as e:
         logger.error(f"Error fetching option pricing result: {e}")
         return {"price": 0.0, "greeks": {}}
+
 @app.post("/api/price_option", response_model=OptionPricingResponse)
 async def price_option(request: OptionPricingRequest):
     """Price option directly"""
@@ -494,6 +585,7 @@ async def price_option(request: OptionPricingRequest):
     except Exception as e:
         logger.error(f"Error pricing option: {e}")
         return {"price": 0.0, "greeks": {}}
+
 # ------------------------------------------------------------------
 # Implied Volatility Endpoints
 # ------------------------------------------------------------------
@@ -506,6 +598,7 @@ async def calculate_implied_volatility(request: ImpliedVolatilityRequest):
     except Exception as e:
         logger.error(f"Error calculating implied volatility: {e}")
         return {"implied_volatility": 0.0}
+
 # ------------------------------------------------------------------
 # Risk Metrics Endpoints
 # ------------------------------------------------------------------
@@ -523,6 +616,7 @@ async def calculate_risk_metrics(request: RiskMetricsRequest):
     except Exception as e:
         logger.error(f"Error calculating risk metrics: {e}")
         return {"var": 0.0, "expected_shortfall": 0.0, "beta": {}}
+
 # ------------------------------------------------------------------
 # Simulation Status Endpoints
 # ------------------------------------------------------------------
@@ -550,6 +644,7 @@ async def get_all_simulations():
     except Exception as e:
         logger.error(f"Error fetching simulations: {e}")
         return {"simulations": []}
+
 # ------------------------------------------------------------------
 # Statische Dateien für Next.js
 # ------------------------------------------------------------------
@@ -561,6 +656,7 @@ if STATIC_DIR.exists():
     
 if PUBLIC_DIR.exists():
     app.mount("/public", StaticFiles(directory=PUBLIC_DIR), name="public")
+
 # ------------------------------------------------------------------
 # Angepasster 404-Handler
 # ------------------------------------------------------------------
@@ -644,6 +740,7 @@ npm run start
         """,
         status_code=200
     )
+
 # ------------------------------------------------------------------
 # Fallback-Route
 # ------------------------------------------------------------------
@@ -683,6 +780,7 @@ async def serve_frontend_fallback(request: Request):
         """,
         status_code=200
     )
+
 # ------------------------------------------------------------------
 # Globaler Exception-Handler
 # ------------------------------------------------------------------
@@ -696,6 +794,7 @@ async def global_exception_handler(request: Request, exc: Exception):
             "detail": str(exc) if app.debug else "An unexpected error occurred",
         },
     )
+
 # ------------------------------------------------------------------
 # Datenbankkonfiguration für Render
 # ------------------------------------------------------------------
