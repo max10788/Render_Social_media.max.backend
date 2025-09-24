@@ -19,7 +19,7 @@ from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data imp
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
-from app.core.backend_crypto_tracker.utils.cache import TokenCache
+from app.core.backend_crypto_tracker.utils.cache import AnalysisCache  # Verwende deine vorhandene Cache-Klasse
 
 # Import all providers
 from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
@@ -225,7 +225,7 @@ class TokenAnalyzer:
         self.w3_bsc = None
         
         # Cache initialisieren, falls aktiviert
-        self.cache = TokenCache(default_ttl=self.config.cache_ttl_seconds) if self.config.enable_cache else None
+        self.cache = AnalysisCache(max_size=1000, default_ttl=self.config.cache_ttl_seconds) if self.config.enable_cache else None
         
         # Konfiguration laden
         self.ethereum_rpc = scanner_config.rpc_config.ethereum_rpc
@@ -350,7 +350,7 @@ class TokenAnalyzer:
         
         # Speichere das Ergebnis im Cache
         if self.cache:
-            await self.cache.set(cache_key, results)
+            await self.cache.set(results, self.config.cache_ttl_seconds, cache_key)
         
         logger.info(f"Analysis completed. {len(results)} tokens successfully analyzed.")
         return results
@@ -394,7 +394,7 @@ class TokenAnalyzer:
             
             # Speichere das Ergebnis im Cache
             if self.cache:
-                await self.cache.set(cache_key, result)
+                await self.cache.set(result, self.config.cache_ttl_seconds, cache_key)
             
             return result
         except Exception as e:
@@ -463,7 +463,7 @@ class TokenAnalyzer:
             
             # Speichere das Ergebnis im Cache
             if self.cache:
-                await self.cache.set(cache_key, analysis_result)
+                await self.cache.set(analysis_result, self.config.cache_ttl_seconds, cache_key)
             
             return analysis_result
         except Exception as e:
@@ -517,7 +517,7 @@ class TokenAnalyzer:
             
             # Speichere das Ergebnis im Cache
             if self.cache:
-                await self.cache.set(cache_key, token)
+                await self.cache.set(token, self.config.cache_ttl_seconds, cache_key)
             
             return token
         except Exception as e:
@@ -605,7 +605,7 @@ class TokenAnalyzer:
             
             # Speichere das Ergebnis im Cache
             if self.cache:
-                await self.cache.set(cache_key, token)
+                await self.cache.set(token, self.config.cache_ttl_seconds, cache_key)
             
             return token
         except Exception as e:
@@ -634,7 +634,7 @@ class TokenAnalyzer:
             
             # Speichere das Ergebnis im Cache
             if self.cache:
-                await self.cache.set(cache_key, token)
+                await self.cache.set(token, self.config.cache_ttl_seconds, cache_key)
             
             return token
         except Exception as e:
@@ -663,7 +663,7 @@ class TokenAnalyzer:
             
             # Speichere das Ergebnis im Cache
             if self.cache:
-                await self.cache.set(cache_key, token)
+                await self.cache.set(token, self.config.cache_ttl_seconds, cache_key)
             
             return token
         except Exception as e:
@@ -697,7 +697,7 @@ class TokenAnalyzer:
             
             # Speichere das Ergebnis im Cache
             if self.cache:
-                await self.cache.set(cache_key, holders)
+                await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
             
             return holders
         except Exception as e:
@@ -753,7 +753,7 @@ class TokenAnalyzer:
                 
                 # Speichere das Ergebnis im Cache
                 if self.cache:
-                    await self.cache.set(cache_key, wallet_analysis)
+                    await self.cache.set(wallet_analysis, self.config.cache_ttl_seconds, cache_key)
                     
             except Exception as e:
                 logger.error(f"Error analyzing wallet {holder.get('TokenHolderAddress', 'Unknown')}: {e}")
@@ -788,7 +788,7 @@ class TokenAnalyzer:
             
             # Speichere das Ergebnis im Cache
             if self.cache:
-                await self.cache.set(cache_key, transaction_data)
+                await self.cache.set(transaction_data, self.config.cache_ttl_seconds, cache_key)
             
             return transaction_data
         except Exception as e:
