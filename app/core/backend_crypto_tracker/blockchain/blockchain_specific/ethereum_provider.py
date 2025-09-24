@@ -202,31 +202,48 @@ class EthereumProvider(BaseAPIProvider):
         
         return None
     
-    async def get_token_holders(self, token_address: str, chain: str = 'ethereum', limit: int = 100) -> List[Dict[str, Any]]:
-        """
-        Holt die Top-Token-Halter für einen bestimmten Token.
-        Nutzt CoinGecko Pro On-Chain API, falls verfügbar, sonst GeckoTerminal oder Etherscan.
-        
-        Args:
-            token_address: Die Token-Vertragsadresse
-            chain: Die Blockchain (Standard: ethereum)
-            limit: Maximale Anzahl an Haltern, die abgerufen werden sollen
-            
-        Returns:
-            Eine Liste von Dictionaries mit Halter-Informationen
-        """
+    async def get_token_holders(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
+        """Holt Token-Holder mit Etherscan API"""
         try:
-            # Versuche zuerst, die Halter über CoinGecko zu erhalten
-            coingecko_holders = await self.coingecko_provider.get_token_holders(token_address, chain, limit)
-            if coingecko_holders:
-                return coingecko_holders
+            api_key = os.getenv('ETHERSCAN_API_KEY')
+            if not api_key:
+                logger.warning("Etherscan API key not provided")
+                return []
             
-            # Fallback: Versuche, Halter über Etherscan-Token-Transfers zu ermitteln
-            return await self._get_holders_from_etherscan(token_address, limit)
-                
+            # Bestimme die richtige URL basierend auf der Chain
+            if chain.lower() == 'ethereum':
+                base_url = "https://api.etherscan.io/api"
+            elif chain.lower() == 'bsc':
+                base_url = "https://api.bscscan.com/api"
+            else:
+                logger.warning(f"Etherscan API not supported for chain: {chain}")
+                return []
+            
+            params = {
+                'module': 'token',
+                'action': 'tokenholderlist',
+                'contractaddress': token_address,
+                'page': '1',
+                'offset': '100',
+                'sort': 'desc',
+                'apikey': api_key
+            }
+            
+            async with self.session.get(base_url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('status') == '1' and data.get('message') == 'OK':
+                        result = []
+                        for holder in data.get('result', []):
+                            result.append({
+                                'TokenHolderAddress': holder.get('TokenHolderAddress'),
+                                'TokenHolderQuantity': holder.get('TokenHolderQuantity')
+                            })
+                        return result
         except Exception as e:
-            logger.error(f"Error fetching token holders for {token_address} on {chain}: {e}")
-            return []
+            logger.error(f"Error fetching token holders: {e}")
+        
+        return []
     
     async def _get_holders_from_etherscan(self, token_address: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
