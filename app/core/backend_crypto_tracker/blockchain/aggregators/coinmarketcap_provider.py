@@ -164,13 +164,15 @@ class CoinMarketCapProvider(BaseAPIProvider):
     async def _get_coin_id(self, token_address: str, chain: str) -> Optional[str]:
         """Holt die Coin-ID für eine Contract-Adresse"""
         try:
-            # Im Free Tier ist dieser Endpunkt möglicherweise nicht verfügbar
-            url = f"{self.base_url}/cryptocurrency/map"
+            # CoinMarketCap Free Tier unterstützt keine Adressensuche
+            # Wir müssen eine alternative Methode verwenden
             
-            # Parameter anpassen, um den Fehler zu vermeiden
+            # Versuche, alle Coins abzurufen und manuell zu suchen
+            url = f"{self.base_url}/cryptocurrency/listings/latest"
             params = {
-                'address': token_address
-                # 'symbol' wird weggelassen, da es den Fehler verursacht
+                'start': '1',
+                'limit': '5000',  # Erhöhe das Limit für mehr Ergebnisse
+                'convert': 'USD'
             }
             
             headers = {}
@@ -180,15 +182,18 @@ class CoinMarketCapProvider(BaseAPIProvider):
             data = await self._make_request(url, params, headers)
             
             if data.get('data'):
-                # Suche nach der Adresse in den Ergebnissen
+                # Suche nach der Adresse in den Plattform-Daten
                 for coin in data['data']:
                     platform = coin.get('platform', {})
-                    if platform and platform.get('contract_address', '').lower() == token_address.lower():
+                    if (platform and 
+                        platform.get('symbol', '').lower() == 'eth' and 
+                        platform.get('contract_address', '').lower() == token_address.lower()):
+                        logger.info(f"Found coin ID {coin['id']} for address {token_address}")
                         return str(coin['id'])
                 
-                # Wenn keine direkte Übereinstimmung gefunden wurde, gib die erste Coin-ID zurück
-                if data['data']:
-                    return str(data['data'][0]['id'])
+                logger.warning(f"No coin found for address {token_address} in first 5000 results")
+            else:
+                logger.warning("No data returned from CoinMarketCap listings API")
         except Exception as e:
             logger.error(f"Error getting coin ID from CoinMarketCap: {e}")
         
