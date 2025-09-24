@@ -301,9 +301,43 @@ class LowCapAnalyzer:
             # Spezielle Behandlung für "Token data could not be retrieved" Fehler
             if "Token data could not be retrieved" in str(e):
                 self.logger.error(f"Konnte Tokendaten nicht abrufen für {token_address} auf {chain}: {str(e)}")
-                raise CustomAnalysisException(
-                    "Tokendaten konnten nicht abgerufen werden. Bitte überprüfen Sie die Token-Adresse oder versuchen Sie es später erneut."
-                ) from e
+                # Erstelle ein minimales Analyseergebnis, auch wenn keine Token-Daten abgerufen werden konnten
+                minimal_result = {
+                    'token_info': {
+                        'address': token_address,
+                        'name': "Unknown",
+                        'symbol': "UNKNOWN",
+                        'chain': chain,
+                        'market_cap': 0,
+                        'volume_24h': 0,
+                        'holders_count': 0,
+                        'liquidity': 0
+                    },
+                    'score': 50.0,  # Neutraler Score
+                    'metrics': {
+                        'total_holders_analyzed': 0,
+                        'whale_wallets': 0,
+                        'dev_wallets': 0,
+                        'rugpull_suspects': 0,
+                        'gini_coefficient': 0,
+                        'whale_percentage': 0,
+                        'dev_percentage': 0
+                    },
+                    'risk_flags': ["limited_data"],
+                    'wallet_analysis': {
+                        'total_wallets': 0,
+                        'dev_wallets': 0,
+                        'whale_wallets': 0,
+                        'rugpull_suspects': 0,
+                        'top_holders': []
+                    }
+                }
+                
+                # Speichere das minimale Ergebnis im Cache
+                if should_use_cache and self.cache:
+                    await self.cache.set(minimal_result, self.cache_ttl, cache_key)
+                
+                return minimal_result
             raise CustomAnalysisException(f"Analyse fehlgeschlagen: {str(e)}") from e
         except (APIException, NotFoundException) as e:
             self.logger.error(f"Externer Fehler bei der Token-Analyse: {str(e)}")
