@@ -1036,45 +1036,56 @@ class TokenAnalyzer:
             score -= 15
             risk_flags.append("unverified_contract")
         
-        # Wallet-Verteilungsanalyse
-        total_supply_analyzed = sum(w.percentage_of_supply for w in wallet_analyses)
-        whale_percentage = sum(w.percentage_of_supply for w in wallet_analyses if w.wallet_type == WalletTypeEnum.WHALE_WALLET)
-        dev_percentage = sum(w.percentage_of_supply for w in wallet_analyses if w.wallet_type == WalletTypeEnum.DEV_WALLET)
-        rugpull_suspects = sum(1 for w in wallet_analyses if w.wallet_type == WalletTypeEnum.RUGPULL_SUSPECT)
-        
-        # Whale-Konzentration
-        if whale_percentage > 50:
-            score -= 40
-            risk_flags.append("high_whale_concentration")
-        elif whale_percentage > 30:
-            score -= 25
-            risk_flags.append("moderate_whale_concentration")
-        elif whale_percentage > 15:
-            score -= 10
-            risk_flags.append("low_whale_concentration")
-        
-        # Dev Wallet Konzentration
-        if dev_percentage > 20:
-            score -= 30
-            risk_flags.append("high_dev_concentration")
-        elif dev_percentage > 10:
-            score -= 15
-            risk_flags.append("moderate_dev_concentration")
-        
-        # Rugpull Verdächtige
-        if rugpull_suspects > 0:
-            score -= rugpull_suspects * 20
-            risk_flags.append("rugpull_suspects")
-        
-        # Gini-Koeffizient
-        balances = [w.balance for w in wallet_analyses]
-        gini = self._calculate_gini_coefficient(balances)
-        if gini > 0.8:  # Sehr ungleiche Verteilung
-            score -= 20
-            risk_flags.append("very_uneven_distribution")
-        elif gini > 0.6:
-            score -= 10
-            risk_flags.append("uneven_distribution")
+        # Wallet-Verteilungsanalyse - nur wenn Wallet-Analysen vorhanden sind
+        if wallet_analyses:
+            total_supply_analyzed = sum(w.percentage_of_supply for w in wallet_analyses)
+            whale_percentage = sum(w.percentage_of_supply for w in wallet_analyses if w.wallet_type == WalletTypeEnum.WHALE_WALLET)
+            dev_percentage = sum(w.percentage_of_supply for w in wallet_analyses if w.wallet_type == WalletTypeEnum.DEV_WALLET)
+            rugpull_suspects = sum(1 for w in wallet_analyses if w.wallet_type == WalletTypeEnum.RUGPULL_SUSPECT)
+            
+            # Whale-Konzentration
+            if whale_percentage > 50:
+                score -= 40
+                risk_flags.append("high_whale_concentration")
+            elif whale_percentage > 30:
+                score -= 25
+                risk_flags.append("moderate_whale_concentration")
+            elif whale_percentage > 15:
+                score -= 10
+                risk_flags.append("low_whale_concentration")
+            
+            # Dev Wallet Konzentration
+            if dev_percentage > 20:
+                score -= 30
+                risk_flags.append("high_dev_concentration")
+            elif dev_percentage > 10:
+                score -= 15
+                risk_flags.append("moderate_dev_concentration")
+            
+            # Rugpull Verdächtige
+            if rugpull_suspects > 0:
+                score -= rugpull_suspects * 20
+                risk_flags.append("rugpull_suspects")
+            
+            # Gini-Koeffizient
+            balances = [w.balance for w in wallet_analyses]
+            gini = self._calculate_gini_coefficient(balances)
+            if gini > 0.8:  # Sehr ungleiche Verteilung
+                score -= 20
+                risk_flags.append("very_uneven_distribution")
+            elif gini > 0.6:
+                score -= 10
+                risk_flags.append("uneven_distribution")
+        else:
+            # Wenn keine Wallet-Analysen vorhanden sind, füge ein Risikoflag hinzu
+            score -= 25  # Deutlicher Abzug für fehlende Wallet-Daten
+            risk_flags.append("no_wallet_data")
+            
+            # Setze Standardwerte für die Metriken
+            whale_percentage = 0
+            dev_percentage = 0
+            rugpull_suspects = 0
+            gini = 0
         
         # Metriken sammeln
         metrics = {
