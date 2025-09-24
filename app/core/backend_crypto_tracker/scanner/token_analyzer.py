@@ -576,7 +576,7 @@ class TokenAnalyzer:
             # Cache-Schlüssel für diese Anfrage
             cache_key = f"token_data_{token_address}_{chain}"
             
-            # Prüfe, ob die Daten im Cache vorhanden sind - angepasst für AnalysisCache
+            # Prüfe, ob die Daten im Cache vorhanden sind
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
@@ -594,8 +594,8 @@ class TokenAnalyzer:
             # Erstelle Token-Objekt mit getattr für sicheren Attributzugriff
             token = Token(
                 address=token_address,
-                name="",  # Wird später gefüllt
-                symbol="",  # Wird später gefüllt
+                name=getattr(price_data, 'name', ''),  # Verwende getattr mit Standardwert
+                symbol=getattr(price_data, 'symbol', ''),  # Verwende getattr mit Standardwert
                 chain=chain,
                 market_cap=getattr(price_data, 'market_cap', 0),
                 volume_24h=getattr(price_data, 'volume_24h', 0),
@@ -614,7 +614,7 @@ class TokenAnalyzer:
             elif chain == 'sui':
                 token = await self._fetch_sui_token_data(token)
             
-            # Speichere das Ergebnis im Cache - angepasst für AnalysisCache
+            # Speichere das Ergebnis im Cache
             if self.cache:
                 await self.cache.set(token, self.config.cache_ttl_seconds, cache_key)
             
