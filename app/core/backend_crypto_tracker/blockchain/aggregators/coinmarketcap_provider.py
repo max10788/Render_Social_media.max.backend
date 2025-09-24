@@ -5,6 +5,7 @@ CoinMarketCap API provider implementation.
 import json
 from datetime import datetime
 from typing import Any, Dict, Optional
+import os
 
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
@@ -14,9 +15,11 @@ logger = get_logger(__name__)
 
 
 class CoinMarketCapProvider(BaseAPIProvider):
-    """CoinMarketCap API-Anbieter - eingeschränkte kostenlose Version"""
+    """CoinMarketCap API-Anbieter - eingeschränkte kostenlose version"""
     
     def __init__(self, api_key: Optional[str] = None):
+        # Verwende den übergebenen API-Schlüssel oder hole ihn aus den Umgebungsvariablen
+        api_key = api_key or os.getenv('COINMARKETCAP_API_KEY')
         super().__init__("CoinMarketCap", "https://pro-api.coinmarketcap.com/v1", api_key, "COINMARKETCAP_API_KEY")
         self.min_request_interval = 1.2  # Etwas länger für CoinMarketCap
     
@@ -56,6 +59,7 @@ class CoinMarketCapProvider(BaseAPIProvider):
             # CoinMarketCap benötigt zuerst eine Mapping von Contract-Adresse zu Coin-ID
             coin_id = await self._get_coin_id(token_address, chain)
             if not coin_id:
+                logger.warning(f"Could not find coin ID for address {token_address} on {chain}")
                 return None
             
             url = f"{self.base_url}/cryptocurrency/quotes/latest"
@@ -70,7 +74,7 @@ class CoinMarketCapProvider(BaseAPIProvider):
             
             data = await self._make_request(url, params, headers)
             
-            if data.get('data'):
+            if data.get('data') and coin_id in data['data']:
                 coin_data = data['data'][coin_id]
                 quote = coin_data.get('quote', {}).get('USD', {})
                 
@@ -84,6 +88,8 @@ class CoinMarketCapProvider(BaseAPIProvider):
                     source=self.name,
                     last_updated=datetime.now()
                 )
+            else:
+                logger.warning(f"No data found for coin ID {coin_id}")
         except Exception as e:
             logger.error(f"Error fetching from CoinMarketCap: {e}")
         
@@ -94,6 +100,7 @@ class CoinMarketCapProvider(BaseAPIProvider):
         try:
             coin_id = await self._get_coin_id(token_address, chain)
             if not coin_id:
+                logger.warning(f"Could not find coin ID for address {token_address} on {chain}")
                 return None
             
             url = f"{self.base_url}/cryptocurrency/info"
@@ -105,7 +112,7 @@ class CoinMarketCapProvider(BaseAPIProvider):
             
             data = await self._make_request(url, params, headers)
             
-            if data.get('data'):
+            if data.get('data') and coin_id in data['data']:
                 coin_data = data['data'][coin_id]
                 return {
                     'name': coin_data.get('name'),
@@ -120,6 +127,8 @@ class CoinMarketCapProvider(BaseAPIProvider):
                     'logo': coin_data.get('logo'),
                     'last_updated': datetime.now()
                 }
+            else:
+                logger.warning(f"No metadata found for coin ID {coin_id}")
         except Exception as e:
             logger.error(f"Error fetching token metadata from CoinMarketCap: {e}")
         
@@ -157,9 +166,11 @@ class CoinMarketCapProvider(BaseAPIProvider):
         try:
             # Im Free Tier ist dieser Endpunkt möglicherweise nicht verfügbar
             url = f"{self.base_url}/cryptocurrency/map"
+            
+            # Parameter anpassen, um den Fehler zu vermeiden
             params = {
-                'address': token_address,
-                'symbol': ''
+                'address': token_address
+                # 'symbol' wird weggelassen, da es den Fehler verursacht
             }
             
             headers = {}
@@ -169,7 +180,15 @@ class CoinMarketCapProvider(BaseAPIProvider):
             data = await self._make_request(url, params, headers)
             
             if data.get('data'):
-                return data['data'][0].get('id')
+                # Suche nach der Adresse in den Ergebnissen
+                for coin in data['data']:
+                    platform = coin.get('platform', {})
+                    if platform and platform.get('contract_address', '').lower() == token_address.lower():
+                        return str(coin['id'])
+                
+                # Wenn keine direkte Übereinstimmung gefunden wurde, gib die erste Coin-ID zurück
+                if data['data']:
+                    return str(data['data'][0]['id'])
         except Exception as e:
             logger.error(f"Error getting coin ID from CoinMarketCap: {e}")
         
