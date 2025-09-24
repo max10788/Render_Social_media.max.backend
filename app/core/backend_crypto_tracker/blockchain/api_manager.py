@@ -467,3 +467,103 @@ class APIManager:
         self.request_timestamps[provider_name] = [
             ts for ts in self.request_timestamps[provider_name] if ts > day_ago
         ]
+    async def get_token_holders_etherscan(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
+        """Holt Token-Holder von Etherscan API"""
+        try:
+            api_key = os.getenv('ETHERSCAN_API_KEY')
+            if not api_key:
+                logger.warning("Etherscan API key not provided")
+                return []
+            
+            # Bestimme die richtige URL basierend auf der Chain
+            if chain.lower() == 'ethereum':
+                base_url = "https://api.etherscan.io/api"
+            elif chain.lower() == 'bsc':
+                base_url = "https://api.bscscan.com/api"
+            else:
+                logger.warning(f"Etherscan API not supported for chain: {chain}")
+                return []
+            
+            params = {
+                'module': 'token',
+                'action': 'tokenholderlist',
+                'contractaddress': token_address,
+                'page': '1',
+                'offset': '100',  # Nur die Top 100 Holder
+                'sort': 'desc',
+                'apikey': api_key
+            }
+            
+            async with self.session.get(base_url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get('status') == '1' and data.get('message') == 'OK':
+                        result = []
+                        for holder in data.get('result', []):
+                            result.append({
+                                'TokenHolderAddress': holder.get('TokenHolderAddress'),
+                                'TokenHolderQuantity': holder.get('TokenHolderQuantity')
+                            })
+                        logger.info(f"Found {len(result)} holders from Etherscan")
+                        return result
+                    else:
+                        logger.warning(f"Etherscan API error: {data.get('message')}")
+                else:
+                    logger.warning(f"Etherscan API request failed with status {response.status}")
+        except Exception as e:
+            logger.error(f"Error fetching holders from Etherscan: {e}")
+        
+        return []
+    
+    async def get_token_holders_moralis(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
+        """Holt Token-Holder von Moralis API"""
+        try:
+            api_key = os.getenv('MORALIS_API_KEY')
+            if not api_key:
+                logger.warning("Moralis API key not provided")
+                return []
+            
+            # Bestimme die richtige Chain-ID für Moralis
+            chain_map = {
+                'ethereum': 'eth',
+                'bsc': 'bsc',
+                'polygon': 'polygon',
+                'avalanche': 'avalanche',
+                'fantom': 'fantom'
+            }
+            
+            moralis_chain = chain_map.get(chain.lower())
+            if not moralis_chain:
+                logger.warning(f"Moralis API not supported for chain: {chain}")
+                return []
+            
+            url = f"https://deep-index.moralis.io/api/v2/erc20/{moralis_chain}/{token_address}/owners"
+            headers = {
+                'X-API-Key': api_key,
+                'accept': 'application/json'
+            }
+            
+            params = {
+                'limit': '100',  # Nur die Top 100 Holder
+                'order': 'DESC'
+            }
+            
+            async with self.session.get(url, headers=headers, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    result = []
+                    
+                    for holder in data.get('result', []):
+                        result.append({
+                            'TokenHolderAddress': holder.get('owner_address'),
+                            'TokenHolderQuantity': holder.get('balance_formatted')
+                        })
+                    
+                    logger.info(f"Found {len(result)} holders from Moralis")
+                    return result
+                else:
+                    logger.warning(f"Moralis API request failed with status {response.status}")
+        except Exception as e:
+            logger.error(f"Error fetching holders from Moralis: {e}")
+        
+        return []
