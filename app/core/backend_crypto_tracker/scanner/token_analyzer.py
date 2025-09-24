@@ -418,10 +418,28 @@ class TokenAnalyzer:
             # 1. Token-Metadaten abrufen
             token_data = await self._fetch_custom_token_data(token_address, chain)
             if not token_data:
-                raise ValueError(f"Token data could not be retrieved for {token_address} on {chain}")
+                # Wenn keine Token-Daten abgerufen werden konnten, erstelle ein minimales Token-Objekt
+                logger.warning(f"Could not retrieve token data for {token_address} on {chain}, creating minimal token object")
+                token_data = Token(
+                    address=token_address,
+                    name="Unknown",
+                    symbol="UNKNOWN",
+                    chain=chain,
+                    market_cap=0,
+                    volume_24h=0,
+                    liquidity=0,
+                    holders_count=0,
+                    contract_verified=False,
+                    creation_date=None,
+                    token_score=0
+                )
             
             # 2. Holder-Analyse durchführen
             holders = await self._fetch_token_holders(token_address, chain)
+            
+            if not holders:
+                logger.warning(f"No holder data for {token_address} on {chain}")
+                holders = []
             
             # 3. Wallet-Klassifizierung
             wallet_analyses = await self._analyze_wallets(token_data, holders)
