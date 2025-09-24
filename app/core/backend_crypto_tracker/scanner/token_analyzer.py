@@ -488,7 +488,7 @@ class TokenAnalyzer:
             # Cache-Schlüssel für diese Anfrage
             cache_key = f"custom_token_analysis_{token_address}_{chain}"
             
-            # Prüfe, ob die Daten im Cache vorhanden sind - angepasst für AnalysisCache
+            # Prüfe, ob die Daten im Cache vorhanden sind
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
@@ -497,11 +497,30 @@ class TokenAnalyzer:
             
             # 1. Token-Metadaten abrufen
             token_data = await self._fetch_custom_token_data(token_address, chain)
+            
+            # Wenn keine Token-Daten abgerufen werden konnten, erstelle ein minimales Token-Objekt
             if not token_data:
-                raise ValueError(f"Token data could not be retrieved for {token_address} on {chain}")
+                logger.warning(f"Could not retrieve token data for {token_address} on {chain}, creating minimal token object")
+                token_data = Token(
+                    address=token_address,
+                    name="Unknown",
+                    symbol="UNKNOWN",
+                    chain=chain,
+                    market_cap=0,
+                    volume_24h=0,
+                    liquidity=0,
+                    holders_count=0,
+                    contract_verified=False,
+                    creation_date=None,
+                    token_score=0
+                )
             
             # 2. Holder-Analyse durchführen
             holders = await self._fetch_token_holders(token_address, chain)
+            
+            if not holders:
+                logger.warning(f"No holder data for {token_address} on {chain}")
+                holders = []
             
             # 3. Wallet-Klassifizierung
             wallet_analyses = await self._analyze_wallets(token_data, holders)
@@ -541,7 +560,7 @@ class TokenAnalyzer:
                 }
             }
             
-            # Speichere das Ergebnis im Cache - angepasst für AnalysisCache
+            # Speichere das Ergebnis im Cache
             if self.cache:
                 await self.cache.set(analysis_result, self.config.cache_ttl_seconds, cache_key)
             
