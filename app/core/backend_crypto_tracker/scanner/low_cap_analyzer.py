@@ -38,7 +38,7 @@ from app.core.backend_crypto_tracker.scanner.scoring_engine import (
     ScanConfig
 )
 
-from app.core.backend_crypto_tracker.utils.cache import TokenCache
+from app.core.backend_crypto_tracker.utils.cache import AnalysisCache  # Verwende deine vorhandene Cache-Klasse
 
 
 class LowCapAnalyzer:
@@ -60,7 +60,7 @@ class LowCapAnalyzer:
         # Cache-Einstellungen
         self.enable_cache = enable_cache
         self.cache_ttl = cache_ttl
-        self.cache = TokenCache(default_ttl=cache_ttl) if enable_cache else None
+        self.cache = AnalysisCache(max_size=1000, default_ttl=cache_ttl) if enable_cache else None
         
         # Initialisiere die Komponenten (Ressourcen werden in __aenter__ erstellt)
         self.token_analyzer: Optional[TokenAnalyzer] = None
@@ -293,7 +293,7 @@ class LowCapAnalyzer:
             
             # Speichere das Ergebnis im Cache
             if should_use_cache and self.cache:
-                await self.cache.set(cache_key, result)
+                await self.cache.set(result, self.cache_ttl, cache_key)
                 
             self.logger.info(f"Analyse für Token {token_address} auf Chain {chain} abgeschlossen")
             return result
@@ -352,7 +352,7 @@ class LowCapAnalyzer:
             
             # Speichere das Ergebnis im Cache
             if should_use_cache and self.cache:
-                await self.cache.set(cache_key, results)
+                await self.cache.set(results, self.cache_ttl, cache_key)
 
             self.logger.info(f"Low-Cap-Token-Scan abgeschlossen. {len(results)} Tokens erfolgreich analysiert")
             return results
@@ -361,16 +361,34 @@ class LowCapAnalyzer:
             self.logger.error(f"Fehler beim Low-Cap-Token-Scan: {str(e)}", exc_info=True)
             raise CustomAnalysisException(f"Scan fehlgeschlagen: {str(e)}") from e
     
-    async def invalidate_cache(self, pattern: str = None) -> None:
+    async def invalidate_cache(self, pattern: str = None) -> int:
         """
         Invalidiert Cache-Einträge, optional mit Muster.
         
         Args:
             pattern: Muster für die zu invalidierenden Schlüssel. Wenn None, wird der gesamte Cache geleert.
+        
+        Returns:
+            Anzahl der gelöschten Einträge
         """
-        if self.cache:
-            await self.cache.invalidate(pattern)
-            self.logger.info(f"Cache invalidated with pattern: {pattern}")
+        if not self.cache:
+            return 0
+        
+        if pattern:
+            # Lösche alle Einträge, die das Muster enthalten
+            keys = await self.cache.get_keys()
+            count = 0
+            for key in keys:
+                if pattern in key:
+                    # Zerlege den Schlüssel in seine Bestandteile für die delete-Methode
+                    parts = key.split(":")
+                    if await self.cache.delete(*parts):
+                        count += 1
+            return count
+        else:
+            # Lösche den gesamten Cache
+            await self.cache.clear()
+            return -1  # -1 bedeutet "alle Einträge gelöscht"
     
     async def get_cache_stats(self) -> Dict[str, Any]:
         """
