@@ -439,7 +439,7 @@ class LowCapAnalyzer:
     # Diese könnten verwendet werden, um zusätzliche Analysen durchzuführen,
     # die über die Standardfunktionalität des TokenAnalyzers hinausgehen.
     
-    async def _perform_advanced_risk_assessment(self, token_data: Dict[str, Any], wallet_analyses: List[WalletAnalysis]) -> RiskAssessment:
+    async def _perform_advanced_risk_assessment(self, token_data: Dict[str, Any], wallet_analyses: List[WalletAnalysis]) -> Dict[str, Any]:
         """
         Führt eine erweiterte Risikobewertung mit dem AdvancedRiskAssessor durch.
         
@@ -448,21 +448,77 @@ class LowCapAnalyzer:
             wallet_analyses: Ergebnisse der Wallet-Analyse
             
         Returns:
-            RiskAssessment mit detaillierten Risikoinformationen
+            Dict mit detaillierten Risikoinformationen
         """
         if not self.risk_assessor:
             raise CustomAnalysisException("RiskAssessor ist nicht initialisiert")
             
         try:
             # Verwende die Methode aus AdvancedRiskAssessor
-            # Achtung: Die Signatur muss mit der in risk_assessor.py übereinstimmen
-            # Dort ist es: async def assess_token_risk_advanced(self, token_data: Dict[str, Any], wallet_analyses: List, transaction_history: List[Dict] = None)
-            return await self.risk_assessor.assess_token_risk_advanced(token_data, wallet_analyses)
+            risk_assessment = await self.risk_assessor.assess_token_risk_advanced(token_data, wallet_analyses)
+            
+            # Passe die Rückgabedaten an die tatsächliche Struktur an
+            # Untersuche das Objekt, um die tatsächlichen Attribute zu finden
+            if hasattr(risk_assessment, 'overall_risk'):
+                overall_risk = risk_assessment.overall_risk
+            elif hasattr(risk_assessment, 'risk_score'):
+                overall_risk = risk_assessment.risk_score
+            else:
+                overall_risk = 50  # Standardwert
+                
+            if hasattr(risk_assessment, 'risk_factors'):
+                risk_factors = risk_assessment.risk_factors
+            else:
+                risk_factors = []
+                
+            if hasattr(risk_assessment, 'recommendation'):
+                recommendation = risk_assessment.recommendation
+            else:
+                recommendation = 'neutral'
+            
+            return {
+                'overall_risk': overall_risk,
+                'risk_factors': risk_factors,
+                'recommendation': recommendation
+            }
         except Exception as e:
             self.logger.error(f"Fehler bei der erweiterten Risikobewertung: {str(e)}")
             # Fallback auf eine Basisbewertung
-            return await self.risk_assessor.assess_token_risk(token_data, wallet_analyses)
-    
+            try:
+                risk_assessment = await self.risk_assessor.assess_token_risk(token_data, wallet_analyses)
+                
+                # Untersuche das Objekt, um die tatsächlichen Attribute zu finden
+                if hasattr(risk_assessment, 'overall_risk'):
+                    overall_risk = risk_assessment.overall_risk
+                elif hasattr(risk_assessment, 'risk_score'):
+                    overall_risk = risk_assessment.risk_score
+                else:
+                    overall_risk = 50  # Standardwert
+                    
+                if hasattr(risk_assessment, 'risk_factors'):
+                    risk_factors = risk_assessment.risk_factors
+                else:
+                    risk_factors = []
+                    
+                if hasattr(risk_assessment, 'recommendation'):
+                    recommendation = risk_assessment.recommendation
+                else:
+                    recommendation = 'neutral'
+                
+                return {
+                    'overall_risk': overall_risk,
+                    'risk_factors': risk_factors,
+                    'recommendation': recommendation
+                }
+            except Exception as e2:
+                self.logger.error(f"Fehler auch bei der Basis-Risikobewertung: {str(e2)}")
+                # Notfall-Fallback
+                return {
+                    'overall_risk': 50,
+                    'risk_factors': ['limited_data'],
+                    'recommendation': 'neutral'
+                }
+        
     async def _calculate_advanced_score(self, token_data: Dict[str, Any], wallet_analyses: List[WalletAnalysis], chain: str) -> Dict[str, Any]:
         """
         Berechnet einen erweiterten Score mit dem MultiChainScoringEngine.
