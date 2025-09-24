@@ -772,12 +772,12 @@ class TokenAnalyzer:
             return token
     
     async def _fetch_token_holders(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
-        """Holt Token-Holder für verschiedene Chains"""
+        """Holt Token-Holder für verschiedene Chains mit Etherscan und Moralis"""
         try:
             # Cache-Schlüssel für diese Anfrage
             cache_key = f"token_holders_{token_address}_{chain}"
             
-            # Prüfe, ob die Daten im Cache vorhanden sind - angepasst für AnalysisCache
+            # Prüfe, ob die Daten im Cache vorhanden sind
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
@@ -786,18 +786,44 @@ class TokenAnalyzer:
             
             holders = []
             
-            if chain in ['ethereum', 'bsc']:
-                if chain == 'ethereum' and self.ethereum_provider:
-                    holders = await self.ethereum_provider.get_token_holders(token_address, chain)
-                elif chain == 'bsc' and self.bsc_provider:
-                    holders = await self.bsc_provider.get_token_holders(token_address, chain)
-            elif chain == 'solana' and self.solana_provider:
-                holders = await self.solana_provider.get_token_holders(token_address)
-            elif chain == 'sui' and self.sui_provider:
-                holders = await self.sui_provider.get_token_holders(token_address)
+            # Versuche zuerst Etherscan für Ethereum und BSC
+            if chain.lower() in ['ethereum', 'bsc']:
+                try:
+                    holders = await self.api_manager.get_token_holders_etherscan(token_address, chain)
+                    if holders:
+                        logger.info(f"Found {len(holders)} holders from Etherscan")
+                except Exception as e:
+                    logger.warning(f"Error fetching holders from Etherscan: {e}")
             
-            # Speichere das Ergebnis im Cache - angepasst für AnalysisCache
-            if self.cache:
+            # Wenn keine Holder gefunden wurden, versuche Moralis
+            if not holders:
+                try:
+                    holders = await self.api_manager.get_token_holders_moralis(token_address, chain)
+                    if holders:
+                        logger.info(f"Found {len(holders)} holders from Moralis")
+                except Exception as e:
+                    logger.warning(f"Error fetching holders from Moralis: {e}")
+            
+            # Immer noch die bestehenden Methoden als Fallback versuchen
+            if not holders:
+                try:
+                    if chain.lower() in ['ethereum', 'bsc']:
+                        if chain.lower() == 'ethereum' and self.ethereum_provider:
+                            holders = await self.ethereum_provider.get_token_holders(token_address, chain)
+                        elif chain.lower() == 'bsc' and self.bsc_provider:
+                            holders = await self.bsc_provider.get_token_holders(token_address, chain)
+                    elif chain.lower() == 'solana' and self.solana_provider:
+                        holders = await self.solana_provider.get_token_holders(token_address)
+                    elif chain.lower() == 'sui' and self.sui_provider:
+                        holders = await self.sui_provider.get_token_holders(token_address)
+                    
+                    if holders:
+                        logger.info(f"Found {len(holders)} holders from fallback provider")
+                except Exception as e:
+                    logger.warning(f"Error fetching holders from fallback provider: {e}")
+            
+            # Speichere das Ergebnis im Cache
+            if self.cache and holders:
                 await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
             
             return holders
