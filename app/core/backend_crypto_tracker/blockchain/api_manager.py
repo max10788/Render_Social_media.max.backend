@@ -1,6 +1,7 @@
 # blockchain/api_manager.py
 import asyncio
 import aiohttp
+import os
 from typing import Dict, List, Optional, Any, Union
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -19,35 +20,15 @@ from .exchanges.coinbase_provider import CoinbaseProvider
 from .exchanges.kraken_provider import KrakenProvider
 from .onchain.bitquery_provider import BitqueryProvider
 from .onchain.etherscan_provider import EtherscanProvider
-from ..utils.cache import TokenCache
+from ..utils.cache import AnalysisCache
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 class APIManager:
     def __init__(self):
-        # Initialisiere alle Provider
-        self.providers = {
-            # Aggregatoren
-            'coingecko': CoinGeckoProvider(),
-            'coinmarketcap': CoinMarketCapProvider(),
-            'cryptocompare': CryptoCompareProvider(),
-            
-            # Blockchain-spezifisch
-            'ethereum': EthereumProvider(),
-            'solana': SolanaProvider(),
-            'sui': SuiProvider(),
-            
-            # Exchanges
-            'binance': BinanceProvider(),
-            'bitget': BitgetProvider(),
-            'coinbase': CoinbaseProvider(),
-            'kraken': KrakenProvider(),
-            
-            # On-Chain
-            'etherscan': EtherscanProvider(),
-            'bitquery': BitqueryProvider()
-        }
+        # Provider-Dictionary - wird erst in initialize() gefüllt
+        self.providers = {}
         
         # Definiere Provider-Prioritäten für verschiedene Datentypen
         self.provider_priorities = {
@@ -78,8 +59,8 @@ class APIManager:
         # Rate-Limiting-Tracker
         self.request_timestamps = defaultdict(list)
         
-        # Cache
-        self.cache = TokenCache()
+        # Cache - verwende AnalysisCache statt TokenCache
+        self.cache = AnalysisCache(max_size=1000, default_ttl=300)
         
         # Session für HTTP-Anfragen
         self.session = None
@@ -87,12 +68,96 @@ class APIManager:
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
         
+        # Initialisiere nur Provider mit gültigen API-Schlüsseln
+        await self._initialize_providers()
+        
+        return self
+    
+    async def _initialize_providers(self):
+        """Initialisiert Provider nur, wenn die entsprechenden API-Schlüssel vorhanden sind"""
+        # Aggregatoren
+        if os.getenv('COINGECKO_API_KEY'):
+            self.providers['coingecko'] = CoinGeckoProvider()
+            logger.info("CoinGecko provider initialized")
+        else:
+            logger.warning("CoinGecko API key not provided, using limited functionality")
+            # CoinGecko funktioniert auch ohne API-Key, aber mit Limits
+            self.providers['coingecko'] = CoinGeckoProvider()
+        
+        if os.getenv('COINMARKETCAP_API_KEY'):
+            self.providers['coinmarketcap'] = CoinMarketCapProvider()
+            logger.info("CoinMarketCap provider initialized")
+        else:
+            logger.warning("CoinMarketCap API key not provided, skipping this provider")
+        
+        if os.getenv('CRYPTOCOMPARE_API_KEY'):
+            self.providers['cryptocompare'] = CryptoCompareProvider()
+            logger.info("CryptoCompare provider initialized")
+        else:
+            logger.warning("CryptoCompare API key not provided, skipping this provider")
+        
+        # Blockchain-spezifisch
+        if os.getenv('ETHERSCAN_API_KEY'):
+            self.providers['ethereum'] = EthereumProvider()
+            self.providers['etherscan'] = EtherscanProvider()
+            logger.info("Ethereum and Etherscan providers initialized")
+        else:
+            logger.warning("Etherscan API key not provided, using limited functionality")
+            # EthereumProvider kann auch ohne API-Key funktionieren, aber mit Limits
+            self.providers['ethereum'] = EthereumProvider()
+        
+        if os.getenv('SOLANA_RPC_URL'):
+            self.providers['solana'] = SolanaProvider()
+            logger.info("Solana provider initialized")
+        else:
+            logger.warning("Solana RPC URL not provided, skipping this provider")
+        
+        if os.getenv('SUI_RPC_URL'):
+            self.providers['sui'] = SuiProvider()
+            logger.info("Sui provider initialized")
+        else:
+            logger.warning("Sui RPC URL not provided, skipping this provider")
+        
+        # Exchanges
+        if os.getenv('BINANCE_API_KEY') and os.getenv('BINANCE_SECRET_KEY'):
+            self.providers['binance'] = BinanceProvider()
+            logger.info("Binance provider initialized")
+        else:
+            logger.warning("Binance API keys not provided, skipping this provider")
+        
+        if os.getenv('BITGET_API_KEY') and os.getenv('BITGET_SECRET_KEY'):
+            self.providers['bitget'] = BitgetProvider()
+            logger.info("Bitget provider initialized")
+        else:
+            logger.warning("Bitget API keys not provided, skipping this provider")
+        
+        if os.getenv('COINBASE_API_KEY') and os.getenv('COINBASE_SECRET_KEY'):
+            self.providers['coinbase'] = CoinbaseProvider()
+            logger.info("Coinbase provider initialized")
+        else:
+            logger.warning("Coinbase API keys not provided, skipping this provider")
+        
+        if os.getenv('KRAKEN_API_KEY') and os.getenv('KRAKEN_SECRET_KEY'):
+            self.providers['kraken'] = KrakenProvider()
+            logger.info("Kraken provider initialized")
+        else:
+            logger.warning("Kraken API keys not provided, skipping this provider")
+        
+        # On-Chain
+        if os.getenv('BITQUERY_API_KEY'):
+            self.providers['bitquery'] = BitqueryProvider()
+            logger.info("Bitquery provider initialized")
+        else:
+            logger.warning("Bitquery API key not provided, skipping this provider")
+        
         # Initialisiere alle Provider
         for provider_name, provider in self.providers.items():
             if hasattr(provider, '__aenter__'):
-                await provider.__aenter__()
-        
-        return self
+                try:
+                    await provider.__aenter__()
+                except Exception as e:
+                    logger.error(f"Failed to initialize {provider_name}: {e}")
+                    self.providers.pop(provider_name, None)
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # Schließe alle Provider
@@ -182,7 +247,7 @@ class APIManager:
                     token_data['creation_date'] = result.get('creation_date')
         
         # Speichere im Cache
-        await self.cache.set(cache_key, token_data, ttl=300)  # 5 Minuten
+        await self.cache.set(token_data, ttl=300, cache_key)  # 5 Minuten
         
         return token_data
     
@@ -211,7 +276,7 @@ class APIManager:
                     data = await provider.get_token_price(token_address, chain)
                     if data:
                         # Speichere im Cache
-                        await self.cache.set(cache_key, data, ttl=60)  # 1 Minute
+                        await self.cache.set(data, ttl=60, cache_key)  # 1 Minute
                         return data
             except Exception as e:
                 logger.warning(f"Fehler bei {provider_name}: {e}")
@@ -244,7 +309,7 @@ class APIManager:
                     data = await provider.get_token_metadata(token_address, chain)
                     if data:
                         # Speichere im Cache
-                        await self.cache.set(cache_key, data, ttl=3600)  # 1 Stunde
+                        await self.cache.set(data, ttl=3600, cache_key)  # 1 Stunde
                         return data
             except Exception as e:
                 logger.warning(f"Fehler bei {provider_name}: {e}")
@@ -277,7 +342,7 @@ class APIManager:
                     data = await provider.get_token_holders(token_address, chain)
                     if data:
                         # Speichere im Cache
-                        await self.cache.set(cache_key, data, ttl=600)  # 10 Minuten
+                        await self.cache.set(data, ttl=600, cache_key)  # 10 Minuten
                         return data
             except Exception as e:
                 logger.warning(f"Fehler bei {provider_name}: {e}")
@@ -310,7 +375,7 @@ class APIManager:
                     data = await provider.get_token_liquidity(token_address, chain)
                     if data is not None:
                         # Speichere im Cache
-                        await self.cache.set(cache_key, data, ttl=300)  # 5 Minuten
+                        await self.cache.set(data, ttl=300, cache_key)  # 5 Minuten
                         return data
             except Exception as e:
                 logger.warning(f"Fehler bei {provider_name}: {e}")
@@ -343,7 +408,7 @@ class APIManager:
                     data = await provider.get_contract_verification(token_address, chain)
                     if data:
                         # Speichere im Cache
-                        await self.cache.set(cache_key, data, ttl=3600)  # 1 Stunde
+                        await self.cache.set(data, ttl=3600, cache_key)  # 1 Stunde
                         return data
             except Exception as e:
                 logger.warning(f"Fehler bei {provider_name}: {e}")
