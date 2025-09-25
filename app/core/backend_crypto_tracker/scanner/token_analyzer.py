@@ -772,137 +772,100 @@ class TokenAnalyzer:
             return token
     
     async def _fetch_token_holders(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
-        """Holt Token-Informationen von CoinMarketCap und versucht, Holder-Daten zu ergänzen"""
+        """Holt Wallet-Holder-Adressen von einem Smart Contract"""
         try:
             # Cache-Schlüssel für diese Anfrage
-            cache_key = f"token_info_{token_address}_{chain}"
+            cache_key = f"token_holders_{token_address}_{chain}"
             
             # Prüfe, ob die Daten im Cache vorhanden sind
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
-                    logger.info(f"Verwende gecachte Token-Informationen für {token_address} auf {chain}")
+                    logger.info(f"Verwende gecachte Wallet-Daten für {token_address} auf {chain}: {len(cached_result)} Wallets")
+                    # Zeige nur eine Zusammenfassung der gecachten Wallets
+                    if cached_result:
+                        top_wallets = cached_result[:5]  # Nur die Top 5 Wallets anzeigen
+                        wallet_summary = ", ".join([f"{w.get('address', 'N/A')[:10]}... ({w.get('percentage', 0):.2f}%)" for w in top_wallets])
+                        logger.info(f"Top Wallets: {wallet_summary}")
                     return cached_result
             
-            token_info = {}
-            
-            # Zuerst versuchen, Token-Informationen von CoinMarketCap zu holen
-            try:
-                # Token-Informationen von CoinMarketCap abrufen
-                cmc_data = await self.api_manager.get_token_info_coinmarketcap(token_address, chain)
-                
-                if cmc_data:
-                    # Wichtige Informationen extrahieren
-                    token_info = {
-                        'address': token_address,
-                        'chain': chain,
-                        'name': cmc_data.get('name', 'Unknown'),
-                        'symbol': cmc_data.get('symbol', 'UNKNOWN'),
-                        'price_usd': cmc_data.get('quote', {}).get('USD', {}).get('price', 0),
-                        'market_cap_usd': cmc_data.get('quote', {}).get('USD', {}).get('market_cap', 0),
-                        'volume_24h_usd': cmc_data.get('quote', {}).get('USD', {}).get('volume_24h', 0),
-                        'percent_change_24h': cmc_data.get('quote', {}).get('USD', {}).get('percent_change_24h', 0),
-                        'cmc_rank': cmc_data.get('cmc_rank', 0),
-                        'circulating_supply': cmc_data.get('circulating_supply', 0),
-                        'total_supply': cmc_data.get('total_supply', 0),
-                        'tags': cmc_data.get('tags', []),
-                        'date_added': cmc_data.get('date_added', ''),
-                        'platform': cmc_data.get('platform', {})
-                    }
-                    
-                    # Logge die wichtigsten Token-Informationen in kompakter Form
-                    logger.info(f"CMC-Daten für {token_info['name']} ({token_info['symbol']}): "
-                               f"Preis: ${token_info['price_usd']:.8f}, "
-                               f"MCap: ${token_info['market_cap_usd']:.2f}, "
-                               f"24h Vol: ${token_info['volume_24h_usd']:.2f}, "
-                               f"24h Änd: {token_info['percent_change_24h']:.2f}%, "
-                               f"Rang: {token_info['cmc_rank']}")
-                    
-                    # Tags anzeigen (max. 5)
-                    if token_info['tags']:
-                        tags_display = ", ".join(token_info['tags'][:5])
-                        logger.info(f"Tags: {tags_display}")
-                        if len(token_info['tags']) > 5:
-                            logger.info(f"... und {len(token_info['tags']) - 5} weitere Tags")
-                else:
-                    logger.warning(f"Keine CoinMarketCap-Daten für {token_address} auf {chain} gefunden")
-            except Exception as e:
-                logger.warning(f"Fehler beim Abrufen von CoinMarketCap-Daten: {e}")
-            
-            # Jetzt versuchen, Holder-Daten von verschiedenen Quellen zu holen
             holders = []
             source = None
             
             # Versuche zuerst Etherscan für Ethereum und BSC
             if chain.lower() in ['ethereum', 'bsc']:
                 try:
+                    logger.info(f"Versuche Wallet-Daten von Etherscan für {token_address} auf {chain}")
                     holders = await self.api_manager.get_token_holders_etherscan(token_address, chain)
                     if holders:
                         source = "Etherscan"
+                        logger.info(f"Erfolgreich {len(holders)} Wallets von Etherscan abgerufen")
                 except Exception as e:
-                    logger.warning(f"Fehler beim Abrufen von Etherscan-Holdern: {e}")
+                    logger.warning(f"Fehler beim Abrufen von Etherscan-Wallets: {e}")
             
             # Wenn keine Holder gefunden wurden, versuche Moralis
             if not holders:
                 try:
+                    logger.info(f"Versuche Wallet-Daten von Moralis für {token_address} auf {chain}")
                     holders = await self.api_manager.get_token_holders_moralis(token_address, chain)
                     if holders:
                         source = "Moralis"
+                        logger.info(f"Erfolgreich {len(holders)} Wallets von Moralis abgerufen")
                 except Exception as e:
-                    logger.warning(f"Fehler beim Abrufen von Moralis-Holdern: {e}")
+                    logger.warning(f"Fehler beim Abrufen von Moralis-Wallets: {e}")
             
-            # Immer noch die bestehenden Methoden als Fallback versuchen
+            # Fallback zu blockchain-spezifischen Providern
             if not holders:
                 try:
-                    if chain.lower() in ['ethereum', 'bsc']:
-                        if chain.lower() == 'ethereum' and self.ethereum_provider:
-                            holders = await self.ethereum_provider.get_token_holders(token_address, chain)
-                            source = "Ethereum Provider"
-                        elif chain.lower() == 'bsc' and self.bsc_provider:
-                            holders = await self.bsc_provider.get_token_holders(token_address, chain)
-                            source = "BSC Provider"
+                    logger.info(f"Versuche Wallet-Daten von Fallback-Providern für {token_address} auf {chain}")
+                    if chain.lower() == 'ethereum' and self.ethereum_provider:
+                        holders = await self.ethereum_provider.get_token_holders(token_address, chain)
+                        source = "Ethereum Provider"
+                    elif chain.lower() == 'bsc' and self.bsc_provider:
+                        holders = await self.bsc_provider.get_token_holders(token_address, chain)
+                        source = "BSC Provider"
                     elif chain.lower() == 'solana' and self.solana_provider:
                         holders = await self.solana_provider.get_token_holders(token_address)
                         source = "Solana Provider"
                     elif chain.lower() == 'sui' and self.sui_provider:
                         holders = await self.sui_provider.get_token_holders(token_address)
                         source = "Sui Provider"
+                    
+                    if holders:
+                        logger.info(f"Erfolgreich {len(holders)} Wallets von {source} abgerufen")
                 except Exception as e:
-                    logger.warning(f"Fehler beim Abrufen von Fallback-Providern: {e}")
+                    logger.warning(f"Fehler beim Abrufen von Fallback-Wallets: {e}")
             
-            # Holder-Informationen zu den Token-Informationen hinzufügen
+            # Zusammenfassung der Ergebnisse
             if holders:
-                token_info['holders'] = {
-                    'source': source,
-                    'count': len(holders),
-                    'top_holders': holders[:10]  # Nur die Top 10 speichern
-                }
+                logger.info(f"=== WALLET-ZUSAMMENFASSUNG FÜR {token_address} auf {chain} ===")
+                logger.info(f"Quelle: {source}")
+                logger.info(f"Anzahl der Wallets: {len(holders)}")
                 
-                # Logge eine kompakte Zusammenfassung der Holder-Daten
-                logger.info(f"{source}: {len(holders)} Holder für {token_info['name']} gefunden")
+                # Zeige die Top 10 Wallets mit ihren Adressen und Anteilen
+                logger.info("Top 10 Wallet-Adressen:")
+                for i, holder in enumerate(holders[:10], 1):
+                    address = holder.get('address', 'N/A')
+                    percentage = holder.get('percentage', 0)
+                    balance = holder.get('balance', 0)
+                    logger.info(f"  {i}. {address} - {percentage:.2f}% (Balance: {balance})")
                 
-                # Zeige nur die Top 3 Holder in kompakter Form
-                top_holders = holders[:3]
-                holder_summary = ", ".join([f"{h.get('address', 'N/A')[:8]}... ({h.get('percentage', 0):.2f}%)" for h in top_holders])
-                logger.info(f"Top-Holder: {holder_summary}")
+                if len(holders) > 10:
+                    logger.info(f"... und {len(holders) - 10} weitere Wallets")
                 
-                if len(holders) > 3:
-                    logger.info(f"... und {len(holders) - 3} weitere Holder")
+                # Berechne und zeige Verteilungsstatistiken
+                top_10_percentage = sum(h.get('percentage', 0) for h in holders[:10])
+                logger.info(f"Die Top 10 Wallets halten zusammen {top_10_percentage:.2f}% der Tokens")
+                
+                # Speichere das Ergebnis im Cache
+                if self.cache:
+                    await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
             else:
-                token_info['holders'] = {
-                    'source': None,
-                    'count': 0,
-                    'top_holders': []
-                }
-                logger.warning(f"Keine Holder-Daten für {token_info['name']} gefunden")
+                logger.warning(f"Keine Wallet-Daten für {token_address} auf {chain} gefunden")
             
-            # Speichere das Ergebnis im Cache
-            if self.cache:
-                await self.cache.set(token_info, self.config.cache_ttl_seconds, cache_key)
-            
-            return [token_info]  # Als Liste zurückgeben, um mit der bestehenden API kompatibel zu bleiben
+            return holders
         except Exception as e:
-            logger.error(f"Fehler beim Abrufen der Token-Informationen für {token_address} auf {chain}: {e}")
+            logger.error(f"Fehler beim Abrufen der Wallet-Daten für {token_address} auf {chain}: {e}")
             return []
     
     async def _analyze_wallets(self, token_data: Token, holders: List[Dict[str, Any]]) -> List[WalletAnalysis]:
