@@ -781,92 +781,77 @@ class TokenAnalyzer:
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
-                    logger.info(f"Returning cached token holders for {token_address}")
-                    # Logge auch die gecachten Wallet-Adressen
-                    logger.info(f"Found {len(cached_result)} cached holders for {token_address} on {chain}")
-                    for i, holder in enumerate(cached_result[:10]):  # Zeige max. 10 Wallets
-                        address = holder.get('address', 'N/A')
-                        balance = holder.get('balance', 0)
-                        percentage = holder.get('percentage', 0)
-                        logger.info(f"  Cached Wallet {i+1}: {address} (Balance: {balance}, Percentage: {percentage:.2f}%)")
-                    if len(cached_result) > 10:
-                        logger.info(f"  ... and {len(cached_result) - 10} more cached wallets")
+                    logger.info(f"Verwende gecachte Daten für {token_address} auf {chain}: {len(cached_result)} Wallets")
+                    # Zeige nur eine Zusammenfassung der gecachten Wallets
+                    if cached_result:
+                        top_wallets = cached_result[:3]  # Nur die Top 3 Wallets anzeigen
+                        wallet_summary = ", ".join([f"{w.get('address', 'N/A')[:8]}... ({w.get('percentage', 0):.2f}%)" for w in top_wallets])
+                        logger.info(f"Top Wallets: {wallet_summary}")
+                        if len(cached_result) > 3:
+                            logger.info(f"... und {len(cached_result) - 3} weitere Wallets")
                     return cached_result
             
             holders = []
+            source = None
             
             # Versuche zuerst Etherscan für Ethereum und BSC
             if chain.lower() in ['ethereum', 'bsc']:
                 try:
                     holders = await self.api_manager.get_token_holders_etherscan(token_address, chain)
                     if holders:
-                        logger.info(f"Found {len(holders)} holders from Etherscan for {token_address} on {chain}")
-                        # Logge die Wallet-Adressen
-                        for i, holder in enumerate(holders[:10]):  # Zeige max. 10 Wallets
-                            address = holder.get('address', 'N/A')
-                            balance = holder.get('balance', 0)
-                            percentage = holder.get('percentage', 0)
-                            logger.info(f"  Etherscan Wallet {i+1}: {address} (Balance: {balance}, Percentage: {percentage:.2f}%)")
-                        if len(holders) > 10:
-                            logger.info(f"  ... and {len(holders) - 10} more wallets from Etherscan")
+                        source = "Etherscan"
                 except Exception as e:
-                    logger.warning(f"Error fetching holders from Etherscan: {e}")
+                    logger.warning(f"Fehler beim Abrufen von Etherscan-Holdern: {e}")
             
             # Wenn keine Holder gefunden wurden, versuche Moralis
             if not holders:
                 try:
                     holders = await self.api_manager.get_token_holders_moralis(token_address, chain)
                     if holders:
-                        logger.info(f"Found {len(holders)} holders from Moralis for {token_address} on {chain}")
-                        # Logge die Wallet-Adressen
-                        for i, holder in enumerate(holders[:10]):  # Zeige max. 10 Wallets
-                            address = holder.get('address', 'N/A')
-                            balance = holder.get('balance', 0)
-                            percentage = holder.get('percentage', 0)
-                            logger.info(f"  Moralis Wallet {i+1}: {address} (Balance: {balance}, Percentage: {percentage:.2f}%)")
-                        if len(holders) > 10:
-                            logger.info(f"  ... and {len(holders) - 10} more wallets from Moralis")
+                        source = "Moralis"
                 except Exception as e:
-                    logger.warning(f"Error fetching holders from Moralis: {e}")
+                    logger.warning(f"Fehler beim Abrufen von Moralis-Holdern: {e}")
             
             # Immer noch die bestehenden Methoden als Fallback versuchen
             if not holders:
                 try:
-                    source = None
                     if chain.lower() in ['ethereum', 'bsc']:
                         if chain.lower() == 'ethereum' and self.ethereum_provider:
                             holders = await self.ethereum_provider.get_token_holders(token_address, chain)
-                            source = "Ethereum provider"
+                            source = "Ethereum Provider"
                         elif chain.lower() == 'bsc' and self.bsc_provider:
                             holders = await self.bsc_provider.get_token_holders(token_address, chain)
-                            source = "BSC provider"
+                            source = "BSC Provider"
                     elif chain.lower() == 'solana' and self.solana_provider:
                         holders = await self.solana_provider.get_token_holders(token_address)
-                        source = "Solana provider"
+                        source = "Solana Provider"
                     elif chain.lower() == 'sui' and self.sui_provider:
                         holders = await self.sui_provider.get_token_holders(token_address)
-                        source = "Sui provider"
-                    
-                    if holders:
-                        logger.info(f"Found {len(holders)} holders from {source} for {token_address} on {chain}")
-                        # Logge die Wallet-Adressen
-                        for i, holder in enumerate(holders[:10]):  # Zeige max. 10 Wallets
-                            address = holder.get('address', 'N/A')
-                            balance = holder.get('balance', 0)
-                            percentage = holder.get('percentage', 0)
-                            logger.info(f"  {source} Wallet {i+1}: {address} (Balance: {balance}, Percentage: {percentage:.2f}%)")
-                        if len(holders) > 10:
-                            logger.info(f"  ... and {len(holders) - 10} more wallets from {source}")
+                        source = "Sui Provider"
                 except Exception as e:
-                    logger.warning(f"Error fetching holders from fallback provider: {e}")
+                    logger.warning(f"Fehler beim Abrufen von Fallback-Providern: {e}")
             
-            # Speichere das Ergebnis im Cache
-            if self.cache and holders:
-                await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
+            # Zusammenfassung der Ergebnisse
+            if holders:
+                logger.info(f"{source}: {len(holders)} Wallets für {token_address} auf {chain} gefunden")
+                
+                # Zeige nur eine Zusammenfassung der Top-Wallets
+                top_wallets = holders[:3]  # Nur die Top 3 Wallets anzeigen
+                wallet_summary = ", ".join([f"{w.get('address', 'N/A')[:8]}... ({w.get('percentage', 0):.2f}%)" for w in top_wallets])
+                logger.info(f"Top Wallets: {wallet_summary}")
+                
+                if len(holders) > 3:
+                    logger.info(f"... und {len(holders) - 3} weitere Wallets")
+                
+                # Speichere das Ergebnis im Cache
+                if self.cache:
+                    await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
+            else:
+                logger.warning(f"Keine Wallets für {token_address} auf {chain} gefunden")
             
             return holders
         except Exception as e:
-            logger.error(f"Error fetching token holders for {token_address} on {chain}: {e}")
+            logger.error(f"Fehler beim Abrufen der Token-Holder für {token_address} auf {chain}: {e}")
             return []
     
     async def _analyze_wallets(self, token_data: Token, holders: List[Dict[str, Any]]) -> List[WalletAnalysis]:
