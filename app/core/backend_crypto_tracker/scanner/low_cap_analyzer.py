@@ -439,85 +439,102 @@ class LowCapAnalyzer:
     # Diese könnten verwendet werden, um zusätzliche Analysen durchzuführen,
     # die über die Standardfunktionalität des TokenAnalyzers hinausgehen.
     
-    async def _perform_advanced_risk_assessment(self, token_data: Dict[str, Any], wallet_analyses: List[WalletAnalysis]) -> Dict[str, Any]:
-        """
-        Führt eine erweiterte Risikobewertung mit dem AdvancedRiskAssessor durch.
-        
-        Args:
-            token_data: Token-Daten aus der ersten Analyse
-            wallet_analyses: Ergebnisse der Wallet-Analyse
-            
-        Returns:
-            Dict mit detaillierten Risikoinformationen
-        """
-        if not self.risk_assessor:
-            raise CustomAnalysisException("RiskAssessor ist nicht initialisiert")
-            
+    def _perform_extended_risk_assessment(self, analysis_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Führt eine erweiterte Risikobewertung durch"""
         try:
-            # Verwende die Methode aus AdvancedRiskAssessor
-            risk_assessment = await self.risk_assessor.assess_token_risk_advanced(token_data, wallet_analyses)
+            # Hole die Basis-Risikobewertung
+            base_risk = analysis_result.get('score', 50)  # Fallback auf 50 wenn nicht vorhanden
+            risk_flags = analysis_result.get('risk_flags', [])
+            metrics = analysis_result.get('metrics', {})
             
-            # Passe die Rückgabedaten an die tatsächliche Struktur an
-            # Untersuche das Objekt, um die tatsächlichen Attribute zu finden
-            if hasattr(risk_assessment, 'overall_risk'):
-                overall_risk = risk_assessment.overall_risk
-            elif hasattr(risk_assessment, 'risk_score'):
-                overall_risk = risk_assessment.risk_score
-            else:
-                overall_risk = 50  # Standardwert
-                
-            if hasattr(risk_assessment, 'risk_factors'):
-                risk_factors = risk_assessment.risk_factors
-            else:
-                risk_factors = []
-                
-            if hasattr(risk_assessment, 'recommendation'):
-                recommendation = risk_assessment.recommendation
-            else:
-                recommendation = 'neutral'
+            # Erweiterte Risiko-Faktoren
+            extended_risk_factors = []
             
-            return {
-                'overall_risk': overall_risk,
-                'risk_factors': risk_factors,
-                'recommendation': recommendation
+            # 1. Liquiditäts-Risiko
+            liquidity = analysis_result.get('token_info', {}).get('liquidity', 0)
+            if liquidity < 10000:  # Unter $10k
+                extended_risk_factors.append("very_low_liquidity")
+            elif liquidity < 50000:  # Unter $50k
+                extended_risk_factors.append("low_liquidity")
+            
+            # 2. Holder-Konzentration
+            whale_percentage = metrics.get('whale_percentage', 0)
+            if whale_percentage > 60:
+                extended_risk_factors.append("extreme_whale_concentration")
+            elif whale_percentage > 40:
+                extended_risk_factors.append("high_whale_concentration")
+            
+            # 3. Dev-Wallet-Risiko
+            dev_percentage = metrics.get('dev_percentage', 0)
+            if dev_percentage > 30:
+                extended_risk_factors.append("extreme_dev_concentration")
+            elif dev_percentage > 15:
+                extended_risk_factors.append("high_dev_concentration")
+            
+            # 4. Rugpull-Indikatoren
+            rugpull_suspects = metrics.get('rugpull_suspects', 0)
+            if rugpull_suspects > 2:
+                extended_risk_factors.append("multiple_rugpull_suspects")
+            elif rugpull_suspects > 0:
+                extended_risk_factors.append("rugpull_suspects_detected")
+            
+            # 5. Marktkapitalisierungs-Risiko
+            market_cap = analysis_result.get('token_info', {}).get('market_cap', 0)
+            if market_cap < 50000:  # Unter $50k
+                extended_risk_factors.append("micro_cap_risk")
+            elif market_cap < 100000:  # Unter $100k
+                extended_risk_factors.append("very_small_cap_risk")
+            
+            # Berechne finalen Risiko-Score
+            risk_penalty = len(extended_risk_factors) * 5  # 5 Punkte pro Risikofaktor
+            final_risk_score = max(0, base_risk - risk_penalty)
+            
+            # Klassifiziere Risiko-Level
+            if final_risk_score >= 80:
+                risk_level = "low"
+            elif final_risk_score >= 60:
+                risk_level = "moderate"
+            elif final_risk_score >= 40:
+                risk_level = "high"
+            else:
+                risk_level = "very_high"
+            
+            # Erstelle erweiterte Risikobewertung mit overall_risk Attribut
+            extended_assessment = {
+                'overall_risk': final_risk_score,  # Dies ist das fehlende Attribut!
+                'risk_level': risk_level,
+                'base_score': base_risk,
+                'risk_penalty': risk_penalty,
+                'extended_risk_factors': extended_risk_factors,
+                'all_risk_flags': risk_flags + extended_risk_factors,
+                'risk_breakdown': {
+                    'liquidity_risk': liquidity < 50000,
+                    'concentration_risk': whale_percentage > 40,
+                    'dev_risk': dev_percentage > 15,
+                    'rugpull_risk': rugpull_suspects > 0,
+                    'market_cap_risk': market_cap < 100000
+                }
             }
+            
+            # Aktualisiere das ursprüngliche Ergebnis
+            analysis_result['extended_risk_assessment'] = extended_assessment
+            analysis_result['final_risk_score'] = final_risk_score
+            analysis_result['risk_level'] = risk_level
+            
+            return extended_assessment
+            
         except Exception as e:
-            self.logger.error(f"Fehler bei der erweiterten Risikobewertung: {str(e)}")
-            # Fallback auf eine Basisbewertung
-            try:
-                risk_assessment = await self.risk_assessor.assess_token_risk(token_data, wallet_analyses)
-                
-                # Untersuche das Objekt, um die tatsächlichen Attribute zu finden
-                if hasattr(risk_assessment, 'overall_risk'):
-                    overall_risk = risk_assessment.overall_risk
-                elif hasattr(risk_assessment, 'risk_score'):
-                    overall_risk = risk_assessment.risk_score
-                else:
-                    overall_risk = 50  # Standardwert
-                    
-                if hasattr(risk_assessment, 'risk_factors'):
-                    risk_factors = risk_assessment.risk_factors
-                else:
-                    risk_factors = []
-                    
-                if hasattr(risk_assessment, 'recommendation'):
-                    recommendation = risk_assessment.recommendation
-                else:
-                    recommendation = 'neutral'
-                
-                return {
-                    'overall_risk': overall_risk,
-                    'risk_factors': risk_factors,
-                    'recommendation': recommendation
-                }
-            except Exception as e2:
-                self.logger.error(f"Fehler auch bei der Basis-Risikobewertung: {str(e2)}")
-                # Notfall-Fallback
-                return {
-                    'overall_risk': 50,
-                    'risk_factors': ['limited_data'],
-                    'recommendation': 'neutral'
-                }
+            logger.error(f"Fehler bei der erweiterten Risikobewertung: {e}")
+            # Fallback-Risikobewertung mit overall_risk
+            return {
+                'overall_risk': 50,  # Fallback-Wert
+                'risk_level': 'moderate',
+                'base_score': 50,
+                'risk_penalty': 0,
+                'extended_risk_factors': [],
+                'all_risk_flags': [],
+                'error': str(e)
+            }
         
     async def _calculate_advanced_score(self, token_data: Dict[str, Any], wallet_analyses: List[WalletAnalysis], chain: str) -> Dict[str, Any]:
         """
