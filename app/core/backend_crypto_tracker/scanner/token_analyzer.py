@@ -781,7 +781,7 @@ class TokenAnalyzer:
             return token
     
     async def _fetch_token_holders(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
-        """Holt Wallet-Holder-Adressen von einem Smart Contract"""
+        """Holt die Top-Holder eines Smart-Contracts durch Analyse der Transaktionen"""
         try:
             # Cache-Schlüssel für diese Anfrage
             cache_key = f"token_holders_{token_address}_{chain}"
@@ -790,46 +790,84 @@ class TokenAnalyzer:
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
-                    logger.info(f"Verwende gecachte Wallet-Daten für {token_address} auf {chain}: {len(cached_result)} Wallets")
-                    # Zeige nur eine Zusammenfassung der gecachten Wallets
-                    if cached_result:
-                        top_wallets = cached_result[:5]  # Nur die Top 5 Wallets anzeigen
-                        wallet_summary = ", ".join([f"{w.get('address', 'N/A')[:10]}... ({w.get('percentage', 0):.2f}%)" for w in top_wallets])
-                        logger.info(f"Top Wallets: {wallet_summary}")
+                    logger.info(f"Verwende gecachte Wallet-Daten für {token_address} auf {chain}")
                     return cached_result
             
-            # Rufe die zentrale Methode get_token_holders auf
-            holders = await self.api_manager.get_token_holders(token_address, chain)
-            
-            # Zusammenfassung der Ergebnisse
-            if holders:
-                logger.info(f"=== WALLET-ZUSAMMENFASSUNG FÜR {token_address} auf {chain} ===")
-                logger.info(f"Anzahl der Wallets: {len(holders)}")
-                
-                # Zeige die Top 10 Wallets mit ihren Adressen und Anteilen
-                logger.info("Top 10 Wallet-Adressen:")
-                for i, holder in enumerate(holders[:10], 1):
-                    address = holder.get('address', 'N/A')
-                    percentage = holder.get('percentage', 0)
-                    balance = holder.get('balance', 0)
-                    logger.info(f"  {i}. {address} - {percentage:.2f}% (Balance: {balance})")
-                
-                if len(holders) > 10:
-                    logger.info(f"... und {len(holders) - 10} weitere Wallets")
-                
-                # Berechne und zeige Verteilungsstatistiken
-                top_10_percentage = sum(h.get('percentage', 0) for h in holders[:10])
-                logger.info(f"Die Top 10 Wallets halten zusammen {top_10_percentage:.2f}% der Tokens")
-                
-                # Speichere das Ergebnis im Cache
-                if self.cache:
-                    await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
+            # Wähle den richtigen Provider basierend auf der Blockchain
+            if chain.lower() == 'ethereum':
+                provider = self.ethereum_provider
+            elif chain.lower() == 'bsc':
+                provider = self.bsc_provider
+            elif chain.lower() == 'solana':
+                provider = self.solana_provider
+            elif chain.lower() == 'sui':
+                provider = self.sui_provider
             else:
-                logger.warning(f"Keine Wallet-Daten für {token_address} auf {chain} gefunden")
+                logger.error(f"Unsupported blockchain: {chain}")
+                return []
             
+            if not provider:
+                logger.error(f"No provider available for blockchain: {chain}")
+                return []
+            
+            # Schritt 1: Hole die Transaktionen des Smart-Contracts der letzten Stunden
+            logger.info(f"Rufe Transaktionen für {token_address} auf {chain} ab")
+            transactions = await provider.get_contract_transactions(token_address, hours=24)
+            
+            if not transactions:
+                logger.warning(f"Keine Transaktionen für {token_address} auf {chain} gefunden")
+                return []
+            
+            # Schritt 2: Extrahiere die einzigartigen Wallet-Adressen aus den Transaktionen
+            wallet_addresses = set()
+            for tx in transactions:
+                # Extrahiere Absender und Empfänger
+                if 'from' in tx and tx['from']:
+                    wallet_addresses.add(tx['from'])
+                if 'to' in tx and tx['to']:
+                    wallet_addresses.add(tx['to'])
+                # Bei Token-Transaktionen könnten auch andere Felder relevant sein
+            
+            logger.info(f"Gefundene Wallet-Adressen: {len(wallet_addresses)}")
+            
+            # Schritt 3: Für jede Wallet-Adresse, hole den aktuellen Token-Bestand
+            holders = []
+            total_supply = 0
+            
+            for address in wallet_addresses:
+                try:
+                    # Hole den Token-Bestand für diese Adresse
+                    balance = await provider.get_token_balance(token_address, address)
+                    if balance > 0:
+                        holders.append({
+                            'address': address,
+                            'balance': balance,
+                            'percentage': 0  # Wird später berechnet
+                        })
+                        total_supply += balance
+                except Exception as e:
+                    logger.warning(f"Fehler beim Abrufen des Token-Bestands für {address}: {e}")
+                    continue
+            
+            # Schritt 4: Berechne die Prozentsätze und sortiere nach Balance
+            for holder in holders:
+                if total_supply > 0:
+                    holder['percentage'] = (holder['balance'] / total_supply) * 100
+            
+            # Sortiere die Holder nach Balance (absteigend)
+            holders.sort(key=lambda x: x['balance'], reverse=True)
+            
+            # Begrenze die Anzahl der Holder
+            holders = holders[:self.config.max_holders_to_analyze]
+            
+            # Speichere das Ergebnis im Cache
+            if self.cache:
+                await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
+            
+            logger.info(f"Top-Holder für {token_address}: {len(holders)} Wallets gefunden")
             return holders
         except Exception as e:
-            logger.error(f"Fehler beim Abrufen der Wallet-Daten für {token_address} auf {chain}: {e}")
+            logger.error(f"Fehler beim Abrufen der Token-Holder für {token_address} auf {chain}: {e}")
             return []
     
     async def _analyze_wallets(self, token_data: Token, holders: List[Dict[str, Any]]) -> List[WalletAnalysis]:
