@@ -14,15 +14,22 @@ from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data imp
 logger = get_logger(__name__)
 
 
-class EthereumProvider(BaseAPIProvider):
-    """Ethereum Blockchain API-Anbieter"""
+class EthereumProvider:
+    def __init__(self, api_key=None):
+        self.api_key = api_key
+        self.etherscan_provider = EtherscanProvider(api_key) if api_key else None
+        self.w3 = None
     
-    def __init__(self, api_key: Optional[str] = None):
-        super().__init__("Ethereum", "https://api.etherscan.io/api", api_key, "ETHERSCAN_API_KEY")
-        
-        # Initialisiere den CoinGecko Provider für zusätzliche Funktionalitäten
-        from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
-        self.coingecko_provider = CoinGeckoProvider()
+    async def __aenter__(self):
+        # Initialisiere Web3-Verbindung
+        self.w3 = Web3(Web3.HTTPProvider(os.getenv('ETHEREUM_RPC_URL')))
+        if self.etherscan_provider:
+            await self.etherscan_provider.__aenter__()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.etherscan_provider:
+            await self.etherscan_provider.__aexit__(exc_type, exc_val, exc_tb)
     
     async def get_address_balance(self, address: str) -> Optional[Dict[str, Any]]:
         """Holt den Kontostand einer Ethereum-Adresse"""
