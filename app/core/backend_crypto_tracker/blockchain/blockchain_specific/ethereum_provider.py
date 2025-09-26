@@ -4,11 +4,14 @@ Ethereum blockchain API provider implementation.
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from web3 import Web3
+
 from app.core.backend_crypto_tracker.utils.logger import get_logger
-from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
+from app.core.backend_crypto_tracker.blockchain.onchain.etherscan_provider import EtherscanProvider
+from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
 from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data import TokenPriceData
 
 logger = get_logger(__name__)
@@ -19,22 +22,45 @@ class EthereumProvider:
         self.api_key = api_key
         self.etherscan_provider = EtherscanProvider(api_key) if api_key else None
         self.w3 = None
+        self.base_url = "https://api.etherscan.io/api"
+        self.session = None
+        self.coingecko_provider = CoinGeckoProvider()
     
     async def __aenter__(self):
         # Initialisiere Web3-Verbindung
         self.w3 = Web3(Web3.HTTPProvider(os.getenv('ETHEREUM_RPC_URL')))
         if self.etherscan_provider:
             await self.etherscan_provider.__aenter__()
+        if self.coingecko_provider:
+            await self.coingecko_provider.__aenter__()
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.etherscan_provider:
             await self.etherscan_provider.__aexit__(exc_type, exc_val, exc_tb)
+        if self.coingecko_provider:
+            await self.coingecko_provider.__aexit__(exc_type, exc_val, exc_tb)
+    
+    async def _make_request(self, url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Hilfsmethode für HTTP-Anfragen"""
+        if not self.session:
+            import aiohttp
+            self.session = aiohttp.ClientSession()
+        
+        try:
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    logger.error(f"HTTP error {response.status}: {await response.text()}")
+                    return {}
+        except Exception as e:
+            logger.error(f"Request error: {e}")
+            return {}
     
     async def get_address_balance(self, address: str) -> Optional[Dict[str, Any]]:
         """Holt den Kontostand einer Ethereum-Adresse"""
         try:
-            url = self.base_url
             params = {
                 'module': 'account',
                 'action': 'balance',
@@ -43,7 +69,7 @@ class EthereumProvider:
                 'apikey': self.api_key
             }
             
-            data = await self._make_request(url, params)
+            data = await self._make_request(self.base_url, params)
             
             if data and data.get('status') == '1':
                 balance_wei = int(data.get('result', 0))
@@ -125,7 +151,6 @@ class EthereumProvider:
     async def get_address_transactions(self, address: str, start_block: int = 0, end_block: int = 99999999, sort: str = 'asc') -> Optional[List[Dict[str, Any]]]:
         """Holt Transaktionen für eine Ethereum-Adresse"""
         try:
-            url = self.base_url
             params = {
                 'module': 'account',
                 'action': 'txlist',
@@ -136,7 +161,7 @@ class EthereumProvider:
                 'apikey': self.api_key
             }
             
-            data = await self._make_request(url, params)
+            data = await self._make_request(self.base_url, params)
             
             if data and data.get('status') == '1' and data.get('result'):
                 transactions = []
@@ -162,6 +187,7 @@ class EthereumProvider:
             logger.error(f"Error fetching Ethereum address transactions: {e}")
         
         return None
+    
     async def get_token_balance(self, token_address: str, wallet_address: str) -> float:
         """Holt den Token-Bestand einer Wallet"""
         try:
@@ -202,7 +228,6 @@ class EthereumProvider:
     async def get_token_transfers(self, address: str, contract_address: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
         """Holt Token-Transfers für eine Adresse"""
         try:
-            url = self.base_url
             params = {
                 'module': 'account',
                 'action': 'tokentx',
@@ -214,7 +239,7 @@ class EthereumProvider:
             if contract_address:
                 params['contractaddress'] = contract_address
             
-            data = await self._make_request(url, params)
+            data = await self._make_request(self.base_url, params)
             
             if data and data.get('status') == '1' and data.get('result'):
                 transfers = []
@@ -246,7 +271,6 @@ class EthereumProvider:
     async def get_contract_abi(self, contract_address: str) -> Optional[Dict[str, Any]]:
         """Holt das ABI eines Smart Contracts"""
         try:
-            url = self.base_url
             params = {
                 'module': 'contract',
                 'action': 'getabi',
@@ -254,7 +278,7 @@ class EthereumProvider:
                 'apikey': self.api_key
             }
             
-            data = await self._make_request(url, params)
+            data = await self._make_request(self.base_url, params)
             
             if data and data.get('status') == '1':
                 return {
@@ -271,12 +295,12 @@ class EthereumProvider:
         """Ethereum-spezifische Token-Preisabfrage"""
         try:
             # Versuche zuerst, den Preis über CoinGecko zu erhalten (genauere Daten)
-            coingecko_price = await self.coingecko_provider.get_token_price(token_address, chain)
-            if coingecko_price:
-                return coingecko_price
+            if self.coingecko_provider:
+                coingecko_price = await self.coingecko_provider.get_token_price(token_address, chain)
+                if coingecko_price:
+                    return coingecko_price
                 
             # Fallback auf Etherscan
-            url = self.base_url
             params = {
                 'module': 'stats',
                 'action': 'tokenprice',
@@ -284,7 +308,7 @@ class EthereumProvider:
                 'apikey': self.api_key
             }
             
-            data = await self._make_request(url, params)
+            data = await self._make_request(self.base_url, params)
             
             # Prüfe, ob die Antwort gültig ist
             if not data or data.get('status') != '1':
@@ -301,7 +325,7 @@ class EthereumProvider:
                 market_cap=0,  # Nicht verfügbar
                 volume_24h=0,  # Nicht verfügbar
                 price_change_percentage_24h=0,  # Nicht verfügbar
-                source=self.name,
+                source="Etherscan",
                 last_updated=datetime.now()
             )
         except Exception as e:
@@ -336,17 +360,16 @@ class EthereumProvider:
                 'apikey': api_key
             }
             
-            async with self.session.get(base_url, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get('status') == '1' and data.get('message') == 'OK':
-                        result = []
-                        for holder in data.get('result', []):
-                            result.append({
-                                'TokenHolderAddress': holder.get('TokenHolderAddress'),
-                                'TokenHolderQuantity': holder.get('TokenHolderQuantity')
-                            })
-                        return result
+            data = await self._make_request(base_url, params)
+            
+            if data and data.get('status') == '1' and data.get('message') == 'OK':
+                result = []
+                for holder in data.get('result', []):
+                    result.append({
+                        'TokenHolderAddress': holder.get('TokenHolderAddress'),
+                        'TokenHolderQuantity': holder.get('TokenHolderQuantity')
+                    })
+                return result
         except Exception as e:
             logger.error(f"Error fetching token holders: {e}")
         
@@ -366,7 +389,6 @@ class EthereumProvider:
         """
         try:
             # Hole Token-Transfers
-            url = self.base_url
             params = {
                 'module': 'account',
                 'action': 'tokentx',
@@ -375,7 +397,7 @@ class EthereumProvider:
                 'apikey': self.api_key
             }
             
-            data = await self._make_request(url, params)
+            data = await self._make_request(self.base_url, params)
             
             if data and data.get('status') == '1' and data.get('result'):
                 # Analysiere die Transfers, um die größten Halter zu ermitteln
