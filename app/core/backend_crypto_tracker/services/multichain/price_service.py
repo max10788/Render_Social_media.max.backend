@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, RateLimitExceededException
-from app.core.backend_crypto_tracker.config.blockchain_api_keys import chain_config
+from app.core.backend_crypto_tracker.config.blockchain_api_keys import APIKeys
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 # Importe aktualisiert
 from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data import TokenPriceData
