@@ -26,9 +26,20 @@ from ..utils.logger import get_logger
 logger = get_logger(__name__)
 
 class APIManager:
+    """Zentralisiert den Zugriff auf verschiedene API-Provider mit Lastverteilung und Fehlerbehandlung"""
+    
     def __init__(self):
         # Provider-Dictionary - wird erst in initialize() gefüllt
         self.providers = {}
+        self.active_provider = None
+        self.provider_failures = {}
+        self.session = None
+        
+        # API-Keys laden
+        self.api_keys = get_api_keys()
+        
+        # Etherscan Provider für Token-Holder
+        self.etherscan_provider = None
         
         # Definiere Provider-Prioritäten für verschiedene Datentypen
         self.provider_priorities = {
@@ -61,22 +72,19 @@ class APIManager:
         
         # Cache - verwende AnalysisCache statt TokenCache
         self.cache = AnalysisCache(max_size=1000, default_ttl=300)
-        
-        # Session für HTTP-Anfragen
-        self.session = None
     
-    async def __aenter__(self):
+    async def initialize(self):
+        """Initialisiert alle Provider und die HTTP-Session"""
         self.session = aiohttp.ClientSession()
         
-        # Initialisiere nur Provider mit gültigen API-Schlüsseln
-        await self._initialize_providers()
+        # Initialisiere Etherscan Provider für Token-Holder
+        if self.api_keys.etherscan_api_key:
+            self.etherscan_provider = EtherscanProvider(self.api_keys.etherscan_api_key)
+            await self.etherscan_provider.__aenter__()
+            logger.info("Etherscan provider initialized for token holders")
         
-        return self
-    
-    async def _initialize_providers(self):
-        """Initialisiert Provider nur, wenn die entsprechenden API-Schlüssel vorhanden sind"""
-        # Aggregatoren
-        if os.getenv('COINGECKO_API_KEY'):
+        # Provider nur initialisieren, wenn API-Schlüssel vorhanden sind
+        if self.api_keys.coingecko_api_key:
             self.providers['coingecko'] = CoinGeckoProvider()
             logger.info("CoinGecko provider initialized")
         else:
@@ -84,67 +92,66 @@ class APIManager:
             # CoinGecko funktioniert auch ohne API-Key, aber mit Limits
             self.providers['coingecko'] = CoinGeckoProvider()
         
-        if os.getenv('COINMARKETCAP_API_KEY'):
+        if self.api_keys.coinmarketcap_api_key:
             self.providers['coinmarketcap'] = CoinMarketCapProvider()
             logger.info("CoinMarketCap provider initialized")
         else:
             logger.warning("CoinMarketCap API key not provided, skipping this provider")
         
-        if os.getenv('CRYPTOCOMPARE_API_KEY'):
+        if self.api_keys.cryptocompare_api_key:
             self.providers['cryptocompare'] = CryptoCompareProvider()
             logger.info("CryptoCompare provider initialized")
         else:
             logger.warning("CryptoCompare API key not provided, skipping this provider")
         
         # Blockchain-spezifisch
-        if os.getenv('ETHERSCAN_API_KEY'):
+        if self.api_keys.etherscan_api_key:
             self.providers['ethereum'] = EthereumProvider()
-            self.providers['etherscan'] = EtherscanProvider()
-            logger.info("Ethereum and Etherscan providers initialized")
+            logger.info("Ethereum provider initialized")
         else:
             logger.warning("Etherscan API key not provided, using limited functionality")
             # EthereumProvider kann auch ohne API-Key funktionieren, aber mit Limits
             self.providers['ethereum'] = EthereumProvider()
         
-        if os.getenv('SOLANA_RPC_URL'):
+        if self.api_keys.solana_rpc_url:
             self.providers['solana'] = SolanaProvider()
             logger.info("Solana provider initialized")
         else:
             logger.warning("Solana RPC URL not provided, skipping this provider")
         
-        if os.getenv('SUI_RPC_URL'):
+        if self.api_keys.sui_rpc_url:
             self.providers['sui'] = SuiProvider()
             logger.info("Sui provider initialized")
         else:
             logger.warning("Sui RPC URL not provided, skipping this provider")
         
         # Exchanges
-        if os.getenv('BINANCE_API_KEY') and os.getenv('BINANCE_SECRET_KEY'):
-            self.providers['binance'] = BinanceProvider()
-            logger.info("Binance provider initialized")
-        else:
-            logger.warning("Binance API keys not provided, skipping this provider")
-        
-        if os.getenv('BITGET_API_KEY') and os.getenv('BITGET_SECRET_KEY'):
+        if self.api_keys.bitget_api_key and self.api_keys.bitget_secret_key:
             self.providers['bitget'] = BitgetProvider()
             logger.info("Bitget provider initialized")
         else:
             logger.warning("Bitget API keys not provided, skipping this provider")
         
-        if os.getenv('COINBASE_API_KEY') and os.getenv('COINBASE_SECRET_KEY'):
-            self.providers['coinbase'] = CoinbaseProvider()
-            logger.info("Coinbase provider initialized")
-        else:
-            logger.warning("Coinbase API keys not provided, skipping this provider")
-        
-        if os.getenv('KRAKEN_API_KEY') and os.getenv('KRAKEN_SECRET_KEY'):
+        if self.api_keys.kraken_api_key and self.api_keys.kraken_secret_key:
             self.providers['kraken'] = KrakenProvider()
             logger.info("Kraken provider initialized")
         else:
             logger.warning("Kraken API keys not provided, skipping this provider")
         
+        if self.api_keys.binance_api_key and self.api_keys.binance_secret_key:
+            self.providers['binance'] = BinanceProvider()
+            logger.info("Binance provider initialized")
+        else:
+            logger.warning("Binance API keys not provided, skipping this provider")
+        
+        if self.api_keys.coinbase_api_key and self.api_keys.coinbase_secret_key:
+            self.providers['coinbase'] = CoinbaseProvider()
+            logger.info("Coinbase provider initialized")
+        else:
+            logger.warning("Coinbase API keys not provided, skipping this provider")
+        
         # On-Chain
-        if os.getenv('BITQUERY_API_KEY'):
+        if self.api_keys.bitquery_api_key:
             self.providers['bitquery'] = BitqueryProvider()
             logger.info("Bitquery provider initialized")
         else:
@@ -158,29 +165,33 @@ class APIManager:
                 except Exception as e:
                     logger.error(f"Failed to initialize {provider_name}: {e}")
                     self.providers.pop(provider_name, None)
+        
+        # Wähle einen aktiven Provider aus den verfügbaren
+        available_providers = [p for p in ['coingecko', 'coinmarketcap', 'cryptocompare'] if p in self.providers]
+        if available_providers:
+            self.active_provider = random.choice(available_providers)
+            logger.info(f"Selected {self.active_provider} as active provider")
+        else:
+            logger.error("No price providers available")
     
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # Schließe alle Provider
-        close_tasks = []
-        for provider_name, provider in self.providers.items():
-            if hasattr(provider, '__aexit__'):
-                close_tasks.append(self._safe_close_provider(provider, provider_name))
+    async def close(self):
+        """Schließt alle Provider und die Session"""
+        # Schließe Etherscan Provider
+        if self.etherscan_provider:
+            try:
+                await self.etherscan_provider.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning(f"Error closing Etherscan provider: {e}")
         
-        if close_tasks:
-            await asyncio.gather(*close_tasks, return_exceptions=True)
+        # Schließe andere Provider
+        for provider in self.providers.values():
+            if provider and hasattr(provider, '__aexit__'):
+                await provider.__aexit__(None, None, None)
+            if provider and hasattr(provider, 'close'):
+                await provider.close()
         
-        # Schließe Session
         if self.session:
             await self.session.close()
-    
-    async def _safe_close_provider(self, provider, provider_name):
-        """Sicheres Schließen eines Providers"""
-        try:
-            await provider.__aexit__(None, None, None)
-            if hasattr(provider, 'close'):
-                await provider.close()
-        except Exception as e:
-            logger.error(f"Fehler beim Schließen von {provider_name}: {e}")
     
     async def get_token_data(self, token_address: str, chain: str) -> Dict[str, Any]:
         """Holt alle Token-Daten von verschiedenen Providern mit Fallback-Strategie"""
@@ -189,7 +200,7 @@ class APIManager:
         
         # Prüfe Cache
         cached_data = await self.cache.get(cache_key)
-        if cached_data:
+        if cached_
             logger.debug(f"Token-Daten aus Cache: {cache_key}")
             return cached_data
         
@@ -257,7 +268,7 @@ class APIManager:
         
         # Prüfe Cache
         cached_data = await self.cache.get(cache_key)
-        if cached_data:
+        if cached_
             return cached_data
         
         # Versuche alle Provider in der Reihenfolge der Prioritäten
@@ -274,7 +285,7 @@ class APIManager:
                 # Hole Daten vom Provider
                 if hasattr(provider, 'get_token_price'):
                     data = await provider.get_token_price(token_address, chain)
-                    if data:
+                    if 
                         # Speichere im Cache
                         await self.cache.set(data, ttl=60, cache_key)  # 1 Minute
                         return data
@@ -286,11 +297,11 @@ class APIManager:
     
     async def get_token_metadata(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
         """Holt Token-Metadaten mit Fallback-Strategie"""
-        cache_key = f"metadata:{token_address}:{chain}"
+        cache_key = f"meta{token_address}:{chain}"
         
         # Prüfe Cache
         cached_data = await self.cache.get(cache_key)
-        if cached_data:
+        if cached_
             return cached_data
         
         # Versuche alle Provider in der Reihenfolge der Prioritäten
@@ -323,7 +334,7 @@ class APIManager:
         
         # Prüfe Cache
         cached_data = await self.cache.get(cache_key)
-        if cached_data:
+        if cached_
             return cached_data
         
         # Versuche alle Provider in der Reihenfolge der Prioritäten
@@ -356,7 +367,7 @@ class APIManager:
         
         # Prüfe Cache
         cached_data = await self.cache.get(cache_key)
-        if cached_data:
+        if cached_
             return cached_data
         
         # Versuche alle Provider in der Reihenfolge der Prioritäten
@@ -389,7 +400,7 @@ class APIManager:
         
         # Prüfe Cache
         cached_data = await self.cache.get(cache_key)
-        if cached_data:
+        if cached_
             return cached_data
         
         # Versuche alle Provider in der Reihenfolge der Prioritäten
@@ -406,7 +417,7 @@ class APIManager:
                 # Hole Daten vom Provider
                 if hasattr(provider, 'get_contract_verification'):
                     data = await provider.get_contract_verification(token_address, chain)
-                    if data:
+                    if 
                         # Speichere im Cache
                         await self.cache.set(data, ttl=3600, cache_key)  # 1 Stunde
                         return data
@@ -467,27 +478,25 @@ class APIManager:
         self.request_timestamps[provider_name] = [
             ts for ts in self.request_timestamps[provider_name] if ts > day_ago
         ]
-    # Füge diese Methoden zur APIManager-Klasse hinzu (token_analyzer.py, Zeile ca. 200)
     
+    # Füge diese Methoden zur APIManager-Klasse hinzu
     async def get_token_holders_etherscan(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
         """Holt Token-Holder über Etherscan API"""
         try:
-            if chain.lower() == 'ethereum' and self.ethereum_provider:
-                return await self.ethereum_provider.get_token_holders(token_address, chain)
-            elif chain.lower() == 'bsc' and self.bsc_provider:
-                return await self.bsc_provider.get_token_holders(token_address, chain)
+            if self.etherscan_provider:
+                return await self.etherscan_provider.get_token_holders(token_address, chain)
             else:
-                logger.warning(f"No Etherscan provider available for chain: {chain}")
+                logger.warning("Etherscan provider not initialized")
                 return []
         except Exception as e:
             logger.error(f"Error getting token holders from Etherscan: {e}")
             return []
-    
+
     async def get_token_holders_moralis(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
         """Holt Token-Holder über Moralis API"""
         try:
             # Moralis API implementierung
-            if not os.getenv('MORALIS_API_KEY'):
+            if not self.api_keys.moralis_api_key:
                 logger.warning("Moralis API key not provided")
                 return []
             
@@ -506,7 +515,7 @@ class APIManager:
             
             url = f"https://deep-index.moralis.io/api/v2/erc20/{token_address}/owners"
             headers = {
-                'X-API-Key': os.getenv('MORALIS_API_KEY'),
+                'X-API-Key': self.api_keys.moralis_api_key,
                 'Content-Type': 'application/json'
             }
             params = {
@@ -530,6 +539,7 @@ class APIManager:
                             'percentage': 0  # Wird später berechnet
                         })
                     
+                    logger.info(f"Successfully retrieved {len(holders)} holders from Moralis")
                     return holders
                 else:
                     error_text = await response.text()
@@ -539,7 +549,7 @@ class APIManager:
         except Exception as e:
             logger.error(f"Error getting token holders from Moralis: {e}")
             return []
-    
+
     async def get_token_holders_generic(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
         """Generische Methode für Token-Holder mit Fallback-Logic"""
         holders = []
@@ -574,7 +584,7 @@ class APIManager:
         
         logger.warning(f"All token holder providers failed for {token_address} on {chain}")
         return []
-    
+
     async def _get_holders_from_bitquery(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
         """Holt Token-Holder über Bitquery GraphQL API"""
         try:
