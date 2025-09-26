@@ -35,6 +35,7 @@ from app.core.backend_crypto_tracker.processor.database.models.token import Toke
 from app.core.backend_crypto_tracker.processor.database.models.wallet import WalletAnalysis, WalletTypeEnum
 from app.core.backend_crypto_tracker.blockchain.onchain.etherscan_provider import EtherscanProvider
 from app.core.backend_crypto_tracker.config.blockchain_api_keys import get_api_keys
+from app.core.backend_crypto_tracker.blockchain.api_manager import APIManager
 
 logger = get_logger(__name__)
 
@@ -81,184 +82,7 @@ def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60):
         return wrapper
     return decorator
 
-class APIManager:
-    """Zentralisiert den Zugriff auf verschiedene API-Provider mit Lastverteilung und Fehlerbehandlung"""
-    
-    def __init__(self):
-        self.providers = {}
-        self.active_provider = None
-        self.provider_failures = {}
-        self.session = None
-        
-    async def initialize(self):
-        """Initialisiert alle Provider und die HTTP-Session"""
-        self.session = aiohttp.ClientSession()
-        
-        # Provider nur initialisieren, wenn API-Schlüssel vorhanden sind
-        if os.getenv('COINGECKO_API_KEY'):
-            self.providers['coingecko'] = CoinGeckoProvider()
-            logger.info("CoinGecko provider initialized")
-        else:
-            logger.warning("CoinGecko API key not provided, using limited functionality")
-            # CoinGecko funktioniert auch ohne API-Key, aber mit Limits
-            self.providers['coingecko'] = CoinGeckoProvider()
-        
-        if os.getenv('COINMARKETCAP_API_KEY'):
-            self.providers['coinmarketcap'] = CoinMarketCapProvider()
-            logger.info("CoinMarketCap provider initialized")
-        else:
-            logger.warning("CoinMarketCap API key not provided, skipping this provider")
-        
-        if os.getenv('CRYPTOCOMPARE_API_KEY'):
-            self.providers['cryptocompare'] = CryptoCompareProvider()
-            logger.info("CryptoCompare provider initialized")
-        else:
-            logger.warning("CryptoCompare API key not provided, skipping this provider")
-        
-        if os.getenv('BITGET_API_KEY') and os.getenv('BITGET_SECRET_KEY'):
-            self.providers['bitget'] = BitgetProvider()
-            logger.info("Bitget provider initialized")
-        else:
-            logger.warning("Bitget API keys not provided, skipping this provider")
-        
-        if os.getenv('KRAKEN_API_KEY') and os.getenv('KRAKEN_SECRET_KEY'):
-            self.providers['kraken'] = KrakenProvider()
-            logger.info("Kraken provider initialized")
-        else:
-            logger.warning("Kraken API keys not provided, skipping this provider")
-        
-        if os.getenv('BINANCE_API_KEY') and os.getenv('BINANCE_SECRET_KEY'):
-            self.providers['binance'] = BinanceProvider()
-            logger.info("Binance provider initialized")
-        else:
-            logger.warning("Binance API keys not provided, skipping this provider")
-        
-        if os.getenv('COINBASE_API_KEY') and os.getenv('COINBASE_SECRET_KEY'):
-            self.providers['coinbase'] = CoinbaseProvider()
-            logger.info("Coinbase provider initialized")
-        else:
-            logger.warning("Coinbase API keys not provided, skipping this provider")
-        
-        if os.getenv('BITQUERY_API_KEY'):
-            self.providers['bitquery'] = BitqueryProvider()
-            logger.info("Bitquery provider initialized")
-        else:
-            logger.warning("Bitquery API key not provided, skipping this provider")
-        
-        # Provider-Sessions initialisieren
-        for provider_name, provider in self.providers.items():
-            if hasattr(provider, '__aenter__'):
-                try:
-                    await provider.__aenter__()
-                except Exception as e:
-                    logger.error(f"Failed to initialize {provider_name}: {e}")
-                    self.providers.pop(provider_name, None)
-        
-        # Wähle einen aktiven Provider aus den verfügbaren
-        available_providers = [p for p in ['coingecko', 'coinmarketcap', 'cryptocompare'] if p in self.providers]
-        if available_providers:
-            self.active_provider = random.choice(available_providers)
-            logger.info(f"Selected {self.active_provider} as active provider")
-        else:
-            logger.error("No price providers available")
-        
-    async def get_token_price(self, token_address: str, chain: str):
-        """Ruft Token-Preisdaten vom aktiven Provider oder Fallback-Provider ab"""
-        providers_to_try = [self.active_provider] if self.active_provider else []
-        
-        # Fallback-Provider hinzufügen
-        fallback_providers = [p for p in ['coingecko', 'coinmarketcap', 'cryptocompare'] 
-                            if p != self.active_provider and p in self.providers]
-        providers_to_try.extend(fallback_providers)
-        
-        last_exception = None
-        for provider_name in providers_to_try:
-            provider = self.providers.get(provider_name)
-            if not provider:
-                continue
-                
-            try:
-                # Prüfe, ob der Provider in den letzten 5 Minuten mehr als 3 Fehler hatte
-                if self.provider_failures.get(provider_name, 0) > 3:
-                    failure_time = self.provider_failures.get(f"{provider_name}_time", 0)
-                    if time.time() - failure_time < 300:  # 5 Minuten
-                        continue
-                
-                price_data = await provider.get_token_price(token_address, chain)
-                
-                # Erfolgreiche Anfrage, Fehlerzähler zurücksetzen
-                if provider_name in self.provider_failures:
-                    self.provider_failures[provider_name] = 0
-                
-                # Aktualisiere den aktiven Provider bei Erfolg
-                self.active_provider = provider_name
-                return price_data
-                
-            except Exception as e:
-                last_exception = e
-                # Fehlerzähler erhöhen
-                self.provider_failures[provider_name] = self.provider_failures.get(provider_name, 0) + 1
-                self.provider_failures[f"{provider_name}_time"] = time.time()
-                logger.warning(f"Error with provider {provider_name}: {str(e)}")
-        
-        # Wenn alle Provider fehlschlagen, werfe die letzte Exception
-        raise last_exception or APIException("All price providers failed")
-    
-    async def get_low_cap_tokens(self, max_market_cap: float, limit: int):
-        """Ruft Low-Cap-Token-Daten vom aktiven Provider oder Fallback-Provider ab"""
-        # Nur CoinGecko und CoinMarketCap unterstützen diese Funktion
-        providers_to_try = []
-        if self.active_provider in ['coingecko', 'coinmarketcap']:
-            providers_to_try.append(self.active_provider)
-        
-        # Fallback-Provider hinzufügen
-        for provider_name in ['coingecko', 'coinmarketcap']:
-            if provider_name != self.active_provider and provider_name in self.providers:
-                providers_to_try.append(provider_name)
-        
-        last_exception = None
-        for provider_name in providers_to_try:
-            provider = self.providers.get(provider_name)
-            if not provider:
-                continue
-                
-            try:
-                # Prüfe, ob der Provider in den letzten 5 Minuten mehr als 3 Fehler hatte
-                if self.provider_failures.get(provider_name, 0) > 3:
-                    failure_time = self.provider_failures.get(f"{provider_name}_time", 0)
-                    if time.time() - failure_time < 300:  # 5 Minuten
-                        continue
-                
-                tokens = await provider.get_low_cap_tokens(max_market_cap, limit)
-                
-                # Erfolgreiche Anfrage, Fehlerzähler zurücksetzen
-                if provider_name in self.provider_failures:
-                    self.provider_failures[provider_name] = 0
-                
-                # Aktualisiere den aktiven Provider bei Erfolg
-                self.active_provider = provider_name
-                return tokens
-                
-            except Exception as e:
-                last_exception = e
-                # Fehlerzähler erhöhen
-                self.provider_failures[provider_name] = self.provider_failures.get(provider_name, 0) + 1
-                self.provider_failures[f"{provider_name}_time"] = time.time()
-                logger.warning(f"Error with provider {provider_name}: {str(e)}")
-        
-        # Wenn alle Provider fehlschlagen, werfe die letzte Exception
-        raise last_exception or APIException("All token providers failed")
-    
-    async def close(self):
-        """Schließt alle Provider und die Session"""
-        for provider in self.providers.values():
-            if provider and hasattr(provider, '__aexit__'):
-                await provider.__aexit__(None, None, None)
-            if provider and hasattr(provider, 'close'):
-                await provider.close()
-        
-        if self.session:
-            await self.session.close()
+
 
 class TokenAnalyzer:
     def __init__(self, config: TokenAnalysisConfig = None):
@@ -286,7 +110,7 @@ class TokenAnalyzer:
         # Bekannte Contract-Adressen
         self.known_contracts = scanner_config.rpc_config.known_contracts
         self.cex_wallets = scanner_config.rpc_config.cex_wallets
-    
+
     async def __aenter__(self):
         # API-Manager initialisieren
         await self.api_manager.initialize()
