@@ -437,51 +437,58 @@ class TokenAnalyzer:
         logger.info(f"Analysis completed. {len(results)} tokens successfully analyzed.")
         return results
     
-    async def analyze_token(self, token_data: Token) -> Optional[Dict[str, Any]]:
-        """Vollständige Analyse eines Tokens"""
-        logger.info(f"Analyzing token: {token_data.symbol} ({token_data.address})")
-        
+    async def analyze_token(self, token_address: str, chain: str) -> Dict[str, Any]:
+        """Analysiert einen Token und gibt eine umfassende Bewertung zurück"""
         try:
-            # Cache-Schlüssel für diese Anfrage
-            cache_key = f"token_analysis_{token_data.address}_{token_data.chain}"
+            logger.info(f"Starte Analyse für Token {token_address} auf Chain {chain}")
             
-            # Prüfe, ob die Daten im Cache vorhanden sind - angepasst für AnalysisCache
-            if self.cache:
-                cached_result = await self.cache.get(cache_key)
-                if cached_result:
-                    logger.info(f"Returning cached token analysis for {token_data.symbol}")
-                    return cached_result
+            # Führe die grundlegende Token-Analyse durch
+            analysis_result = await self.token_analyzer.analyze_custom_token(token_address, chain)
             
-            # Hole Token-Holder
-            holders = await self._fetch_token_holders(token_data.address, token_data.chain)
+            if not analysis_result:
+                logger.warning(f"Keine Analyseergebnisse für {token_address}")
+                return {}
             
-            if not holders:
-                logger.warning(f"No holder data for {token_data.symbol}")
-                return None
-            
-            # Analysiere Wallets
-            wallet_analyses = await self._analyze_wallets(token_data, holders)
-            
-            # Berechne Token-Score
-            score_data = self._calculate_token_score(token_data, wallet_analyses)
-            
-            result = {
-                'token_data': token_data,
-                'wallet_analyses': wallet_analyses,
-                'token_score': score_data['total_score'],
-                'analysis_date': datetime.utcnow(),
-                'metrics': score_data['metrics'],
-                'risk_flags': score_data['risk_flags']
-            }
-            
-            # Speichere das Ergebnis im Cache - angepasst für AnalysisCache
-            if self.cache:
-                await self.cache.set(result, self.config.cache_ttl_seconds, cache_key)
-            
-            return result
+            # Führe erweiterte Risikobewertung durch
+            try:
+                extended_risk_assessment = self._perform_extended_risk_assessment(analysis_result)
+                
+                # Korrigierter Zugriff auf overall_risk
+                overall_risk_score = extended_risk_assessment.get('overall_risk', 50)
+                
+                # Vollständiges Ergebnis zusammenstellen
+                complete_analysis = {
+                    **analysis_result,
+                    'extended_risk_assessment': extended_risk_assessment,
+                    'overall_risk_score': overall_risk_score,
+                    'analysis_timestamp': datetime.utcnow().isoformat(),
+                    'analyzer_version': '2.0'
+                }
+                
+                logger.info(f"Analyse für Token {token_address} auf Chain {chain} abgeschlossen")
+                return complete_analysis
+                
+            except Exception as risk_error:
+                logger.warning(f"Fehler bei der erweiterten Risikobewertung: {risk_error}")
+                
+                # Fallback: Verwende nur die Basis-Analyse
+                analysis_result['overall_risk_score'] = analysis_result.get('score', 50)
+                analysis_result['risk_level'] = 'unknown'
+                analysis_result['extended_risk_assessment'] = {
+                    'overall_risk': analysis_result.get('score', 50),
+                    'error': str(risk_error)
+                }
+                
+                return analysis_result
+                
         except Exception as e:
-            logger.error(f"Error analyzing token {token_data.symbol}: {e}")
-            return None
+            logger.error(f"Fehler bei der Token-Analyse: {e}")
+            return {
+                'error': str(e),
+                'token_address': token_address,
+                'chain': chain,
+                'analysis_timestamp': datetime.utcnow().isoformat()
+            }
     
     @retry_with_backoff(max_retries=3, base_delay=2, max_delay=30)
     async def analyze_custom_token(self, token_address: str, chain: str) -> Dict[str, Any]:
