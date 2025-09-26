@@ -208,7 +208,74 @@ class LowCapAnalyzer:
             error_msg = "TokenAnalyzer ist nicht initialisiert. Verwenden Sie den Analyzer innerhalb eines async-Kontext-Managers (async with)."
             self.logger.error(error_msg)
             raise CustomAnalysisException(error_msg)
-        
+
+        try:
+            # Delegiere die Analyse an den TokenAnalyzer
+            result = await self.token_analyzer.analyze_custom_token(token_address, chain)
+            
+            # Zusätzliche Prüfung des Ergebnisses
+            if not result or 'token_info' not in result:
+                raise CustomAnalysisException("Ungültiges Analyseergebnis erhalten")
+            
+            # Prüfe, ob Halterdaten vorhanden sind
+            if 'wallet_analysis' in result and 'top_holders' in result['wallet_analysis']:
+                logger.info(f"Verarbeite {len(result['wallet_analysis']['top_holders'])} Top-Holder für {token_address}")
+                
+                # Führe erweiterte Analyse der Halter durch
+                if self.wallet_classifier:
+                    try:
+                        # Klassifiziere die Top-Holder
+                        classified_holders = []
+                        for holder_data in result['wallet_analysis']['top_holders']:
+                            wallet_type = await self.wallet_classifier.classify_wallet(
+                                holder_data['address'],
+                                holder_data['balance'],
+                                holder_data['percentage'],
+                                chain
+                            )
+                            
+                            classified_holders.append({
+                                'address': holder_data['address'],
+                                'balance': holder_data['balance'],
+                                'percentage': holder_data['percentage'],
+                                'type': wallet_type.value
+                            })
+                        
+                        # Aktualisiere die Halterdaten mit Klassifizierung
+                        result['wallet_analysis']['top_holders'] = classified_holders
+                        
+                        # Berechne Statistiken
+                        result['wallet_analysis']['whale_wallets'] = len([
+                            h for h in classified_holders if h['type'] == 'WHALE_WALLET'
+                        ])
+                        result['wallet_analysis']['dev_wallets'] = len([
+                            h for h in classified_holders if h['type'] == 'DEV_WALLET'
+                        ])
+                        result['wallet_analysis']['rugpull_suspects'] = len([
+                            h for h in classified_holders if h['type'] == 'RUGPULL_SUSPECT'
+                        ])
+                        
+                    except Exception as e:
+                        logger.warning(f"Fehler bei der Wallet-Klassifizierung: {e}")
+                
+                # Führe erweiterte Risikobewertung durch
+                if self.risk_assessor:
+                    try:
+                        risk_assessment = await self._perform_advanced_risk_assessment(
+                            result['token_info'],
+                            result['wallet_analysis']
+                        )
+                        
+                        result['risk_assessment'] = {
+                            'overall_risk': risk_assessment.overall_risk,
+                            'risk_factors': risk_assessment.risk_factors,
+                            'recommendation': risk_assessment.recommendation
+                        }
+                    except Exception as e:
+                        logger.warning(f"Fehler bei der Risikobewertung: {e}")
+            else:
+                logger.warning(f"Keine Halterdaten für {token_address} gefunden")
+
         try:
             # Delegiere die Analyse an den TokenAnalyzer
             result = await self.token_analyzer.analyze_custom_token(token_address, chain)
