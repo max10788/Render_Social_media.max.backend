@@ -225,6 +225,7 @@ class LowCapAnalyzer:
                     wallet_analyses = []
                     
                     # Rekonstruiere WalletAnalysis-Objekte aus den serialisierten Daten
+                    # Greife auf die Halterdaten aus dem Ergebnis des TokenAnalyzers zu
                     for wallet_data in result.get('wallet_analysis', {}).get('top_holders', []):
                         wallet_type = WalletTypeEnum.UNKNOWN
                         for wt in WalletTypeEnum:
@@ -264,6 +265,7 @@ class LowCapAnalyzer:
                     wallet_analyses = []
                     
                     # Rekonstruiere WalletAnalysis-Objekte aus den serialisierten Daten
+                    # Greife auf die Halterdaten aus dem Ergebnis des TokenAnalyzers zu
                     for wallet_data in result.get('wallet_analysis', {}).get('top_holders', []):
                         wallet_type = WalletTypeEnum.UNKNOWN
                         for wt in WalletTypeEnum:
