@@ -219,7 +219,7 @@ class LowCapAnalyzer:
             
             # Prüfe, ob Halterdaten vorhanden sind
             if 'wallet_analysis' in result and 'top_holders' in result['wallet_analysis']:
-                logger.info(f"Verarbeite {len(result['wallet_analysis']['top_holders'])} Top-Holder für {token_address}")
+                self.logger.info(f"Verarbeite {len(result['wallet_analysis']['top_holders'])} Top-Holder für {token_address}")
                 
                 # Führe erweiterte Analyse der Halter durch
                 if self.wallet_classifier:
@@ -256,7 +256,7 @@ class LowCapAnalyzer:
                         ])
                         
                     except Exception as e:
-                        logger.warning(f"Fehler bei der Wallet-Klassifizierung: {e}")
+                        self.logger.warning(f"Fehler bei der Wallet-Klassifizierung: {e}")
                 
                 # Führe erweiterte Risikobewertung durch
                 if self.risk_assessor:
@@ -272,57 +272,9 @@ class LowCapAnalyzer:
                             'recommendation': risk_assessment.recommendation
                         }
                     except Exception as e:
-                        logger.warning(f"Fehler bei der Risikobewertung: {e}")
+                        self.logger.warning(f"Fehler bei der Risikobewertung: {e}")
             else:
-                logger.warning(f"Keine Halterdaten für {token_address} gefunden")
-
-        try:
-            # Delegiere die Analyse an den TokenAnalyzer
-            result = await self.token_analyzer.analyze_custom_token(token_address, chain)
-            
-            # Zusätzliche Prüfung des Ergebnisses
-            if not result or 'token_info' not in result:
-                raise CustomAnalysisException("Ungültiges Analyseergebnis erhalten")
-            
-            # Führe erweiterte Risikobewertung durch, falls verfügbar
-            if self.risk_assessor and 'wallet_analysis' in result:
-                try:
-                    # Extrahiere die notwendigen Daten für die Risikobewertung
-                    token_data = result['token_info']
-                    wallet_analyses = []
-                    
-                    # Rekonstruiere WalletAnalysis-Objekte aus den serialisierten Daten
-                    # Greife auf die Halterdaten aus dem Ergebnis des TokenAnalyzers zu
-                    for wallet_data in result.get('wallet_analysis', {}).get('top_holders', []):
-                        wallet_type = WalletTypeEnum.UNKNOWN
-                        for wt in WalletTypeEnum:
-                            if wt.value == wallet_data.get('type', 'unknown'):
-                                wallet_type = wt
-                                break
-                        
-                        wallet_analysis = WalletAnalysis(
-                            wallet_address=wallet_data.get('address', ''),
-                            wallet_type=wallet_type,
-                            balance=wallet_data.get('balance', 0),
-                            percentage_of_supply=wallet_data.get('percentage', 0),
-                            transaction_count=0,  # Nicht in den serialisierten Daten enthalten
-                            first_transaction=None,  # Nicht in den serialisierten Daten enthalten
-                            last_transaction=None,  # Nicht in den serialisierten Daten enthalten
-                            risk_score=0  # Wird neu berechnet
-                        )
-                        wallet_analyses.append(wallet_analysis)
-                    
-                    # Führe die erweiterte Risikobewertung durch
-                    risk_assessment = await self._perform_advanced_risk_assessment(token_data, wallet_analyses)
-                    
-                    # Füge die Risikobewertung zum Ergebnis hinzu
-                    result['risk_assessment'] = {
-                        'overall_risk': risk_assessment.overall_risk,
-                        'risk_factors': risk_assessment.risk_factors,
-                        'recommendation': risk_assessment.recommendation
-                    }
-                except Exception as e:
-                    self.logger.warning(f"Fehler bei der erweiterten Risikobewertung: {str(e)}")
+                self.logger.warning(f"Keine Halterdaten für {token_address} gefunden")
             
             # Führe erweiterte Scoring-Berechnung durch, falls verfügbar
             if self.scoring_engine and 'wallet_analysis' in result:
@@ -332,7 +284,6 @@ class LowCapAnalyzer:
                     wallet_analyses = []
                     
                     # Rekonstruiere WalletAnalysis-Objekte aus den serialisierten Daten
-                    # Greife auf die Halterdaten aus dem Ergebnis des TokenAnalyzers zu
                     for wallet_data in result.get('wallet_analysis', {}).get('top_holders', []):
                         wallet_type = WalletTypeEnum.UNKNOWN
                         for wt in WalletTypeEnum:
@@ -593,7 +544,7 @@ class LowCapAnalyzer:
             return extended_assessment
             
         except Exception as e:
-            logger.error(f"Fehler bei der erweiterten Risikobewertung: {e}")
+            self.logger.error(f"Fehler bei der erweiterten Risikobewertung: {e}")
             # Fallback-Risikobewertung mit overall_risk
             return {
                 'overall_risk': 50,  # Fallback-Wert
