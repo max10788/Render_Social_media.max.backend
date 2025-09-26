@@ -798,57 +798,12 @@ class TokenAnalyzer:
                         logger.info(f"Top Wallets: {wallet_summary}")
                     return cached_result
             
-            holders = []
-            source = None
-            
-            # Versuche zuerst Etherscan für Ethereum und BSC
-            if chain.lower() in ['ethereum', 'bsc']:
-                try:
-                    logger.info(f"Versuche Wallet-Daten von Etherscan für {token_address} auf {chain}")
-                    holders = await self.api_manager.get_token_holders_etherscan(token_address, chain)
-                    if holders:
-                        source = "Etherscan"
-                        logger.info(f"Erfolgreich {len(holders)} Wallets von Etherscan abgerufen")
-                except Exception as e:
-                    logger.warning(f"Fehler beim Abrufen von Etherscan-Wallets: {e}")
-            
-            # Wenn keine Holder gefunden wurden, versuche Moralis
-            if not holders:
-                try:
-                    logger.info(f"Versuche Wallet-Daten von Moralis für {token_address} auf {chain}")
-                    holders = await self.api_manager.get_token_holders_moralis(token_address, chain)
-                    if holders:
-                        source = "Moralis"
-                        logger.info(f"Erfolgreich {len(holders)} Wallets von Moralis abgerufen")
-                except Exception as e:
-                    logger.warning(f"Fehler beim Abrufen von Moralis-Wallets: {e}")
-            
-            # Fallback zu blockchain-spezifischen Providern
-            if not holders:
-                try:
-                    logger.info(f"Versuche Wallet-Daten von Fallback-Providern für {token_address} auf {chain}")
-                    if chain.lower() == 'ethereum' and self.ethereum_provider:
-                        holders = await self.ethereum_provider.get_token_holders(token_address, chain)
-                        source = "Ethereum Provider"
-                    elif chain.lower() == 'bsc' and self.bsc_provider:
-                        holders = await self.bsc_provider.get_token_holders(token_address, chain)
-                        source = "BSC Provider"
-                    elif chain.lower() == 'solana' and self.solana_provider:
-                        holders = await self.solana_provider.get_token_holders(token_address)
-                        source = "Solana Provider"
-                    elif chain.lower() == 'sui' and self.sui_provider:
-                        holders = await self.sui_provider.get_token_holders(token_address)
-                        source = "Sui Provider"
-                    
-                    if holders:
-                        logger.info(f"Erfolgreich {len(holders)} Wallets von {source} abgerufen")
-                except Exception as e:
-                    logger.warning(f"Fehler beim Abrufen von Fallback-Wallets: {e}")
+            # Rufe die zentrale Methode get_token_holders auf
+            holders = await self.api_manager.get_token_holders(token_address, chain)
             
             # Zusammenfassung der Ergebnisse
             if holders:
                 logger.info(f"=== WALLET-ZUSAMMENFASSUNG FÜR {token_address} auf {chain} ===")
-                logger.info(f"Quelle: {source}")
                 logger.info(f"Anzahl der Wallets: {len(holders)}")
                 
                 # Zeige die Top 10 Wallets mit ihren Adressen und Anteilen
