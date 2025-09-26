@@ -33,6 +33,8 @@ from app.core.backend_crypto_tracker.blockchain.exchanges.coinbase_provider impo
 from app.core.backend_crypto_tracker.blockchain.onchain.bitquery_provider import BitqueryProvider
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 from app.core.backend_crypto_tracker.processor.database.models.wallet import WalletAnalysis, WalletTypeEnum
+from app.core.backend_crypto_tracker.blockchain.onchain.etherscan_provider import EtherscanProvider
+from app.core.backend_crypto_tracker.config.blockchain_api_keys import get_api_keys
 
 logger = get_logger(__name__)
 
