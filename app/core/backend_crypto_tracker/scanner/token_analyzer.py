@@ -491,92 +491,199 @@ class TokenAnalyzer:
             }
     
     @retry_with_backoff(max_retries=3, base_delay=2, max_delay=30)
-    async def analyze_custom_token(self, token_address: str, chain: str) -> Dict[str, Any]:
-        """Analysiert einen einzelnen, benutzerdefinierten Token"""
+    async def analyze_custom_token(self, token_address: str, chain: str, use_cache: Optional[bool] = None) -> Dict[str, Any]:
+        """Zentrale Analyse-Methode für einen einzelnen Token"""
+        self.logger.info(f"Starte Analyse für Token {token_address} auf Chain {chain}")
+        
+        # Bestimme, ob Cache verwendet werden soll
+        should_use_cache = use_cache if use_cache is not None else self.enable_cache
+        
+        # Cache-Schlüssel für diese Anfrage
+        cache_key = f"lowcap_analyzer_custom_{token_address}_{chain}"
+        
+        # Prüfe, ob die Daten im Cache vorhanden sind
+        if should_use_cache and self.cache:
+            cached_result = await self.cache.get(cache_key)
+            if cached_result:
+                self.logger.info(f"Returning cached analysis for {token_address} on {chain}")
+                return cached_result
+        
+        # Validierung der Eingabeparameter
+        if not token_address or not isinstance(token_address, str) or not token_address.strip():
+            error_msg = "Token-Adresse muss ein nicht-leerer String sein"
+            self.logger.error(error_msg)
+            raise ValidationException(error_msg, field="token_address")
+        
+        if not chain or not isinstance(chain, str) or not chain.strip():
+            error_msg = "Chain muss ein nicht-leerer String sein"
+            self.logger.error(error_msg)
+            raise ValidationException(error_msg, field="chain")
+        
+        # Normalisiere Chain-Name (kleinschreibung)
+        chain = chain.lower().strip()
+        
+        # Prüfe, ob der TokenAnalyzer initialisiert ist
+        if not self.token_analyzer:
+            error_msg = "TokenAnalyzer ist nicht initialisiert. Verwenden Sie den Analyzer innerhalb eines async-Kontext-Managers (async with)."
+            self.logger.error(error_msg)
+            raise CustomAnalysisException(error_msg)
+    
         try:
-            # Cache-Schlüssel für diese Anfrage
-            cache_key = f"custom_token_analysis_{token_address}_{chain}"
+            # Delegiere die Analyse an den TokenAnalyzer
+            result = await self.token_analyzer.analyze_custom_token(token_address, chain)
             
-            # Prüfe, ob die Daten im Cache vorhanden sind
-            if self.cache:
-                cached_result = await self.cache.get(cache_key)
-                if cached_result:
-                    logger.info(f"Returning cached custom token analysis for {token_address}")
-                    return cached_result
+            # Zusätzliche Prüfung des Ergebnisses
+            if not result or 'token_info' not in result:
+                raise CustomAnalysisException("Ungültiges Analyseergebnis erhalten")
             
-            # 1. Token-Metadaten abrufen
-            token_data = await self._fetch_custom_token_data(token_address, chain)
-            
-            # Wenn keine Token-Daten abgerufen werden konnten, erstelle ein minimales Token-Objekt
-            if not token_data:
-                logger.warning(f"Could not retrieve token data for {token_address} on {chain}, creating minimal token object")
-                token_data = Token(
-                    address=token_address,
-                    name="Unknown",
-                    symbol="UNKNOWN",
-                    chain=chain,
-                    market_cap=0,
-                    volume_24h=0,
-                    liquidity=0,
-                    holders_count=0,
-                    contract_verified=False,
-                    creation_date=None,
-                    token_score=0
-                )
-            
-            # 2. Holder-Analyse durchführen
-            holders = await self._fetch_token_holders(token_address, chain)
-            
-            if not holders:
-                logger.warning(f"No holder data for {token_address} on {chain}")
-                holders = []
-            
-            # 3. Wallet-Klassifizierung
-            wallet_analyses = await self._analyze_wallets(token_data, holders)
-            
-            # 4. Score-Berechnung
-            score_data = self._calculate_token_score(token_data, wallet_analyses)
-            
-            # 5. Ergebnis zusammenstellen
-            analysis_result = {
-                'token_info': {
-                    'address': token_data.address,
-                    'name': token_data.name,
-                    'symbol': token_data.symbol,
-                    'chain': chain,
-                    'market_cap': token_data.market_cap,
-                    'volume_24h': token_data.volume_24h,
-                    'holders_count': len(holders),
-                    'liquidity': token_data.liquidity
-                },
-                'score': score_data['total_score'],
-                'metrics': score_data['metrics'],
-                'risk_flags': score_data['risk_flags'],
-                'wallet_analysis': {
-                    'total_wallets': len(wallet_analyses),
-                    'dev_wallets': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.DEV_WALLET]),
-                    'whale_wallets': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.WHALE_WALLET]),
-                    'rugpull_suspects': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.RUGPULL_SUSPECT]),
-                    'top_holders': [
-                        {
-                            'address': w.wallet_address,
-                            'balance': w.balance,
-                            'percentage': w.percentage_of_supply,
-                            'type': w.wallet_type.value
+            # Prüfe, ob Halterdaten vorhanden sind
+            if 'wallet_analysis' in result and 'top_holders' in result['wallet_analysis']:
+                self.logger.info(f"Verarbeite {len(result['wallet_analysis']['top_holders'])} Top-Holder für {token_address}")
+                
+                # Führe erweiterte Analyse der Halter durch
+                if self.wallet_classifier:
+                    try:
+                        # Klassifiziere die Top-Holder
+                        classified_holders = []
+                        for holder_data in result['wallet_analysis']['top_holders']:
+                            wallet_type = await self.wallet_classifier.classify_wallet(
+                                holder_data['address'],
+                                holder_data['balance'],
+                                holder_data['percentage'],
+                                chain
+                            )
+                            
+                            classified_holders.append({
+                                'address': holder_data['address'],
+                                'balance': holder_data['balance'],
+                                'percentage': holder_data['percentage'],
+                                'type': wallet_type.value
+                            })
+                        
+                        # Aktualisiere die Halterdaten mit Klassifizierung
+                        result['wallet_analysis']['top_holders'] = classified_holders
+                        
+                        # Berechne Statistiken
+                        result['wallet_analysis']['whale_wallets'] = len([
+                            h for h in classified_holders if h['type'] == 'WHALE_WALLET'
+                        ])
+                        result['wallet_analysis']['dev_wallets'] = len([
+                            h for h in classified_holders if h['type'] == 'DEV_WALLET'
+                        ])
+                        result['wallet_analysis']['rugpull_suspects'] = len([
+                            h for h in classified_holders if h['type'] == 'RUGPULL_SUSPECT'
+                        ])
+                        
+                    except Exception as e:
+                        self.logger.warning(f"Fehler bei der Wallet-Klassifizierung: {e}")
+                
+                # Führe erweiterte Risikobewertung durch
+                if self.risk_assessor:
+                    try:
+                        risk_assessment = await self._perform_advanced_risk_assessment(
+                            result['token_info'],
+                            result['wallet_analysis']
+                        )
+                        
+                        result['risk_assessment'] = {
+                            'overall_risk': risk_assessment.overall_risk,
+                            'risk_factors': risk_assessment.risk_factors,
+                            'recommendation': risk_assessment.recommendation
                         }
-                        for w in sorted(wallet_analyses, key=lambda x: x.balance, reverse=True)[:10]
-                    ]
-                }
-            }
+                    except Exception as e:
+                        self.logger.warning(f"Fehler bei der Risikobewertung: {e}")
+            else:
+                self.logger.warning(f"Keine Halterdaten für {token_address} gefunden")
+            
+            # Führe erweiterte Scoring-Berechnung durch, falls verfügbar
+            if self.scoring_engine and 'wallet_analysis' in result:
+                try:
+                    # Extrahiere die notwendigen Daten für das Scoring
+                    token_data = result['token_info']
+                    wallet_analyses = []
+                    
+                    # Rekonstruiere WalletAnalysis-Objekte aus den serialisierten Daten
+                    for wallet_data in result.get('wallet_analysis', {}).get('top_holders', []):
+                        wallet_type = WalletTypeEnum.UNKNOWN
+                        for wt in WalletTypeEnum:
+                            if wt.value == wallet_data.get('type', 'unknown'):
+                                wallet_type = wt
+                                break
+                        
+                        wallet_analysis = WalletAnalysis(
+                            wallet_address=wallet_data.get('address', ''),
+                            wallet_type=wallet_type,
+                            balance=wallet_data.get('balance', 0),
+                            percentage_of_supply=wallet_data.get('percentage', 0),
+                            transaction_count=0,  # Nicht in den serialisierten Daten enthalten
+                            first_transaction=None,  # Nicht in den serialisierten Daten enthalten
+                            last_transaction=None,  # Nicht in den serialisierten Daten enthalten
+                            risk_score=0  # Wird neu berechnet
+                        )
+                        wallet_analyses.append(wallet_analysis)
+                    
+                    # Führe die erweiterte Scoring-Berechnung durch
+                    score_result = await self._calculate_advanced_score(token_data, wallet_analyses, chain)
+                    
+                    # Füge das Scoring-Ergebnis zum Ergebnis hinzu
+                    result['advanced_score'] = score_result
+                except Exception as e:
+                    self.logger.warning(f"Fehler bei der erweiterten Scoring-Berechnung: {str(e)}")
             
             # Speichere das Ergebnis im Cache
-            if self.cache:
-                await self.cache.set(analysis_result, self.config.cache_ttl_seconds, cache_key)
-            
-            return analysis_result
+            if should_use_cache and self.cache:
+                await self.cache.set(result, self.cache_ttl, cache_key)
+                
+            self.logger.info(f"Analyse für Token {token_address} auf Chain {chain} abgeschlossen")
+            return result
+        except ValueError as e:
+            # Spezielle Behandlung für "Token data could not be retrieved" Fehler
+            if "Token data could not be retrieved" in str(e):
+                self.logger.error(f"Konnte Tokendaten nicht abrufen für {token_address} auf {chain}: {str(e)}")
+                # Erstelle ein minimales Analyseergebnis, auch wenn keine Token-Daten abgerufen werden konnten
+                minimal_result = {
+                    'token_info': {
+                        'address': token_address,
+                        'name': "Unknown",
+                        'symbol': "UNKNOWN",
+                        'chain': chain,
+                        'market_cap': 0,
+                        'volume_24h': 0,
+                        'holders_count': 0,
+                        'liquidity': 0
+                    },
+                    'score': 50.0,  # Neutraler Score
+                    'metrics': {
+                        'total_holders_analyzed': 0,
+                        'whale_wallets': 0,
+                        'dev_wallets': 0,
+                        'rugpull_suspects': 0,
+                        'gini_coefficient': 0,
+                        'whale_percentage': 0,
+                        'dev_percentage': 0
+                    },
+                    'risk_flags': ["limited_data"],
+                    'wallet_analysis': {
+                        'total_wallets': 0,
+                        'dev_wallets': 0,
+                        'whale_wallets': 0,
+                        'rugpull_suspects': 0,
+                        'top_holders': []
+                    }
+                }
+                
+                # Speichere das minimale Ergebnis im Cache
+                if should_use_cache and self.cache:
+                    await self.cache.set(minimal_result, self.cache_ttl, cache_key)
+                
+                return minimal_result
+            raise CustomAnalysisException(f"Analyse fehlgeschlagen: {str(e)}") from e
+        except (APIException, NotFoundException) as e:
+            self.logger.error(f"Externer Fehler bei der Token-Analyse: {str(e)}")
+            raise CustomAnalysisException(f"Analyse fehlgeschlagen: {str(e)}") from e
         except Exception as e:
-            logger.error(f"Error analyzing custom token {token_address} on {chain}: {e}")
-            raise
+            self.logger.error(f"Unerwarteter Fehler bei der Token-Analyse: {str(e)}", exc_info=True)
+            raise CustomAnalysisException(f"Unerwarteter Fehler bei der Analyse: {str(e)}") from e
     
     @retry_with_backoff(max_retries=3, base_delay=2, max_delay=30)
     async def _fetch_custom_token_data(self, token_address: str, chain: str) -> Optional[Token]:
