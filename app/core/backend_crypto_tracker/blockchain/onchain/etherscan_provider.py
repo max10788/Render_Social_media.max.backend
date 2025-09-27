@@ -4,7 +4,7 @@ Etherscan API provider implementation for token holders and on-chain data.
 import asyncio
 import aiohttp
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
@@ -14,7 +14,6 @@ logger = get_logger(__name__)
 class EtherscanProvider(BaseAPIProvider):
     """Etherscan API Provider für On-Chain-Daten"""
     def __init__(self, api_key: Optional[str] = None):
-        # Automatisch API-Key aus Umgebungsvariable laden
         if api_key is None:
             api_key = os.getenv('ETHERSCAN_API_KEY')
         super().__init__("Etherscan", "https://api.etherscan.io/api", api_key)
@@ -34,15 +33,7 @@ class EtherscanProvider(BaseAPIProvider):
         }
 
     async def get_token_holders(self, token_address: str, chain: str, limit: int = 100) -> List[Dict[str, Any]]:
-        """
-        Holt Token-Holder für einen ERC20-Token
-        Args:
-            token_address: Token-Contract-Adresse
-            chain: Blockchain (ethereum, bsc)
-            limit: Maximale Anzahl an Holders
-        Returns:
-            Liste der Token-Holder mit Adressen und Balances
-        """
+        """Holt Token-Holder für einen ERC20-Token"""
         try:
             # Bestimme die richtige API-URL basierend auf der Chain
             if chain.lower() == 'ethereum':
@@ -57,16 +48,15 @@ class EtherscanProvider(BaseAPIProvider):
 
             if not api_key:
                 logger.warning(f"No API key provided for {chain} scan")
-                # Fallback zu Transfer-Analyse, falls kein API-Key
                 return await self._get_holders_from_transfers(token_address, base_url, limit)
 
-            # Versuche zuerst die direkte Token-Holder-API (falls verfügbar)
+            # Versuche zuerst die direkte Token-Holder-API
             params = {
                 'module': 'token',
                 'action': 'tokenholderlist',
                 'contractaddress': token_address,
                 'page': '1',
-                'offset': str(min(limit, 10000)), # Etherscan limitiert offset auf 10000
+                'offset': str(min(limit, 10000)),
                 'sort': 'desc',
                 'apikey': api_key
             }
@@ -83,13 +73,12 @@ class EtherscanProvider(BaseAPIProvider):
                             holders.append({
                                 'TokenHolderAddress': holder.get('TokenHolderAddress'),
                                 'TokenHolderQuantity': holder.get('TokenHolderQuantity'),
-                                'percentage': 0  # Wird später berechnet
+                                'percentage': 0
                             })
                         logger.info(f"Retrieved {len(holders)} token holders from {chain}scan API")
                         return holders
                     else:
                         logger.warning(f"API returned error: {data.get('message', 'Unknown error')}")
-                        # Fallback zu Transfer-Analyse
                         return await self._get_holders_from_transfers(token_address, base_url, limit)
                 else:
                     logger.warning(f"HTTP error {response.status} from {chain}scan")
@@ -100,12 +89,9 @@ class EtherscanProvider(BaseAPIProvider):
             return []
 
     async def _get_holders_from_transfers(self, token_address: str, base_url: str, limit: int = 100) -> List[Dict[str, Any]]:
-        """
-        Analysiert Token-Transfers um Holder zu ermitteln (Fallback-Methode)
-        """
+        """Analysiert Token-Transfers um Holder zu ermitteln (Fallback-Methode)"""
         try:
             api_key = self.api_key or ""
-            # Hole die letzten Token-Transfers
             params = {
                 'module': 'account',
                 'action': 'tokentx',
@@ -121,16 +107,14 @@ class EtherscanProvider(BaseAPIProvider):
                 if response.status == 200:
                     data = await response.json()
                     if data.get('status') == '1' and data.get('result'):
-                        # Analysiere Transfers um Balances zu berechnen
                         balances = {}
                         for tx in data['result']:
                             from_addr = tx.get('from')
                             to_addr = tx.get('to')
                             value = int(tx.get('value', 0))
                             decimals = int(tx.get('tokenDecimal', 18))
-                            # Konvertiere zu Token-Einheiten
                             token_amount = value / (10 ** decimals)
-                            # Update Balances
+                            
                             if from_addr not in balances:
                                 balances[from_addr] = 0
                             if to_addr not in balances:
@@ -138,7 +122,6 @@ class EtherscanProvider(BaseAPIProvider):
                             balances[from_addr] -= token_amount
                             balances[to_addr] += token_amount
 
-                        # Filtere positive Balances und sortiere
                         positive_balances = {
                             addr: bal for addr, bal in balances.items()
                             if bal > 0
@@ -154,7 +137,7 @@ class EtherscanProvider(BaseAPIProvider):
                             holders.append({
                                 'TokenHolderAddress': address,
                                 'TokenHolderQuantity': str(int(balance * (10 ** decimals))),
-                                'percentage': 0  # Wird später berechnet
+                                'percentage': 0
                             })
 
                         logger.info(f"Calculated {len(holders)} token holders from transfer analysis")
@@ -244,7 +227,7 @@ class EtherscanProvider(BaseAPIProvider):
                                 'tx_count': len(transactions),
                                 'first_tx_time': first_tx,
                                 'last_tx_time': last_tx,
-                                'recent_large_sells': 0  # Placeholder - erweiterte Analyse nötig
+                                'recent_large_sells': 0
                             }
         except Exception as e:
             logger.error(f"Error getting wallet transactions: {e}")
@@ -255,13 +238,37 @@ class EtherscanProvider(BaseAPIProvider):
             'recent_large_sells': 0
         }
 
-    async def get_contract_transactions(self, contract_address: str, hours: int = 24) -> List[Dict]:
-        """Holt die Transaktionen eines Smart-Contracts der letzten Stunden"""
-        try:
-            # Berechne den Zeitstempel vor X Stunden
-            since_timestamp = int((datetime.now() - timedelta(hours=hours)).timestamp())
+    async def get_contract_transactions(
+        self, 
+        contract_address: str, 
+        hours: int = 24, 
+        start_block: Optional[int] = None
+    ) -> List[Dict]:
+        """
+        Holt die Transaktionen eines Smart-Contracts der letzten Stunden
+        oder ab einem bestimmten Block
+        
+        Args:
+            contract_address: Contract-Adresse
+            hours: Zeitraum in Stunden (wenn start_block nicht angegeben)
+            start_block: Optionale Start-Blocknummer
             
-            # Hole Token-Transfers direkt über die Etherscan-API
+        Returns:
+            Liste der Transaktionen
+        """
+        try:
+            # Berechne den Zeitstempel basierend auf Parametern
+            if start_block is not None:
+                # Hole Zeitstempel für Start-Block
+                since_timestamp = await self._get_block_timestamp(start_block)
+                if since_timestamp == 0:
+                    logger.error(f"Konnte Zeitstempel für Block {start_block} nicht ermitteln")
+                    return []
+            else:
+                # Berechne Zeitstempel vor X Stunden
+                since_timestamp = int((datetime.now() - timedelta(hours=hours)).timestamp())
+            
+            # Hole Token-Transfers über die Etherscan-API
             params = {
                 'module': 'account',
                 'action': 'tokentx',
@@ -276,22 +283,58 @@ class EtherscanProvider(BaseAPIProvider):
                 # Filtere Transaktionen nach Zeit
                 filtered_transactions = []
                 for tx in data['result']:
-                    if tx.get('timeStamp') and int(tx['timeStamp']) >= since_timestamp:
+                    tx_timestamp = int(tx.get('timeStamp', 0))
+                    if tx_timestamp >= since_timestamp:
                         filtered_transactions.append({
                             'from': tx.get('from'),
                             'to': tx.get('to'),
                             'hash': tx.get('hash'),
-                            'timeStamp': tx.get('timeStamp'),
+                            'timeStamp': tx_timestamp,
                             'contract_address': contract_address,
                             'value': int(tx.get('value', 0)),
                             'tokenSymbol': tx.get('tokenSymbol'),
                             'tokenDecimal': int(tx.get('tokenDecimal', 18))
                         })
                 
+                logger.info(f"Gefiltert {len(filtered_transactions)} Transaktionen seit Block {start_block or 'letzten ' + str(hours) + ' Stunden'}")
                 return filtered_transactions
             else:
-                # Fallback: Direkte Abfrage über RPC (langsamer)
-                return await self._get_contract_transactions_via_rpc(contract_address, hours)
+                logger.warning(f"Keine Transaktionsdaten von Etherscan API erhalten: {data}")
+                return []
+                
         except Exception as e:
             logger.error(f"Fehler beim Abrufen der Contract-Transaktionen: {e}")
             return []
+
+    async def _get_block_timestamp(self, block_number: int) -> int:
+        """
+        Holt den Zeitstempel eines Blocks über die Etherscan API
+        
+        Args:
+            block_number: Blocknummer
+            
+        Returns:
+            Unix-Zeitstempel des Blocks oder 0 bei Fehler
+        """
+        try:
+            params = {
+                'module': 'proxy',
+                'action': 'eth_getBlockByNumber',
+                'tag': hex(block_number),
+                'boolean': 'true',
+                'apikey': self.api_key
+            }
+            
+            data = await self._make_request(self.base_url, params)
+            
+            if data and data.get('result'):
+                timestamp_hex = data['result'].get('timestamp')
+                if timestamp_hex:
+                    return int(timestamp_hex, 16)
+            
+            logger.warning(f"Block {block_number} nicht gefunden oder kein Zeitstempel verfügbar")
+            return 0
+            
+        except Exception as e:
+            logger.error(f"Fehler beim Abrufen des Block-Zeitstempels für Block {block_number}: {e}")
+            return 0
