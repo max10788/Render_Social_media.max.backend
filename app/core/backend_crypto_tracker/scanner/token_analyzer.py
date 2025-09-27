@@ -86,6 +86,9 @@ class TokenAnalyzer:
     def __init__(self, config: TokenAnalysisConfig = None):
         self.config = config or TokenAnalysisConfig()
         
+        # Logger initialisieren - DIESER TEIL FEHLT
+        self.logger = get_logger(__name__)
+        
         # Provider-Initialisierung - Ersetzt APIManager durch BaseAPIProvider
         self.api_provider = None  # Wird in __aenter__ initialisiert
         self.ethereum_provider = None
