@@ -107,7 +107,8 @@ class EthereumProvider:
                             'from': tx.get('from'),
                             'to': tx.get('to'),
                             'hash': tx.get('hash'),
-                            'timeStamp': tx.get('timeStamp')
+                            'timeStamp': tx.get('timeStamp'),
+                            'contract_address': contract_address  # Füge Contract-Adresse hinzu
                         })
                 
                 return filtered_transactions
