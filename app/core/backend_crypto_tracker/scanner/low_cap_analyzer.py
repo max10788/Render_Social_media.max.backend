@@ -30,7 +30,8 @@ from app.core.backend_crypto_tracker.scanner.wallet_classifier import (
 
 from app.core.backend_crypto_tracker.scanner.risk_assessor import (
     AdvancedRiskAssessor,
-    RiskAssessment
+    RiskAssessment,
+    RiskLevel
 )
 
 from app.core.backend_crypto_tracker.scanner.scoring_engine import (
@@ -261,16 +262,41 @@ class LowCapAnalyzer:
                 # Führe erweiterte Risikobewertung durch
                 if self.risk_assessor:
                     try:
-                        risk_assessment = await self._perform_advanced_risk_assessment(
-                            result['token_info'],
-                            result['wallet_analysis']
+                        # Bereite die Daten für die Risikobewertung vor
+                        token_data = result['token_info']
+                        
+                        # Konvertiere die Wallet-Daten in das erwartete Format
+                        wallet_analyses = []
+                        for holder in result['wallet_analysis']['top_holders']:
+                            wallet_type = WalletTypeEnum.UNKNOWN
+                            for wt in WalletTypeEnum:
+                                if wt.value == holder.get('type', 'unknown'):
+                                    wallet_type = wt
+                                    break
+                            
+                            wallet_analysis = WalletAnalysis(
+                                address=holder.get('address', ''),
+                                balance=float(holder.get('balance', 0)),
+                                is_whale=wallet_type == WalletTypeEnum.WHALE_WALLET,
+                                transaction_count=0
+                            )
+                            wallet_analyses.append(wallet_analysis)
+                        
+                        # Führe die erweiterte Risikobewertung durch
+                        risk_assessment = await self.risk_assessor.assess_token_risk_advanced(
+                            token_data=token_data,
+                            wallet_analyses=wallet_analyses
                         )
                         
+                        # Füge die Risikobewertung zum Ergebnis hinzu
                         result['risk_assessment'] = {
-                            'overall_risk': risk_assessment.overall_risk,
+                            'overall_risk': risk_assessment.overall_score,
+                            'risk_level': risk_assessment.risk_level,
                             'risk_factors': risk_assessment.risk_factors,
-                            'recommendation': risk_assessment.recommendation
+                            'confidence': risk_assessment.confidence,
+                            'details': risk_assessment.details
                         }
+                        
                     except Exception as e:
                         self.logger.warning(f"Fehler bei der Risikobewertung: {e}")
             else:
