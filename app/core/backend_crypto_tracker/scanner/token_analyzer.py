@@ -749,15 +749,77 @@ class TokenAnalyzer:
             logger.info(f"Rufe Transaktionen für {token_address} auf {chain} der letzten 6 Stunden ab")
             
             try:
-                # Berechne den Zeitstempel vor 6 Stunden
-                since_timestamp = int((datetime.now() - timedelta(hours=6)).timestamp())
-                
                 # Hole Transaktionen über den Provider
                 transactions = await provider.get_contract_transactions(token_address, hours=6)
                 
                 if not transactions:
                     logger.warning(f"Keine Transaktionen für {token_address} auf {chain} in den letzten 6 Stunden gefunden")
-                    return []
+                    
+                    # Erweitere den Zeitraum auf 24 Stunden, wenn in 6 Stunden keine Transaktionen gefunden wurden
+                    logger.info(f"Versuche, Transaktionen der letzten 24 Stunden für {token_address} zu finden")
+                    transactions = await provider.get_contract_transactions(token_address, hours=24)
+                    
+                    if not transactions:
+                        logger.warning(f"Keine Transaktionen für {token_address} auf {chain} in den letzten 24 Stunden gefunden")
+                        
+                        # Letzter Versuch: Hole aktuelle Top-Holder als Fallback
+                        try:
+                            logger.info(f"Versuche, Top-Holder als Fallback für {token_address} zu finden")
+                            if hasattr(provider, 'get_token_holders'):
+                                holders = await provider.get_token_holders(token_address, chain)
+                                
+                                if holders:
+                                    # Konvertiere in das erwartete Format
+                                    active_wallets = []
+                                    total_supply = 0
+                                    
+                                    for holder in holders:
+                                        try:
+                                            # Je nach Provider-Format anpassen
+                                            if 'TokenHolderAddress' in holder and 'TokenHolderQuantity' in holder:
+                                                address = holder['TokenHolderAddress']
+                                                balance = float(holder['TokenHolderQuantity'])
+                                            elif 'address' in holder and 'balance' in holder:
+                                                address = holder['address']
+                                                balance = float(holder['balance'])
+                                            else:
+                                                # Unbekanntes Format, überspringen
+                                                continue
+                                            
+                                            active_wallets.append({
+                                                'address': address,
+                                                'balance': balance,
+                                                'percentage': 0,  # Wird später berechnet
+                                                'is_top_holder': True  # Markiere als Fallback
+                                            })
+                                            total_supply += balance
+                                        except (ValueError, KeyError) as e:
+                                            logger.warning(f"Ungültiges Holder-Format: {holder}, Fehler: {e}")
+                                            continue
+                                    
+                                    # Berechne die Prozentsätze
+                                    for wallet in active_wallets:
+                                        if total_supply > 0:
+                                            wallet['percentage'] = (wallet['balance'] / total_supply) * 100
+                                        else:
+                                            wallet['percentage'] = 0
+                                    
+                                    # Sortiere die Wallets nach Balance (absteigend)
+                                    active_wallets.sort(key=lambda x: x['balance'], reverse=True)
+                                    
+                                    # Begrenze die Anzahl der Wallets
+                                    active_wallets = active_wallets[:self.config.max_holders_to_analyze]
+                                    
+                                    # Speichere das Ergebnis im Cache
+                                    if self.cache:
+                                        await self.cache.set(active_wallets, self.config.cache_ttl_seconds, cache_key)
+                                    
+                                    logger.info(f"Top-Holder (Fallback) für {token_address}: {len(active_wallets)} Wallets gefunden")
+                                    return active_wallets
+                        except Exception as fallback_error:
+                            logger.error(f"Fallback-Methode fehlgeschlagen: {fallback_error}")
+                        
+                        return []
                 
                 # Extrahiere die einzigartigen Wallet-Adressen aus den Transaktionen
                 wallet_addresses = set()
@@ -814,64 +876,8 @@ class TokenAnalyzer:
                 return active_wallets
                 
             except Exception as e:
-                logger.error(f"Fehler beim Abrufen der Transaktionen: {e}")
-                
-                # Fallback: Versuche, Transaktionen über alternative Methode zu bekommen
-                try:
-                    if hasattr(provider, 'get_token_transfers'):
-                        # Hole Token-Transfers als Alternative
-                        transfers = await provider.get_token_transfers(token_address)
-                        
-                        if transfers:
-                            # Extrahiere Wallet-Adressen aus den Transfers
-                            wallet_addresses = set()
-                            for transfer in transfers:
-                                if 'from_address' in transfer:
-                                    wallet_addresses.add(transfer['from_address'])
-                                if 'to_address' in transfer:
-                                    wallet_addresses.add(transfer['to_address'])
-                            
-                            # Hole Token-Bestände für diese Adressen
-                            active_wallets = []
-                            total_supply = 0
-                            
-                            for address in wallet_addresses:
-                                try:
-                                    balance = await provider.get_token_balance(token_address, address)
-                                    if balance > 0:
-                                        active_wallets.append({
-                                            'address': address,
-                                            'balance': balance,
-                                            'percentage': 0
-                                        })
-                                        total_supply += balance
-                                except Exception as balance_error:
-                                    logger.warning(f"Fehler beim Abrufen des Token-Bestands für {address}: {balance_error}")
-                                    continue
-                            
-                            # Berechne Prozentsätze und sortiere
-                            for wallet in active_wallets:
-                                if total_supply > 0:
-                                    wallet['percentage'] = (wallet['balance'] / total_supply) * 100
-                            
-                            active_wallets.sort(key=lambda x: x['balance'], reverse=True)
-                            active_wallets = active_wallets[:self.config.max_holders_to_analyze]
-                            
-                            # Speichere das Ergebnis im Cache
-                            if self.cache:
-                                await self.cache.set(active_wallets, self.config.cache_ttl_seconds, cache_key)
-                            
-                            logger.info(f"Aktive Wallets (Fallback) für {token_address}: {len(active_wallets)} Wallets gefunden")
-                            return active_wallets
-                    
-                except Exception as fallback_error:
-                    logger.error(f"Fallback-Methode fehlgeschlagen: {fallback_error}")
-                
+                logger.error(f"Fehler beim Abrufen der aktiven Wallets für {token_address} auf {chain}: {e}")
                 return []
-                
-        except Exception as e:
-            logger.error(f"Fehler beim Abrufen der aktiven Wallets für {token_address} auf {chain}: {e}")
-            return []
     
     async def _analyze_wallets(self, token_data: Token, holders: List[Dict[str, Any]]) -> List[WalletAnalysis]:
         """Analysiert die Wallets der Token-Holder"""
