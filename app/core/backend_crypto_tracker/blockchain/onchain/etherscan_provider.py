@@ -242,16 +242,18 @@ class EtherscanProvider(BaseAPIProvider):
         self, 
         contract_address: str, 
         hours: int = 24, 
-        start_block: Optional[int] = None
+        start_block: Optional[int] = None,
+        end_block: Optional[int] = None
     ) -> List[Dict]:
         """
         Holt die Transaktionen eines Smart-Contracts der letzten Stunden
-        oder ab einem bestimmten Block
+        oder in einem bestimmten Blockbereich
         
         Args:
             contract_address: Contract-Adresse
             hours: Zeitraum in Stunden (wenn start_block nicht angegeben)
             start_block: Optionale Start-Blocknummer
+            end_block: Optionale End-Blocknummer (wird ignoriert, nur für Kompatibilität)
             
         Returns:
             Liste der Transaktionen
@@ -268,6 +270,9 @@ class EtherscanProvider(BaseAPIProvider):
                 # Berechne Zeitstempel vor X Stunden
                 since_timestamp = int((datetime.now() - timedelta(hours=hours)).timestamp())
             
+            # Logge die Parameter für Debugging
+            logger.info(f"Suche Transaktionen für Contract {contract_address} seit {'Block ' + str(start_block) if start_block else str(hours) + ' Stunden'}")
+            
             # Hole Token-Transfers über die Etherscan-API
             params = {
                 'module': 'account',
@@ -277,12 +282,16 @@ class EtherscanProvider(BaseAPIProvider):
                 'apikey': self.api_key
             }
             
+            # Führe den API-Aufruf durch
             data = await self._make_request(self.base_url, params)
             
             if data and data.get('status') == '1' and data.get('result'):
+                transactions = data.get('result', [])
+                logger.info(f"Etherscan API gab {len(transactions)} Transaktionen zurück")
+                
                 # Filtere Transaktionen nach Zeit
                 filtered_transactions = []
-                for tx in data['result']:
+                for tx in transactions:
                     tx_timestamp = int(tx.get('timeStamp', 0))
                     if tx_timestamp >= since_timestamp:
                         filtered_transactions.append({
@@ -296,10 +305,11 @@ class EtherscanProvider(BaseAPIProvider):
                             'tokenDecimal': int(tx.get('tokenDecimal', 18))
                         })
                 
-                logger.info(f"Gefiltert {len(filtered_transactions)} Transaktionen seit Block {start_block or 'letzten ' + str(hours) + ' Stunden'}")
+                logger.info(f"Gefiltert {len(filtered_transactions)} Transaktionen seit {'Block ' + str(start_block) if start_block else str(hours) + ' Stunden'}")
                 return filtered_transactions
             else:
-                logger.warning(f"Keine Transaktionsdaten von Etherscan API erhalten: {data}")
+                error_msg = data.get('message', 'Unknown error') if data else 'No response'
+                logger.warning(f"Keine Transaktionsdaten von Etherscan API erhalten: {error_msg}")
                 return []
                 
         except Exception as e:
