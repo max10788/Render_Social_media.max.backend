@@ -878,22 +878,34 @@ class TokenAnalyzer:
             except Exception as e:
                 logger.error(f"Fehler beim Abrufen der aktiven Wallets für {token_address} auf {chain}: {e}")
                 return []
+        except Exception as e:
+            logger.error(f"Fehler beim Abrufen der Token-Holder für {token_address} auf {chain}: {e}")
+            return []
     
     async def _analyze_wallets(self, token_data: Token, holders: List[Dict[str, Any]]) -> List[WalletAnalysis]:
         """Analysiert die Wallets der Token-Holder"""
         wallet_analyses = []
         
         # Berechne die Gesamtmenge der Token
-        total_supply = sum(float(h.get('TokenHolderQuantity', 0)) for h in holders)
+        total_supply = sum(float(h.get('balance', 0)) for h in holders)
         
         # Begrenze die Anzahl der zu analysierenden Wallets
         holders_to_analyze = holders[:self.config.max_holders_to_analyze]
         
         for holder in holders_to_analyze:
             try:
-                balance = float(holder.get('TokenHolderQuantity', 0))
+                # Passe das Datenformat an - je nachdem, ob es aktive Wallets oder Top-Holder sind
+                if 'balance' in holder:
+                    balance = float(holder.get('balance', 0))
+                    wallet_address = holder.get('address', '')
+                elif 'TokenHolderQuantity' in holder:
+                    balance = float(holder.get('TokenHolderQuantity', 0))
+                    wallet_address = holder.get('TokenHolderAddress', '')
+                else:
+                    logger.warning(f"Unbekanntes Holder-Format: {holder}")
+                    continue
+                    
                 percentage = (balance / total_supply) * 100 if total_supply > 0 else 0
-                wallet_address = holder.get('TokenHolderAddress', '')
                 
                 # Cache-Schlüssel für diese Anfrage
                 cache_key = f"wallet_analysis_{wallet_address}_{token_data.address}"
@@ -931,7 +943,7 @@ class TokenAnalyzer:
                     await self.cache.set(wallet_analysis, self.config.cache_ttl_seconds, cache_key)
                     
             except Exception as e:
-                logger.error(f"Error analyzing wallet {holder.get('TokenHolderAddress', 'Unknown')}: {e}")
+                logger.error(f"Error analyzing wallet {holder.get('address', holder.get('TokenHolderAddress', 'Unknown'))}: {e}")
                 continue
         
         return wallet_analyses
@@ -1314,7 +1326,7 @@ class TokenAnalyzer:
             if provider:
                 close_tasks.append(self._safe_close_provider(provider, provider.__class__.__name__))
         
-        # Führe alle Schließvorgänge parallel aus
+        # Führe alle Schließvorgänge parallel ausführen
         if close_tasks:
             await asyncio.gather(*close_tasks, return_exceptions=True)
         
