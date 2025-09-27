@@ -35,7 +35,6 @@ from app.core.backend_crypto_tracker.processor.database.models.token import Toke
 from app.core.backend_crypto_tracker.processor.database.models.wallet import WalletAnalysis, WalletTypeEnum
 from app.core.backend_crypto_tracker.blockchain.onchain.etherscan_provider import EtherscanProvider
 from app.core.backend_crypto_tracker.config.blockchain_api_keys import get_api_keys
-from app.core.backend_crypto_tracker.blockchain.api_manager import APIManager
 
 logger = get_logger(__name__)
 
@@ -52,6 +51,7 @@ class TokenAnalysisConfig:
     request_delay_seconds: float = 1.0
     enable_cache: bool = True
     cache_ttl_seconds: int = 300  # 5 Minuten
+    preferred_provider: str = "CoinGecko"  # Neuer Parameter zur Auswahl des Providers
 
 def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60):
     """Decorator für Retry mit exponentiellem Backoff"""
@@ -82,14 +82,12 @@ def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60):
         return wrapper
     return decorator
 
-
-
 class TokenAnalyzer:
     def __init__(self, config: TokenAnalysisConfig = None):
         self.config = config or TokenAnalysisConfig()
         
-        # Provider-Initialisierung
-        self.api_manager = APIManager()
+        # Provider-Initialisierung - Ersetzt APIManager durch BaseAPIProvider
+        self.api_provider = None  # Wird in __aenter__ initialisiert
         self.ethereum_provider = None
         self.bsc_provider = None
         self.solana_provider = None
@@ -112,8 +110,8 @@ class TokenAnalyzer:
         self.cex_wallets = scanner_config.rpc_config.cex_wallets
 
     async def __aenter__(self):
-        # API-Manager initialisieren
-        await self.api_manager.initialize()
+        # API-Provider initialisieren - Ersetzt APIManager
+        await self._initialize_api_provider()
         
         # Blockchain-Provider initialisieren
         if os.getenv('ETHERSCAN_API_KEY'):
@@ -164,12 +162,41 @@ class TokenAnalyzer:
         
         return self
     
+    async def _initialize_api_provider(self):
+        """Initialisiert den API-Provider basierend auf der Konfiguration"""
+        provider_name = self.config.preferred_provider.lower()
+        
+        # Erstelle den ausgewählten Provider
+        if provider_name == "coingecko":
+            self.api_provider = CoinGeckoProvider()
+        elif provider_name == "coinmarketcap":
+            self.api_provider = CoinMarketCapProvider()
+        elif provider_name == "cryptocompare":
+            self.api_provider = CryptoCompareProvider()
+        elif provider_name == "bitget":
+            self.api_provider = BitgetProvider()
+        elif provider_name == "kraken":
+            self.api_provider = KrakenProvider()
+        elif provider_name == "binance":
+            self.api_provider = BinanceProvider()
+        elif provider_name == "coinbase":
+            self.api_provider = CoinbaseProvider()
+        elif provider_name == "bitquery":
+            self.api_provider = BitqueryProvider()
+        else:
+            logger.warning(f"Unknown provider '{provider_name}', defaulting to CoinGecko")
+            self.api_provider = CoinGeckoProvider()
+        
+        # Initialisiere den Provider
+        await self.api_provider.__aenter__()
+        logger.info(f"{self.config.preferred_provider} provider initialized")
+    
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # Sicheres Schließen aller Ressourcen
         close_tasks = []
         
-        if self.api_manager:
-            close_tasks.append(self._safe_close_api_manager())
+        if self.api_provider:
+            close_tasks.append(self._safe_close_api_provider())
         
         if self.ethereum_provider:
             close_tasks.append(self._safe_close(self.ethereum_provider, exc_type, exc_val, exc_tb, "ethereum_provider"))
@@ -204,12 +231,14 @@ class TokenAnalyzer:
         except Exception as e:
             logger.warning(f"Error closing {service_name}: {str(e)}")
     
-    async def _safe_close_api_manager(self):
-        """Sicheres Schließen des API-Managers"""
+    async def _safe_close_api_provider(self):
+        """Sicheres Schließen des API-Providers"""
         try:
-            await self.api_manager.close()
+            await self.api_provider.__aexit__(None, None, None)
+            if hasattr(self.api_provider, 'close'):
+                await self.api_provider.close()
         except Exception as e:
-            logger.warning(f"Error closing API manager: {str(e)}")
+            logger.warning(f"Error closing API provider: {str(e)}")
     
     async def scan_low_cap_tokens(self, max_tokens: int = None) -> List[Dict[str, Any]]:
         """Hauptfunktion zum Scannen von Low-Cap Tokens"""
@@ -227,11 +256,31 @@ class TokenAnalyzer:
                 logger.info(f"Returning cached low-cap tokens data")
                 return cached_result
         
-        # Hole Low-Cap Tokens über den API-Manager
-        tokens = await self.api_manager.get_low_cap_tokens(
-            max_market_cap=self.config.max_market_cap,
-            limit=max_tokens
-        )
+        # Hole Low-Cap Tokens über den API-Provider - Angepasst an BaseAPIProvider
+        try:
+            # BaseAPIProvider hat keine get_low_cap_tokens-Methode, also müssen wir eine alternative Implementierung verwenden
+            # Hier verwenden wir get_token_price mit einer Liste bekannter Token-Adressen
+            # In einer echten Implementierung müsste dies angepasst werden
+            
+            # Placeholder für die Token-Liste - in einer echten Implementierung würde dies anders gehandhabt
+            known_tokens = [
+                ("0x1234567890123456789012345678901234567890", "ethereum"),
+                ("0x0987654321098765432109876543210987654321", "ethereum")
+                # Weitere Token-Adressen würden hier stehen
+            ]
+            
+            tokens = []
+            for address, chain in known_tokens[:max_tokens]:
+                try:
+                    price_data = await self.api_provider.get_token_price(address, chain)
+                    if price_data:
+                        tokens.append(price_data)
+                except Exception as e:
+                    logger.warning(f"Error fetching token data for {address}: {e}")
+                    continue
+        except Exception as e:
+            logger.error(f"Error fetching low-cap tokens: {e}")
+            tokens = []
         
         if not tokens:
             logger.error("No tokens found")
@@ -247,7 +296,7 @@ class TokenAnalyzer:
                 if i > 0:
                     await asyncio.sleep(self.config.request_delay_seconds)
                 
-                analysis = await self.analyze_token(token)
+                analysis = await self.analyze_token(token.address, token.chain if hasattr(token, 'chain') else 'ethereum')
                 if analysis:
                     results.append(analysis)
             except Exception as e:
@@ -267,7 +316,7 @@ class TokenAnalyzer:
             logger.info(f"Starte Analyse für Token {token_address} auf Chain {chain}")
             
             # Führe die grundlegende Token-Analyse durch
-            analysis_result = await self.token_analyzer.analyze_custom_token(token_address, chain)
+            analysis_result = await self.analyze_custom_token(token_address, chain)
             
             if not analysis_result:
                 logger.warning(f"Keine Analyseergebnisse für {token_address}")
@@ -347,112 +396,60 @@ class TokenAnalyzer:
         chain = chain.lower().strip()
         
         # Prüfe, ob der TokenAnalyzer initialisiert ist
-        if not self.token_analyzer:
-            error_msg = "TokenAnalyzer ist nicht initialisiert. Verwenden Sie den Analyzer innerhalb eines async-Kontext-Managers (async with)."
+        if not self.api_provider:
+            error_msg = "API-Provider ist nicht initialisiert. Verwenden Sie den Analyzer innerhalb eines async-Kontext-Managers (async with)."
             self.logger.error(error_msg)
             raise CustomAnalysisException(error_msg)
     
         try:
-            # Delegiere die Analyse an den TokenAnalyzer
-            result = await self.token_analyzer.analyze_custom_token(token_address, chain)
+            # Hole Token-Daten vom API-Provider
+            token_data = await self._fetch_custom_token_data(token_address, chain)
             
-            # Zusätzliche Prüfung des Ergebnisses
-            if not result or 'token_info' not in result:
-                raise CustomAnalysisException("Ungültiges Analyseergebnis erhalten")
+            if not token_data:
+                raise ValueError("Token data could not be retrieved")
             
-            # Prüfe, ob Halterdaten vorhanden sind
-            if 'wallet_analysis' in result and 'top_holders' in result['wallet_analysis']:
-                self.logger.info(f"Verarbeite {len(result['wallet_analysis']['top_holders'])} Top-Holder für {token_address}")
-                
-                # Führe erweiterte Analyse der Halter durch
-                if self.wallet_classifier:
-                    try:
-                        # Klassifiziere die Top-Holder
-                        classified_holders = []
-                        for holder_data in result['wallet_analysis']['top_holders']:
-                            wallet_type = await self.wallet_classifier.classify_wallet(
-                                holder_data['address'],
-                                holder_data['balance'],
-                                holder_data['percentage'],
-                                chain
-                            )
-                            
-                            classified_holders.append({
-                                'address': holder_data['address'],
-                                'balance': holder_data['balance'],
-                                'percentage': holder_data['percentage'],
-                                'type': wallet_type.value
-                            })
-                        
-                        # Aktualisiere die Halterdaten mit Klassifizierung
-                        result['wallet_analysis']['top_holders'] = classified_holders
-                        
-                        # Berechne Statistiken
-                        result['wallet_analysis']['whale_wallets'] = len([
-                            h for h in classified_holders if h['type'] == 'WHALE_WALLET'
-                        ])
-                        result['wallet_analysis']['dev_wallets'] = len([
-                            h for h in classified_holders if h['type'] == 'DEV_WALLET'
-                        ])
-                        result['wallet_analysis']['rugpull_suspects'] = len([
-                            h for h in classified_holders if h['type'] == 'RUGPULL_SUSPECT'
-                        ])
-                        
-                    except Exception as e:
-                        self.logger.warning(f"Fehler bei der Wallet-Klassifizierung: {e}")
-                
-                # Führe erweiterte Risikobewertung durch
-                if self.risk_assessor:
-                    try:
-                        risk_assessment = await self._perform_advanced_risk_assessment(
-                            result['token_info'],
-                            result['wallet_analysis']
-                        )
-                        
-                        result['risk_assessment'] = {
-                            'overall_risk': risk_assessment.overall_risk,
-                            'risk_factors': risk_assessment.risk_factors,
-                            'recommendation': risk_assessment.recommendation
+            # Hole Wallet-Daten
+            holders = await self._fetch_token_holders(token_address, chain)
+            
+            # Analysiere Wallets
+            wallet_analyses = await self._analyze_wallets(token_data, holders)
+            
+            # Berechne Token-Score
+            score_result = self._calculate_token_score(token_data, wallet_analyses)
+            
+            # Erstelle Analyse-Ergebnis
+            result = {
+                'token_info': {
+                    'address': token_data.address,
+                    'name': token_data.name,
+                    'symbol': token_data.symbol,
+                    'chain': token_data.chain,
+                    'market_cap': token_data.market_cap,
+                    'volume_24h': token_data.volume_24h,
+                    'holders_count': token_data.holders_count,
+                    'liquidity': token_data.liquidity,
+                    'contract_verified': token_data.contract_verified,
+                    'creation_date': token_data.creation_date.isoformat() if token_data.creation_date else None
+                },
+                'score': score_result['total_score'],
+                'metrics': score_result['metrics'],
+                'risk_flags': score_result['risk_flags'],
+                'wallet_analysis': {
+                    'total_wallets': len(wallet_analyses),
+                    'dev_wallets': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.DEV_WALLET]),
+                    'whale_wallets': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.WHALE_WALLET]),
+                    'rugpull_suspects': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.RUGPULL_SUSPECT]),
+                    'top_holders': [
+                        {
+                            'address': w.wallet_address,
+                            'balance': w.balance,
+                            'percentage': w.percentage_of_supply,
+                            'type': w.wallet_type.value
                         }
-                    except Exception as e:
-                        self.logger.warning(f"Fehler bei der Risikobewertung: {e}")
-            else:
-                self.logger.warning(f"Keine Halterdaten für {token_address} gefunden")
-            
-            # Führe erweiterte Scoring-Berechnung durch, falls verfügbar
-            if self.scoring_engine and 'wallet_analysis' in result:
-                try:
-                    # Extrahiere die notwendigen Daten für das Scoring
-                    token_data = result['token_info']
-                    wallet_analyses = []
-                    
-                    # Rekonstruiere WalletAnalysis-Objekte aus den serialisierten Daten
-                    for wallet_data in result.get('wallet_analysis', {}).get('top_holders', []):
-                        wallet_type = WalletTypeEnum.UNKNOWN
-                        for wt in WalletTypeEnum:
-                            if wt.value == wallet_data.get('type', 'unknown'):
-                                wallet_type = wt
-                                break
-                        
-                        wallet_analysis = WalletAnalysis(
-                            wallet_address=wallet_data.get('address', ''),
-                            wallet_type=wallet_type,
-                            balance=wallet_data.get('balance', 0),
-                            percentage_of_supply=wallet_data.get('percentage', 0),
-                            transaction_count=0,  # Nicht in den serialisierten Daten enthalten
-                            first_transaction=None,  # Nicht in den serialisierten Daten enthalten
-                            last_transaction=None,  # Nicht in den serialisierten Daten enthalten
-                            risk_score=0  # Wird neu berechnet
-                        )
-                        wallet_analyses.append(wallet_analysis)
-                    
-                    # Führe die erweiterte Scoring-Berechnung durch
-                    score_result = await self._calculate_advanced_score(token_data, wallet_analyses, chain)
-                    
-                    # Füge das Scoring-Ergebnis zum Ergebnis hinzu
-                    result['advanced_score'] = score_result
-                except Exception as e:
-                    self.logger.warning(f"Fehler bei der erweiterten Scoring-Berechnung: {str(e)}")
+                        for w in wallet_analyses[:10]  # Top 10 Holder
+                    ]
+                }
+            }
             
             # Speichere das Ergebnis im Cache
             if should_use_cache and self.cache:
@@ -523,8 +520,8 @@ class TokenAnalyzer:
                     logger.info(f"Returning cached token data for {token_address}")
                     return cached_result
             
-            # Hole Token-Daten vom API-Manager
-            price_data = await self.api_manager.get_token_price(token_address, chain)
+            # Hole Token-Daten vom API-Provider - Ersetzt APIManager durch BaseAPIProvider
+            price_data = await self.api_provider.get_token_price(token_address, chain)
             
             # PRÜFEN, OB price_data None IST
             if price_data is None:
@@ -1074,13 +1071,155 @@ class TokenAnalyzer:
             'risk_flags': risk_flags
         }
     
+    def _perform_extended_risk_assessment(self, analysis_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Führt eine erweiterte Risikobewertung durch"""
+        risk_factors = []
+        overall_risk = 50  # Neutraler Startwert
+        
+        # Basis-Score aus der Analyse
+        base_score = analysis_result.get('score', 50)
+        
+        # Umrechnung des Scores in Risiko (invers)
+        base_risk = 100 - base_score
+        overall_risk = (overall_risk + base_risk) / 2
+        
+        # Risikofaktoren aus den Metriken
+        metrics = analysis_result.get('metrics', {})
+        
+        # Whale-Konzentration
+        whale_percentage = metrics.get('whale_percentage', 0)
+        if whale_percentage > 50:
+            risk_factors.append({
+                'factor': 'high_whale_concentration',
+                'description': f'Hohe Whale-Konzentration ({whale_percentage:.1f}%)',
+                'impact': 30
+            })
+            overall_risk = min(100, overall_risk + 30)
+        elif whale_percentage > 20:
+            risk_factors.append({
+                'factor': 'moderate_whale_concentration',
+                'description': f'Moderate Whale-Konzentration ({whale_percentage:.1f}%)',
+                'impact': 15
+            })
+            overall_risk = min(100, overall_risk + 15)
+        
+        # Dev-Konzentration
+        dev_percentage = metrics.get('dev_percentage', 0)
+        if dev_percentage > 20:
+            risk_factors.append({
+                'factor': 'high_dev_concentration',
+                'description': f'Hohe Entwickler-Konzentration ({dev_percentage:.1f}%)',
+                'impact': 25
+            })
+            overall_risk = min(100, overall_risk + 25)
+        elif dev_percentage > 10:
+            risk_factors.append({
+                'factor': 'moderate_dev_concentration',
+                'description': f'Moderate Entwickler-Konzentration ({dev_percentage:.1f}%)',
+                'impact': 12
+            })
+            overall_risk = min(100, overall_risk + 12)
+        
+        # Rugpull-Verdacht
+        rugpull_suspects = metrics.get('rugpull_suspects', 0)
+        if rugpull_suspects > 0:
+            risk_factors.append({
+                'factor': 'rugpull_suspects',
+                'description': f'{rugpull_suspects} verdächtige Wallets entdeckt',
+                'impact': rugpull_suspects * 20
+            })
+            overall_risk = min(100, overall_risk + rugpull_suspects * 20)
+        
+        # Gini-Koeffizient
+        gini = metrics.get('gini_coefficient', 0)
+        if gini > 0.8:
+            risk_factors.append({
+                'factor': 'very_uneven_distribution',
+                'description': f'Sehr ungleiche Token-Verteilung (Gini: {gini:.2f})',
+                'impact': 20
+            })
+            overall_risk = min(100, overall_risk + 20)
+        elif gini > 0.6:
+            risk_factors.append({
+                'factor': 'uneven_distribution',
+                'description': f'Ungleiche Token-Verteilung (Gini: {gini:.2f})',
+                'impact': 10
+            })
+            overall_risk = min(100, overall_risk + 10)
+        
+        # Risikoflags aus der Basisanalyse
+        risk_flags = analysis_result.get('risk_flags', [])
+        
+        # Marktkapitalisierung
+        if 'very_low_market_cap' in risk_flags:
+            risk_factors.append({
+                'factor': 'very_low_market_cap',
+                'description': 'Sehr geringe Marktkapitalisierung',
+                'impact': 30
+            })
+            overall_risk = min(100, overall_risk + 30)
+        elif 'low_market_cap' in risk_flags:
+            risk_factors.append({
+                'factor': 'low_market_cap',
+                'description': 'Geringe Marktkapitalisierung',
+                'impact': 20
+            })
+            overall_risk = min(100, overall_risk + 20)
+        
+        # Liquidität
+        if 'low_liquidity' in risk_flags:
+            risk_factors.append({
+                'factor': 'low_liquidity',
+                'description': 'Geringe Liquidität',
+                'impact': 25
+            })
+            overall_risk = min(100, overall_risk + 25)
+        
+        # Verifizierung
+        if 'unverified_contract' in risk_flags:
+            risk_factors.append({
+                'factor': 'unverified_contract',
+                'description': 'Nicht verifizierter Smart Contract',
+                'impact': 15
+            })
+            overall_risk = min(100, overall_risk + 15)
+        
+        # Bestimme die Risikostufe
+        if overall_risk >= 80:
+            risk_level = 'critical'
+        elif overall_risk >= 60:
+            risk_level = 'high'
+        elif overall_risk >= 40:
+            risk_level = 'medium'
+        elif overall_risk >= 20:
+            risk_level = 'low'
+        else:
+            risk_level = 'minimal'
+        
+        # Generiere eine Empfehlung
+        if overall_risk >= 70:
+            recommendation = 'Nicht empfohlen'
+        elif overall_risk >= 50:
+            recommendation = 'Hohe Vorsicht'
+        elif overall_risk >= 30:
+            recommendation = 'Mit Vorsicht'
+        else:
+            recommendation = 'Potenziell sicher'
+        
+        return {
+            'overall_risk': round(overall_risk, 2),
+            'risk_level': risk_level,
+            'recommendation': recommendation,
+            'risk_factors': risk_factors
+        }
+    
     async def close(self):
         """Schließt alle offenen Ressourcen wie Provider-Sessions."""
         close_tasks = []
         
-        # Schließe API-Manager
-        if self.api_manager:
-            close_tasks.append(self._safe_close_api_manager())
+        # Schließe API-Provider
+        if self.api_provider:
+            close_tasks.append(self._safe_close_api_provider())
         
         # Schließe Blockchain-Provider
         providers = [
