@@ -84,6 +84,9 @@ class EtherscanProvider(BaseAPIProvider):
                     logger.warning(f"HTTP error {response.status} from {chain}scan")
                     return await self._get_holders_from_transfers(token_address, base_url, limit)
 
+        except asyncio.CancelledError:
+            logger.warning("Token holders request was cancelled")
+            return []
         except Exception as e:
             logger.error(f"Error retrieving token holders from {chain}scan: {e}")
             return []
@@ -146,6 +149,9 @@ class EtherscanProvider(BaseAPIProvider):
                         logger.warning(f"No transfer data available: {data.get('message', 'Unknown')}")
                 else:
                     logger.warning(f"HTTP error {response.status} from {base_url}")
+        except asyncio.CancelledError:
+            logger.warning("Transfer analysis request was cancelled")
+            return []
         except Exception as e:
             logger.error(f"Error analyzing transfers for holders: {e}")
         return []
@@ -170,6 +176,9 @@ class EtherscanProvider(BaseAPIProvider):
                     data = await response.json()
                     if data.get('status') == '1' and data.get('result'):
                         return data['result'][0].get('txhash')
+        except asyncio.CancelledError:
+            logger.warning("Contract creation tx request was cancelled")
+            return None
         except Exception as e:
             logger.error(f"Error getting contract creation tx: {e}")
         return None
@@ -195,6 +204,9 @@ class EtherscanProvider(BaseAPIProvider):
                     if data.get('status') == '1' and data.get('result'):
                         source_code = data['result'][0].get('SourceCode', '')
                         return len(source_code.strip()) > 0
+        except asyncio.CancelledError:
+            logger.warning("Contract verification request was cancelled")
+            return False
         except Exception as e:
             logger.error(f"Error checking contract verification: {e}")
         return False
@@ -229,6 +241,14 @@ class EtherscanProvider(BaseAPIProvider):
                                 'last_tx_time': last_tx,
                                 'recent_large_sells': 0
                             }
+        except asyncio.CancelledError:
+            logger.warning("Wallet transactions request was cancelled")
+            return {
+                'tx_count': 0,
+                'first_tx_time': None,
+                'last_tx_time': None,
+                'recent_large_sells': 0
+            }
         except Exception as e:
             logger.error(f"Error getting wallet transactions: {e}")
         return {
@@ -243,7 +263,9 @@ class EtherscanProvider(BaseAPIProvider):
         contract_address: str, 
         hours: int = 24, 
         start_block: Optional[int] = None,
-        end_block: Optional[int] = None
+        end_block: Optional[int] = None,
+        sort: str = 'desc',
+        **kwargs  # Akzeptiere beliebige zusätzliche Parameter
     ) -> List[Dict]:
         """
         Holt die Transaktionen eines Smart-Contracts der letzten Stunden
@@ -253,7 +275,9 @@ class EtherscanProvider(BaseAPIProvider):
             contract_address: Contract-Adresse
             hours: Zeitraum in Stunden (wenn start_block nicht angegeben)
             start_block: Optionale Start-Blocknummer
-            end_block: Optionale End-Blocknummer (wird ignoriert, nur für Kompatibilität)
+            end_block: Optionale End-Blocknummer (wird ignoriert)
+            sort: Sortierreihenfolge (asc/desc)
+            **kwargs: Zusätzliche Parameter (werden ignoriert)
             
         Returns:
             Liste der Transaktionen
@@ -278,7 +302,7 @@ class EtherscanProvider(BaseAPIProvider):
                 'module': 'account',
                 'action': 'tokentx',
                 'contractaddress': contract_address,
-                'sort': 'desc',
+                'sort': sort,  # Verwende den übergebenen sort-Parameter
                 'apikey': self.api_key
             }
             
@@ -312,6 +336,9 @@ class EtherscanProvider(BaseAPIProvider):
                 logger.warning(f"Keine Transaktionsdaten von Etherscan API erhalten: {error_msg}")
                 return []
                 
+        except asyncio.CancelledError:
+            logger.warning("Contract transactions request was cancelled")
+            return []
         except Exception as e:
             logger.error(f"Fehler beim Abrufen der Contract-Transaktionen: {e}")
             return []
@@ -345,6 +372,15 @@ class EtherscanProvider(BaseAPIProvider):
             logger.warning(f"Block {block_number} nicht gefunden oder kein Zeitstempel verfügbar")
             return 0
             
+        except asyncio.CancelledError:
+            logger.warning(f"Block timestamp request for block {block_number} was cancelled")
+            return 0
         except Exception as e:
             logger.error(f"Fehler beim Abrufen des Block-Zeitstempels für Block {block_number}: {e}")
             return 0
+
+    async def close(self):
+        """Schließt die Session und gibt Ressourcen frei"""
+        if self.session:
+            await self.session.close()
+            self.session = None
