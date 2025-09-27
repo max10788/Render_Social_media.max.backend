@@ -86,8 +86,12 @@ class TokenAnalyzer:
     def __init__(self, config: TokenAnalysisConfig = None):
         self.config = config or TokenAnalysisConfig()
         
-        # Logger initialisieren - DIESER TEIL FEHLT
+        # Logger initialisieren
         self.logger = get_logger(__name__)
+        
+        # Konfigurationswerte als Instanzattribute übernehmen
+        self.enable_cache = self.config.enable_cache
+        self.cache_ttl = self.config.cache_ttl_seconds
         
         # Provider-Initialisierung - Ersetzt APIManager durch BaseAPIProvider
         self.api_provider = None  # Wird in __aenter__ initialisiert
