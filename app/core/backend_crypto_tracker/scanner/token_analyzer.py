@@ -745,52 +745,88 @@ class TokenAnalyzer:
                 logger.error(f"No provider available for blockchain: {chain}")
                 return []
             
-            # Schritt 1: Hole die Transaktionen des Smart-Contracts der letzten Stunden
-            logger.info(f"Rufe Transaktionen für {token_address} auf {chain} ab")
-            transactions = await provider.get_contract_transactions(token_address, hours=24)
+            # KORREKTUR: Verwende die get_token_holders-Methode des Providers
+            logger.info(f"Rufe Token-Holder für {token_address} auf {chain} ab")
             
-            if not transactions:
-                logger.warning(f"Keine Transaktionen für {token_address} auf {chain} gefunden")
-                return []
-            
-            # Schritt 2: Extrahiere die einzigartigen Wallet-Adressen aus den Transaktionen
-            wallet_addresses = set()
-            for tx in transactions:
-                # Extrahiere Absender und Empfänger
-                if 'from' in tx and tx['from']:
-                    wallet_addresses.add(tx['from'])
-                if 'to' in tx and tx['to']:
-                    wallet_addresses.add(tx['to'])
-                # Bei Token-Transaktionen könnten auch andere Felder relevant sein
-            
-            logger.info(f"Gefundene Wallet-Adressen: {len(wallet_addresses)}")
-            
-            # Schritt 3: Für jede Wallet-Adresse, hole den aktuellen Token-Bestand
             holders = []
-            total_supply = 0
-            
-            for address in wallet_addresses:
-                try:
-                    # Hole den Token-Bestand für diese Adresse
-                    balance = await provider.get_token_balance(token_address, address)
-                    if balance > 0:
+            try:
+                # Verwende die get_token_holders-Methode des Providers
+                raw_holders = await provider.get_token_holders(token_address, chain)
+                
+                # Konvertiere die Rohdaten in das erwartete Format
+                for holder in raw_holders:
+                    try:
+                        # Je nach Provider-Format anpassen
+                        if 'TokenHolderAddress' in holder and 'TokenHolderQuantity' in holder:
+                            # Etherscan-Format
+                            address = holder['TokenHolderAddress']
+                            balance = float(holder['TokenHolderQuantity'])
+                        elif 'address' in holder and 'balance' in holder:
+                            # Anderes Format
+                            address = holder['address']
+                            balance = float(holder['balance'])
+                        else:
+                            # Unbekanntes Format, überspringen
+                            continue
+                        
                         holders.append({
                             'address': address,
                             'balance': balance,
                             'percentage': 0  # Wird später berechnet
                         })
-                        total_supply += balance
-                except Exception as e:
-                    logger.warning(f"Fehler beim Abrufen des Token-Bestands für {address}: {e}")
-                    continue
+                    except (ValueError, KeyError) as e:
+                        logger.warning(f"Ungültiges Holder-Format: {holder}, Fehler: {e}")
+                        continue
+                
+            except Exception as e:
+                logger.error(f"Fehler beim Abrufen der Token-Holder: {e}")
+                
+                # Fallback: Versuche, die Transaktionen zu analysieren, wenn get_token_holders fehlschlägt
+                try:
+                    if hasattr(provider, 'get_contract_transactions'):
+                        transactions = await provider.get_contract_transactions(token_address, hours=24)
+                        
+                        # Extrahiere Wallet-Adressen aus den Transaktionen
+                        wallet_addresses = set()
+                        for tx in transactions:
+                            if 'from' in tx and tx['from']:
+                                wallet_addresses.add(tx['from'])
+                            if 'to' in tx and tx['to']:
+                                wallet_addresses.add(tx['to'])
+                        
+                        # Für jede Wallet-Adresse, hole den Token-Bestand
+                        for address in wallet_addresses:
+                            try:
+                                balance = await provider.get_token_balance(token_address, address)
+                                if balance > 0:
+                                    holders.append({
+                                        'address': address,
+                                        'balance': balance,
+                                        'percentage': 0  # Wird später berechnet
+                                    })
+                            except Exception as balance_error:
+                                logger.warning(f"Fehler beim Abrufen des Token-Bestands für {address}: {balance_error}")
+                                continue
+                except Exception as fallback_error:
+                    logger.error(f"Fallback-Methode fehlgeschlagen: {fallback_error}")
             
-            # Schritt 4: Berechne die Prozentsätze und sortiere nach Balance
+            # Wenn keine Holder gefunden wurden, gib eine leere Liste zurück
+            if not holders:
+                logger.warning(f"Keine Token-Holder für {token_address} auf {chain} gefunden")
+                return []
+            
+            # Berechne die Gesamtmenge der Token
+            total_supply = sum(float(h.get('balance', 0)) for h in holders)
+            
+            # Berechne die Prozentsätze
             for holder in holders:
                 if total_supply > 0:
-                    holder['percentage'] = (holder['balance'] / total_supply) * 100
+                    holder['percentage'] = (float(holder.get('balance', 0)) / total_supply) * 100
+                else:
+                    holder['percentage'] = 0
             
             # Sortiere die Holder nach Balance (absteigend)
-            holders.sort(key=lambda x: x['balance'], reverse=True)
+            holders.sort(key=lambda x: float(x.get('balance', 0)), reverse=True)
             
             # Begrenze die Anzahl der Holder
             holders = holders[:self.config.max_holders_to_analyze]
