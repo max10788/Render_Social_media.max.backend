@@ -254,3 +254,44 @@ class EtherscanProvider(BaseAPIProvider):
             'last_tx_time': None,
             'recent_large_sells': 0
         }
+
+async def get_contract_transactions(self, contract_address: str, hours: int = 24) -> List[Dict]:
+    """Holt die Transaktionen eines Smart-Contracts der letzten Stunden"""
+    try:
+        # Berechne den Zeitstempel vor X Stunden
+        since_timestamp = int((datetime.now() - timedelta(hours=hours)).timestamp())
+        
+        # Hole Token-Transfers direkt über die Etherscan-API
+        params = {
+            'module': 'account',
+            'action': 'tokentx',
+            'contractaddress': contract_address,
+            'sort': 'desc',
+            'apikey': self.api_key
+        }
+        
+        data = await self._make_request(self.base_url, params)
+        
+        if data and data.get('status') == '1' and data.get('result'):
+            # Filtere Transaktionen nach Zeit
+            filtered_transactions = []
+            for tx in data['result']:
+                if tx.get('timeStamp') and int(tx['timeStamp']) >= since_timestamp:
+                    filtered_transactions.append({
+                        'from': tx.get('from'),
+                        'to': tx.get('to'),
+                        'hash': tx.get('hash'),
+                        'timeStamp': tx.get('timeStamp'),
+                        'contract_address': contract_address,
+                        'value': int(tx.get('value', 0)),
+                        'tokenSymbol': tx.get('tokenSymbol'),
+                        'tokenDecimal': int(tx.get('tokenDecimal', 18))
+                    })
+            
+            return filtered_transactions
+        else:
+            # Fallback: Direkte Abfrage über RPC (langsamer)
+            return await self._get_contract_transactions_via_rpc(contract_address, hours)
+    except Exception as e:
+        logger.error(f"Fehler beim Abrufen der Contract-Transaktionen: {e}")
+        return []
