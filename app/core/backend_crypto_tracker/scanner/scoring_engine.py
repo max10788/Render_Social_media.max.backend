@@ -6,6 +6,7 @@ import numpy as np
 from app.core.backend_crypto_tracker.scanner.risk_assessor import AdvancedRiskAssessor, RiskAssessment
 from app.core.backend_crypto_tracker.scanner.wallet_classifier import WalletTypeEnum
 from app.core.backend_crypto_tracker.utils.logger import get_logger
+from app.core.backend_crypto_tracker.utils.json_helpers import sanitize_float
 
 logger = get_logger(__name__)
 
