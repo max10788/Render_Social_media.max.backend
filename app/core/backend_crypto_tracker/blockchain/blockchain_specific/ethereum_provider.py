@@ -26,14 +26,20 @@ class EthereumProvider:
         self.session = None
         self.coingecko_provider = CoinGeckoProvider()
         
-        # Zuverlässige RPC-URLs mit Priorität
+        # Zuverlässige Ethereum RPC-URLs (nur echte Ethereum-Endpunkte)
         self.rpc_urls = [
-            rpc_url if rpc_url else None,
-            os.getenv('ETHEREUM_RPC_URL'),
-            "https://eth.public-rpc.com",  # Öffentliches RPC
-            "https://rpc.ankr.com/eth",     # Ankr RPC
-            "https://cloudflare-eth.com",   # Cloudflare ETH
+            # Zuerst die übergebene URL oder Umgebungsvariable
+            rpc_url if rpc_url else os.getenv('ETHEREUM_RPC_URL'),
+            # Öffentliche Ethereum RPCs
+            "https://ethereum.publicnode.com",
+            "https://eth.llamarpc.com",
+            "https://eth.meowrpc.com",
+            "https://1rpc.io/eth",
+            "https://rpc.ankr.com/eth",
+            "https://cloudflare-eth.com",
+            # Infura mit API-Key
             "https://mainnet.infura.io/v3/1JTTMXUDJ2D2DKAW9BU6PED8NZJD7G4G9V",
+            # GetBlock
             "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
         ]
         
@@ -51,9 +57,17 @@ class EthereumProvider:
                 
                 if self.w3.is_connected():
                     latest_block = self.w3.eth.block_number
-                    logger.info(f"Successfully connected to Ethereum node. Latest block: {latest_block}")
-                    self.rpc_url = rpc_url  # Speichere die funktionierende URL
-                    break
+                    # Zusätzliche Prüfung: Sicherstellen, dass wir mit dem richtigen Netzwerk verbunden sind
+                    chain_id = self.w3.eth.chain_id
+                    logger.info(f"Connected to node. Chain ID: {chain_id}, Latest block: {latest_block}")
+                    
+                    # Ethereum Mainnet hat Chain ID 1
+                    if chain_id == 1:
+                        logger.info(f"Successfully connected to Ethereum mainnet. Latest block: {latest_block}")
+                        self.rpc_url = rpc_url  # Speichere die funktionierende URL
+                        break
+                    else:
+                        logger.warning(f"Connected to wrong network (Chain ID: {chain_id}), expected Ethereum (1)")
                 else:
                     logger.warning(f"Connection failed to Ethereum node: {rpc_url}")
             except Exception as e:
@@ -96,6 +110,11 @@ class EthereumProvider:
     async def get_address_balance(self, address: str) -> Optional[Dict[str, Any]]:
         """Holt den Kontostand einer Ethereum-Adresse"""
         try:
+            # Prüfe, ob wir eine Web3-Verbindung haben
+            if not self.w3 or not self.w3.is_connected():
+                logger.error("No Web3 connection available for balance lookup")
+                return None
+                
             params = {
                 'module': 'account',
                 'action': 'balance',
