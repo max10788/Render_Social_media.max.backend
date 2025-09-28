@@ -1057,48 +1057,29 @@ class TokenAnalyzer:
         
         return min(risk_score, 100.0)
     
-    def _calculate_gini_coefficient(self, balances: List[float]) -> float:
-        """Berechnet den Gini-Koeffizienten für Token-Verteilung"""
-        if not balances or len(balances) < 2:
-            return 0.0
-        
-        sorted_balances = sorted(balances)
-        n = len(sorted_balances)
-        cumsum = sum(sorted_balances)
-        
-        # Vermeide Division durch Null
-        if cumsum <= 0:
-            return 0.0
-        
-        # Gini-Koeffizient berechnen
-        gini = (2.0 * sum((i + 1) * balance for i, balance in enumerate(sorted_balances))) / (n * cumsum) - (n + 1) / n
-        
-        # Stelle sicher, dass der Gini-Koeffizient im gültigen Bereich [0, 1] liegt
-        gini = max(0.0, min(1.0, gini))
-        
-        return gini
-    
     def _calculate_token_score(self, token_data: Token, wallet_analyses: List[WalletAnalysis]) -> Dict[str, Any]:
         """Berechnet einen Risiko-Score für den Token"""
         score = 100.0  # Start mit perfektem Score
         risk_flags = []
         
         # Marktkapitalisierung Score (niedrigere MC = höheres Risiko)
-        if token_data.market_cap < 100000:  # < $100k
+        market_cap = sanitize_float(token_data.market_cap)
+        if market_cap < 100000:  # < $100k
             score -= 30
             risk_flags.append("very_low_market_cap")
-        elif token_data.market_cap < 500000:  # < $500k
+        elif market_cap < 500000:  # < $500k
             score -= 20
             risk_flags.append("low_market_cap")
-        elif token_data.market_cap < 1000000:  # < $1M
+        elif market_cap < 1000000:  # < $1M
             score -= 10
             risk_flags.append("moderate_market_cap")
         
         # Liquiditäts-Score
-        if token_data.liquidity < self.config.min_liquidity_threshold:  # < $50k Liquidität
+        liquidity = sanitize_float(token_data.liquidity)
+        if liquidity < self.config.min_liquidity_threshold:  # < $50k Liquidität
             score -= 25
             risk_flags.append("low_liquidity")
-        elif token_data.liquidity < 100000:  # < $100k
+        elif liquidity < 100000:  # < $100k
             score -= 15
             risk_flags.append("moderate_liquidity")
         
@@ -1107,7 +1088,7 @@ class TokenAnalyzer:
             score -= 15
             risk_flags.append("unverified_contract")
         
-        # Wallet-Verteilungsanalyse - nur wenn Wallet-Analysen vorhanden sind
+        # Wallet-Verteilungsanalyse
         if wallet_analyses:
             total_supply_analyzed = sum(w.percentage_of_supply for w in wallet_analyses)
             whale_percentage = sum(w.percentage_of_supply for w in wallet_analyses if w.wallet_type == WalletTypeEnum.WHALE_WALLET)
@@ -1139,52 +1120,66 @@ class TokenAnalyzer:
                 risk_flags.append("rugpull_suspects")
             
             # Gini-Koeffizient
-            balances = [w.balance for w in wallet_analyses if w.balance > 0]  # Nur positive Salden berücksichtigen
-            gini = 0.0  # Standardwert
+            balances = [w.balance for w in wallet_analyses if w.balance > 0]
+            gini = 0.0
             
-            if len(balances) > 1:  # Nur berechnen, wenn es mehr als einen Wallet gibt
+            if len(balances) > 1:
                 try:
                     gini = self._calculate_gini_coefficient(balances)
+                    gini = sanitize_float(gini)
                 except Exception as e:
                     logger.warning(f"Error calculating Gini coefficient: {e}")
                     gini = 0.0
             
-            if gini > 0.8:  # Sehr ungleiche Verteilung
+            if gini > 0.8:
                 score -= 20
                 risk_flags.append("very_uneven_distribution")
             elif gini > 0.6:
                 score -= 10
                 risk_flags.append("uneven_distribution")
         else:
-            # Wenn keine Wallet-Analysen vorhanden sind, füge ein Risikoflag hinzu
-            score -= 25  # Deutlicher Abzug für fehlende Wallet-Daten
+            score -= 25
             risk_flags.append("no_wallet_data")
-            
-            # Setze Standardwerte für die Metriken
             whale_percentage = 0.0
             dev_percentage = 0.0
             rugpull_suspects = 0
             gini = 0.0
         
-        # Sicherstellen, dass der Score im gültigen Bereich [0, 100] liegt
+        # Sicherstellen, dass der Score im gültigen Bereich liegt
         score = max(0.0, min(100.0, score))
         
-        # Metriken sammeln und sicherstellen, dass alle Werte gültig sind
         metrics = {
             'total_holders_analyzed': len(wallet_analyses),
             'whale_wallets': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.WHALE_WALLET]),
             'dev_wallets': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.DEV_WALLET]),
             'rugpull_suspects': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.RUGPULL_SUSPECT]),
-            'gini_coefficient': float(gini),
-            'whale_percentage': float(whale_percentage),
-            'dev_percentage': float(dev_percentage)
+            'gini_coefficient': gini,
+            'whale_percentage': whale_percentage,
+            'dev_percentage': dev_percentage
         }
         
         return {
-            'total_score': float(score),
+            'total_score': sanitize_float(score),
             'metrics': metrics,
             'risk_flags': risk_flags
         }
+    
+    def _calculate_gini_coefficient(self, balances: List[float]) -> float:
+        """Berechnet den Gini-Koeffizienten für Token-Verteilung"""
+        if not balances or len(balances) < 2:
+            return 0.0
+        
+        sorted_balances = sorted(balances)
+        n = len(sorted_balances)
+        cumsum = sum(sorted_balances)
+        
+        if cumsum <= 0:
+            return 0.0
+        
+        gini = (2.0 * sum((i + 1) * balance for i, balance in enumerate(sorted_balances))) / (n * cumsum) - (n + 1) / n
+        gini = max(0.0, min(1.0, gini))
+        
+        return sanitize_float(gini)
     
     def _perform_extended_risk_assessment(self, analysis_result: Dict[str, Any]) -> Dict[str, Any]:
         """Führt eine erweiterte Risikobewertung durch"""
