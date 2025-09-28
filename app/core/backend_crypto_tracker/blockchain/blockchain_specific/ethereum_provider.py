@@ -42,14 +42,39 @@ class EthereumProvider:
                 logger.info(f"Successfully connected to Ethereum node. Latest block: {latest_block}")
             else:
                 logger.error("Failed to connect to Ethereum node")
+                # Versuche alternative RPC-URLs
+                await self._try_alternative_connections()
         except Exception as e:
             logger.error(f"Error connecting to Ethereum node: {e}")
+            # Versuche alternative RPC-URLs
+            await self._try_alternative_connections()
         
         if self.etherscan_provider:
             await self.etherscan_provider.__aenter__()
         if self.coingecko_provider:
             await self.coingecko_provider.__aenter__()
         return self
+    
+    async def _try_alternative_connections(self):
+        """Versucht alternative RPC-Verbindungen, wenn die Standardverbindung fehlschlägt"""
+        alternative_urls = [
+            "https://mainnet.infura.io/v3/1JTTMXUDJ2D2DKAW9BU6PED8NZJD7G4G9V",
+            "https://eth-mainnet.alchemyapi.io/v2/your-api-key",
+            "https://api.mycryptoapi.com/eth"
+        ]
+        
+        for url in alternative_urls:
+            try:
+                self.w3 = Web3(Web3.HTTPProvider(url))
+                if self.w3.is_connected():
+                    latest_block = self.w3.eth.block_number
+                    logger.info(f"Successfully connected to Ethereum node using alternative URL: {url}. Latest block: {latest_block}")
+                    self.rpc_url = url
+                    return
+            except Exception as e:
+                logger.warning(f"Failed to connect to alternative Ethereum node {url}: {e}")
+        
+        logger.error("All connection attempts failed")
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.etherscan_provider:
@@ -309,7 +334,7 @@ class EthereumProvider:
         return None
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
-        """Holt Token-Preisdaten - NURTY für interne Berechnungen, nicht für Top-Coins"""
+        """Holt Token-Preisdaten - NUR für interne Berechnungen, nicht für Top-Coins"""
         try:
             # Diese Methode sollte nur für interne Berechnungen verwendet werden
             # und nicht für die Abfrage von allgemeinen Börsendaten
@@ -420,16 +445,14 @@ class EthereumProvider:
         try:
             logger.info(f"Starte Analyse der Top-Holder für Token {token_address}")
             
-            # Cache-Schlüssel für diese Anfrage
-            cache_key = f"token_holders_{token_address}_{chain}"
-            
             # Schritt 1: Hole die Transaktionen des Smart-Contracts der letzten 24 Stunden
             logger.info(f"Rufe Transaktionen für {token_address} auf {chain} ab")
             transactions = await self.get_contract_transactions(token_address, hours=24)
             
             if not transactions:
                 logger.warning(f"Keine Transaktionen für {token_address} gefunden")
-                return []
+                # Versuche, Holder über Etherscan direkt zu bekommen
+                return await self._get_holders_from_etherscan(token_address)
             
             # Schritt 2: Extrahiere die einzigartigen Wallet-Adressen aus den Transaktionen
             wallet_addresses = set()
@@ -480,7 +503,8 @@ class EthereumProvider:
             
         except Exception as e:
             logger.error(f"Fehler beim Abrufen der Token-Holder: {e}")
-            return []
+            # Fallback: Versuche, Holder über Etherscan direkt zu bekommen
+            return await self._get_holders_from_etherscan(token_address)
     
     async def get_active_wallets(self, token_address: str, hours: int = 6) -> List[Dict[str, Any]]:
         """Holt die Wallets, die in den letzten X Stunden aktiv waren"""
