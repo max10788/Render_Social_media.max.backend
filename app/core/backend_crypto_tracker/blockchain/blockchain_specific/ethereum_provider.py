@@ -482,6 +482,61 @@ class EthereumProvider:
             logger.error(f"Fehler beim Abrufen der Token-Holder: {e}")
             return []
     
+    async def get_active_wallets(self, token_address: str, hours: int = 6) -> List[Dict[str, Any]]:
+        """Holt die Wallets, die in den letzten X Stunden aktiv waren"""
+        try:
+            logger.info(f"Starte Analyse der aktiven Wallets für Token {token_address} der letzten {hours} Stunden")
+            
+            # Hole die Transaktionen des Smart-Contracts der letzten X Stunden
+            transactions = await self.get_contract_transactions(token_address, hours=hours)
+            
+            if not transactions:
+                logger.warning(f"Keine Transaktionen für {token_address} in den letzten {hours} Stunden gefunden")
+                return []
+            
+            # Extrahiere die einzigartigen Wallet-Adressen aus den Transaktionen
+            wallet_addresses = set()
+            for tx in transactions:
+                # Extrahiere Absender und Empfänger
+                if 'from' in tx and tx['from']:
+                    wallet_addresses.add(tx['from'])
+                if 'to' in tx and tx['to']:
+                    wallet_addresses.add(tx['to'])
+            
+            # Für jede Wallet-Adresse, hole zusätzliche Informationen
+            active_wallets = []
+            for address in wallet_addresses:
+                try:
+                    # Hole den Token-Bestand für diese Adresse
+                    balance = await self.get_token_balance(token_address, address)
+                    
+                    # Finde die letzte Transaktion dieser Wallet
+                    last_tx = None
+                    for tx in transactions:
+                        if tx.get('from') == address or tx.get('to') == address:
+                            last_tx = tx
+                            break
+                    
+                    active_wallets.append({
+                        'address': address,
+                        'balance': balance,
+                        'last_transaction': last_tx,
+                        'last_transaction_timestamp': datetime.fromtimestamp(int(last_tx.get('timeStamp'))) if last_tx else None
+                    })
+                except Exception as e:
+                    logger.warning(f"Fehler beim Abrufen der Daten für Wallet {address}: {e}")
+                    continue
+            
+            # Sortiere die Wallets nach dem Zeitpunkt der letzten Transaktion (neueste zuerst)
+            active_wallets.sort(key=lambda x: x.get('last_transaction_timestamp', datetime.min), reverse=True)
+            
+            logger.info(f"Aktive Wallets für {token_address} in den letzten {hours} Stunden: {len(active_wallets)} Wallets gefunden")
+            return active_wallets
+            
+        except Exception as e:
+            logger.error(f"Fehler beim Abrufen der aktiven Wallets: {e}")
+            return []
+    
     async def _get_holders_from_etherscan(self, token_address: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
         Fallback-Methode: Ermittelt Token-Halter durch Analyse von Token-Transfers über Etherscan.
