@@ -5,6 +5,7 @@ from typing import Optional
 from datetime import datetime
 import re
 import logging
+import json
 
 # Importieren Sie die Hilfsfunktionen für JSON-Bereinigung
 from app.core.backend_crypto_tracker.utils.json_helpers import sanitize_value, SafeJSONEncoder
@@ -81,21 +82,27 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
         response_dict = response_data.dict()
         sanitized_response_dict = sanitize_value(response_dict)
         
-        # Verwende JSONResponse mit SafeJSONEncoder
+        # Verwende json.dumps mit SafeJSONEncoder und erstelle dann JSONResponse
+        json_content = json.dumps(sanitized_response_dict, cls=SafeJSONEncoder)
+        
         return JSONResponse(
-            content=sanitized_response_dict,
-            media_type="application/json",
-            json_encoder=SafeJSONEncoder
+            content=json_content,
+            media_type="application/json"
         )
         
     except ValueError as e:
         logger.error(f"Validation error: {str(e)}")
         # Bereinige die Fehlermeldung
-        sanitized_error = sanitize_value({"error": str(e)})
+        error_dict = {"error": str(e)}
+        sanitized_error = sanitize_value(error_dict)
+        
+        # Verwende json.dumps mit SafeJSONEncoder
+        json_content = json.dumps(sanitized_error, cls=SafeJSONEncoder)
+        
         return JSONResponse(
-            content=sanitized_error,
+            content=json_content,
             status_code=400,
-            json_encoder=SafeJSONEncoder
+            media_type="application/json"
         )
     except Exception as e:
         # Detaillierte Fehlermeldung für Debugging
@@ -124,8 +131,11 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
         error_dict = error_response.dict()
         sanitized_error_dict = sanitize_value(error_dict)
         
+        # Verwende json.dumps mit SafeJSONEncoder
+        json_content = json.dumps(sanitized_error_dict, cls=SafeJSONEncoder)
+        
         return JSONResponse(
-            content=sanitized_error_dict,
+            content=json_content,
             status_code=500,
-            json_encoder=SafeJSONEncoder
+            media_type="application/json"
         )
