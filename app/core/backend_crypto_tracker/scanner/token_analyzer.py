@@ -1187,78 +1187,78 @@ class TokenAnalyzer:
     def _perform_extended_risk_assessment(self, analysis_result: Dict[str, Any]) -> Dict[str, Any]:
         """Führt eine erweiterte Risikobewertung durch"""
         risk_factors = []
-        overall_risk = 50  # Neutraler Startwert
+        overall_risk = 50.0  # Neutraler Startwert als Float
         
         # Basis-Score aus der Analyse
-        base_score = analysis_result.get('score', 50)
+        base_score = analysis_result.get('score', 50.0)
         
         # Umrechnung des Scores in Risiko (invers)
-        base_risk = 100 - base_score
-        overall_risk = (overall_risk + base_risk) / 2
+        base_risk = 100.0 - float(base_score)
+        overall_risk = (overall_risk + base_risk) / 2.0
         
         # Risikofaktoren aus den Metriken
         metrics = analysis_result.get('metrics', {})
         
         # Whale-Konzentration
-        whale_percentage = metrics.get('whale_percentage', 0)
+        whale_percentage = float(metrics.get('whale_percentage', 0.0))
         if whale_percentage > 50:
             risk_factors.append({
                 'factor': 'high_whale_concentration',
                 'description': f'Hohe Whale-Konzentration ({whale_percentage:.1f}%)',
                 'impact': 30
             })
-            overall_risk = min(100, overall_risk + 30)
+            overall_risk = min(100.0, overall_risk + 30)
         elif whale_percentage > 20:
             risk_factors.append({
                 'factor': 'moderate_whale_concentration',
                 'description': f'Moderate Whale-Konzentration ({whale_percentage:.1f}%)',
                 'impact': 15
             })
-            overall_risk = min(100, overall_risk + 15)
+            overall_risk = min(100.0, overall_risk + 15)
         
         # Dev-Konzentration
-        dev_percentage = metrics.get('dev_percentage', 0)
+        dev_percentage = float(metrics.get('dev_percentage', 0.0))
         if dev_percentage > 20:
             risk_factors.append({
                 'factor': 'high_dev_concentration',
                 'description': f'Hohe Entwickler-Konzentration ({dev_percentage:.1f}%)',
                 'impact': 25
             })
-            overall_risk = min(100, overall_risk + 25)
+            overall_risk = min(100.0, overall_risk + 25)
         elif dev_percentage > 10:
             risk_factors.append({
                 'factor': 'moderate_dev_concentration',
                 'description': f'Moderate Entwickler-Konzentration ({dev_percentage:.1f}%)',
                 'impact': 12
             })
-            overall_risk = min(100, overall_risk + 12)
+            overall_risk = min(100.0, overall_risk + 12)
         
         # Rugpull-Verdacht
-        rugpull_suspects = metrics.get('rugpull_suspects', 0)
+        rugpull_suspects = int(metrics.get('rugpull_suspects', 0))
         if rugpull_suspects > 0:
             risk_factors.append({
                 'factor': 'rugpull_suspects',
                 'description': f'{rugpull_suspects} verdächtige Wallets entdeckt',
                 'impact': rugpull_suspects * 20
             })
-            overall_risk = min(100, overall_risk + rugpull_suspects * 20)
+            overall_risk = min(100.0, overall_risk + rugpull_suspects * 20)
         
         # Gini-Koeffizient
-        gini = metrics.get('gini_coefficient', 0)
+        gini = float(metrics.get('gini_coefficient', 0.0))
         if gini > 0.8:
             risk_factors.append({
                 'factor': 'very_uneven_distribution',
                 'description': f'Sehr ungleiche Token-Verteilung (Gini: {gini:.2f})',
                 'impact': 20
             })
-            overall_risk = min(100, overall_risk + 20)
+            overall_risk = min(100.0, overall_risk + 20)
         elif gini > 0.6:
             risk_factors.append({
                 'factor': 'uneven_distribution',
                 'description': f'Ungleiche Token-Verteilung (Gini: {gini:.2f})',
                 'impact': 10
             })
-            overall_risk = min(100, overall_risk + 10)
+            overall_risk = min(100.0, overall_risk + 10)
         
         # Risikoflags aus der Basisanalyse
         risk_flags = analysis_result.get('risk_flags', [])
@@ -1270,14 +1270,14 @@ class TokenAnalyzer:
                 'description': 'Sehr geringe Marktkapitalisierung',
                 'impact': 30
             })
-            overall_risk = min(100, overall_risk + 30)
+            overall_risk = min(100.0, overall_risk + 30)
         elif 'low_market_cap' in risk_flags:
             risk_factors.append({
                 'factor': 'low_market_cap',
                 'description': 'Geringe Marktkapitalisierung',
                 'impact': 20
             })
-            overall_risk = min(100, overall_risk + 20)
+            overall_risk = min(100.0, overall_risk + 20)
         
         # Liquidität
         if 'low_liquidity' in risk_flags:
@@ -1286,7 +1286,7 @@ class TokenAnalyzer:
                 'description': 'Geringe Liquidität',
                 'impact': 25
             })
-            overall_risk = min(100, overall_risk + 25)
+            overall_risk = min(100.0, overall_risk + 25)
         
         # Verifizierung
         if 'unverified_contract' in risk_flags:
@@ -1295,7 +1295,10 @@ class TokenAnalyzer:
                 'description': 'Nicht verifizierter Smart Contract',
                 'impact': 15
             })
-            overall_risk = min(100, overall_risk + 15)
+            overall_risk = min(100.0, overall_risk + 15)
+        
+        # Sicherstellen, dass der overall_risk im gültigen Bereich [0, 100] liegt
+        overall_risk = max(0.0, min(100.0, overall_risk))
         
         # Bestimme die Risikostufe
         if overall_risk >= 80:
