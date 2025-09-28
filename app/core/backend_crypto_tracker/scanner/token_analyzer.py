@@ -13,13 +13,13 @@ from functools import wraps
 import os
 
 from app.core.backend_crypto_tracker.utils.logger import get_logger
-from app.core.backend_crypto_tracker.utils.exceptions import APIException, InvalidAddressException
+from app.core.backend_crypto_tracker.utils.exceptions import APIException, InvalidAddressException, ValidationException, CustomAnalysisException
 from app.core.backend_crypto_tracker.config.scanner_config import scanner_config
 from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data import TokenPriceData
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
-from app.core.backend_crypto_tracker.utils.cache import AnalysisCache  # Angepasst: Verwende AnalysisCache statt TokenCache
+from app.core.backend_crypto_tracker.utils.cache import AnalysisCache
 
 # Import all providers
 from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
@@ -82,6 +82,173 @@ def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60):
         return wrapper
     return decorator
 
+class APIManager:
+    """Zentralisiert den Zugriff auf verschiedene API-Provider mit Lastverteilung und Fehlerbehandlung"""
+    
+    def __init__(self):
+        self.providers = {}
+        self.active_provider = None
+        self.provider_failures = {}
+        self.session = None
+        
+    async def initialize(self):
+        """Initialisiert alle Provider und die HTTP-Session"""
+        self.session = aiohttp.ClientSession()
+        
+        # Provider nur initialisieren, wenn API-Schlüssel vorhanden sind
+        if os.getenv('COINGECKO_API_KEY'):
+            self.providers['coingecko'] = CoinGeckoProvider()
+            logger.info("CoinGecko provider initialized")
+        else:
+            logger.warning("CoinGecko API key not provided, using limited functionality")
+            # CoinGecko funktioniert auch ohne API-Key, aber mit Limits
+            self.providers['coingecko'] = CoinGeckoProvider()
+        
+        if os.getenv('COINMARKETCAP_API_KEY'):
+            self.providers['coinmarketcap'] = CoinMarketCapProvider()
+            logger.info("CoinMarketCap provider initialized")
+        else:
+            logger.warning("CoinMarketCap API key not provided, skipping this provider")
+        
+        if os.getenv('CRYPTOCOMPARE_API_KEY'):
+            self.providers['cryptocompare'] = CryptoCompareProvider()
+            logger.info("CryptoCompare provider initialized")
+        else:
+            logger.warning("CryptoCompare API key not provided, skipping this provider")
+        
+        if os.getenv('BITGET_API_KEY') and os.getenv('BITGET_SECRET_KEY'):
+            self.providers['bitget'] = BitgetProvider()
+            logger.info("Bitget provider initialized")
+        else:
+            logger.warning("Bitget API keys not provided, skipping this provider")
+        
+        if os.getenv('KRAKEN_API_KEY') and os.getenv('KRAKEN_SECRET_KEY'):
+            self.providers['kraken'] = KrakenProvider()
+            logger.info("Kraken provider initialized")
+        else:
+            logger.warning("Kraken API keys not provided, skipping this provider")
+        
+        if os.getenv('BINANCE_API_KEY') and os.getenv('BINANCE_SECRET_KEY'):
+            self.providers['binance'] = BinanceProvider()
+            logger.info("Binance provider initialized")
+        else:
+            logger.warning("Binance API keys not provided, skipping this provider")
+        
+        if os.getenv('COINBASE_API_KEY') and os.getenv('COINBASE_SECRET_KEY'):
+            self.providers['coinbase'] = CoinbaseProvider()
+            logger.info("Coinbase provider initialized")
+        else:
+            logger.warning("Coinbase API keys not provided, skipping this provider")
+        
+        if os.getenv('BITQUERY_API_KEY'):
+            self.providers['bitquery'] = BitqueryProvider()
+            logger.info("Bitquery provider initialized")
+        else:
+            logger.warning("Bitquery API key not provided, skipping this provider")
+        
+        # Provider-Sessions initialisieren
+        for provider_name, provider in self.providers.items():
+            if hasattr(provider, '__aenter__'):
+                try:
+                    await provider.__aenter__()
+                except Exception as e:
+                    logger.error(f"Failed to initialize {provider_name}: {e}")
+                    self.providers.pop(provider_name, None)
+        
+        # Wähle einen aktiven Provider aus den verfügbaren
+        available_providers = [p for p in ['coingecko', 'coinmarketcap', 'cryptocompare'] if p in self.providers]
+        if available_providers:
+            self.active_provider = random.choice(available_providers)
+            logger.info(f"Selected {self.active_provider} as active provider")
+        else:
+            logger.error("No price providers available")
+        
+    async def get_token_price(self, token_address: str, chain: str):
+        """Ruft Token-Preisdaten vom aktiven Provider oder Fallback-Provider ab"""
+        providers_to_try = [self.active_provider] if self.active_provider else []
+        
+        # Fallback-Provider hinzufügen
+        fallback_providers = [p for p in ['coingecko', 'coinmarketcap', 'cryptocompare'] 
+                            if p != self.active_provider and p in self.providers]
+        providers_to_try.extend(fallback_providers)
+        
+        last_exception = None
+        for provider_name in providers_to_try:
+            provider = self.providers.get(provider_name)
+            if not provider:
+                continue
+                
+            try:
+                # Prüfe, ob der Provider in den letzten 5 Minuten mehr als 3 Fehler hatte
+                if self.provider_failures.get(provider_name, 0) > 3:
+                    failure_time = self.provider_failures.get(f"{provider_name}_time", 0)
+                    if time.time() - failure_time < 300:  # 5 Minuten
+                        continue
+                
+                price_data = await provider.get_token_price(token_address, chain)
+                
+                # Erfolgreiche Anfrage, Fehlerzähler zurücksetzen
+                if provider_name in self.provider_failures:
+                    self.provider_failures[provider_name] = 0
+                
+                # Aktualisiere den aktiven Provider bei Erfolg
+                self.active_provider = provider_name
+                return price_data
+                
+            except Exception as e:
+                last_exception = e
+                # Fehlerzähler erhöhen
+                self.provider_failures[provider_name] = self.provider_failures.get(provider_name, 0) + 1
+                self.provider_failures[f"{provider_name}_time"] = time.time()
+                logger.warning(f"Error with provider {provider_name}: {str(e)}")
+        
+        # Wenn alle Provider fehlschlagen, werfe die letzte Exception
+        raise last_exception or APIException("All price providers failed")
+    
+    async def get_token_holders(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
+        """Ruft Token-Holder-Adressen von einem Smart Contract ab"""
+        try:
+            # Wähle den richtigen Provider basierend auf der Blockchain
+            if chain.lower() == 'ethereum':
+                provider_name = 'ethereum'
+            elif chain.lower() == 'bsc':
+                provider_name = 'bsc'
+            elif chain.lower() == 'solana':
+                provider_name = 'solana'
+            else:
+                logger.error(f"Unsupported blockchain: {chain}")
+                return []
+            
+            # Prüfe, ob der Provider verfügbar ist
+            if provider_name not in self.providers:
+                logger.error(f"No provider available for blockchain: {chain}")
+                return []
+            
+            provider = self.providers[provider_name]
+            
+            # Hole Token-Holder
+            if hasattr(provider, 'get_token_holders'):
+                holders = await provider.get_token_holders(token_address, chain)
+                return holders
+            else:
+                logger.warning(f"Provider {provider_name} does not support get_token_holders")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error fetching token holders: {e}")
+            return []
+    
+    async def close(self):
+        """Schließt alle Provider und die Session"""
+        for provider in self.providers.values():
+            if provider and hasattr(provider, '__aexit__'):
+                await provider.__aexit__(None, None, None)
+            if provider and hasattr(provider, 'close'):
+                await provider.close()
+        
+        if self.session:
+            await self.session.close()
+
 class TokenAnalyzer:
     def __init__(self, config: TokenAnalysisConfig = None):
         self.config = config or TokenAnalysisConfig()
@@ -93,8 +260,8 @@ class TokenAnalyzer:
         self.enable_cache = self.config.enable_cache
         self.cache_ttl = self.config.cache_ttl_seconds
         
-        # Provider-Initialisierung - Ersetzt APIManager durch BaseAPIProvider
-        self.api_provider = None  # Wird in __aenter__ initialisiert
+        # Provider-Initialisierung
+        self.api_manager = APIManager()
         self.ethereum_provider = None
         self.bsc_provider = None
         self.solana_provider = None
@@ -103,7 +270,7 @@ class TokenAnalyzer:
         self.w3_eth = None
         self.w3_bsc = None
         
-        # Cache initialisieren, falls aktiviert - angepasst für AnalysisCache
+        # Cache initialisieren, falls aktiviert
         self.cache = AnalysisCache(max_size=1000, default_ttl=self.config.cache_ttl_seconds) if self.config.enable_cache else None
         
         # Konfiguration laden
@@ -118,7 +285,7 @@ class TokenAnalyzer:
 
     async def __aenter__(self):
         # API-Manager initialisieren
-        await self._initialize_api_manager()
+        await self.api_manager.initialize()
         
         # Blockchain-Provider initialisieren mit GetBlock RPC-URL
         if os.getenv('ETHERSCAN_API_KEY'):
@@ -176,56 +343,28 @@ class TokenAnalyzer:
             await self.sui_provider.__aenter__()
         
         return self
-    
-    async def _initialize_api_provider(self):
-        """Initialisiert den API-Provider basierend auf der Konfiguration"""
-        provider_name = self.config.preferred_provider.lower()
-        
-        # Erstelle den ausgewählten Provider
-        if provider_name == "coingecko":
-            self.api_provider = CoinGeckoProvider()
-        elif provider_name == "coinmarketcap":
-            self.api_provider = CoinMarketCapProvider()
-        elif provider_name == "cryptocompare":
-            self.api_provider = CryptoCompareProvider()
-        elif provider_name == "bitget":
-            self.api_provider = BitgetProvider()
-        elif provider_name == "kraken":
-            self.api_provider = KrakenProvider()
-        elif provider_name == "binance":
-            self.api_provider = BinanceProvider()
-        elif provider_name == "coinbase":
-            self.api_provider = CoinbaseProvider()
-        elif provider_name == "bitquery":
-            self.api_provider = BitqueryProvider()
-        else:
-            logger.warning(f"Unknown provider '{provider_name}', defaulting to CoinGecko")
-            self.api_provider = CoinGeckoProvider()
-        
-        # Initialisiere den Provider
-        await self.api_provider.__aenter__()
-        logger.info(f"{self.config.preferred_provider} provider initialized")
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # Sicheres Schließen aller Ressourcen
         close_tasks = []
         
-        if self.api_provider:
-            close_tasks.append(self._safe_close_api_provider())
+        # Schließe API-Manager
+        if self.api_manager:
+            close_tasks.append(self._safe_close_api_manager())
         
-        if self.ethereum_provider:
-            close_tasks.append(self._safe_close(self.ethereum_provider, exc_type, exc_val, exc_tb, "ethereum_provider"))
+        # Schließe Blockchain-Provider
+        providers = [
+            self.ethereum_provider,
+            self.bsc_provider,
+            self.solana_provider,
+            self.sui_provider
+        ]
         
-        if self.bsc_provider:
-            close_tasks.append(self._safe_close(self.bsc_provider, exc_type, exc_val, exc_tb, "bsc_provider"))
+        for provider in providers:
+            if provider:
+                close_tasks.append(self._safe_close_provider(provider, provider.__class__.__name__))
         
-        if self.solana_provider:
-            close_tasks.append(self._safe_close(self.solana_provider, exc_type, exc_val, exc_tb, "solana_provider"))
-        
-        if self.sui_provider:
-            close_tasks.append(self._safe_close(self.sui_provider, exc_type, exc_val, exc_tb, "sui_provider"))
-        
-        # Alle Schließvorgänge parallel ausführen
+        # Führe alle Schließvorgänge parallel ausführen
         if close_tasks:
             await asyncio.gather(*close_tasks, return_exceptions=True)
         
@@ -236,25 +375,23 @@ class TokenAnalyzer:
         if hasattr(self, 'w3_bsc') and self.w3_bsc:
             self.w3_bsc = None
     
-    async def _safe_close(self, service, exc_type, exc_val, exc_tb, service_name):
-        """Sicheres Schließen einer Service-Verbindung"""
+    async def _safe_close_provider(self, provider, provider_name):
+        """Sicheres Schließen eines Providers"""
         try:
-            await service.__aexit__(exc_type, exc_val, exc_tb)
-            # Zusätzlich: Explizite close-Methode aufrufen, falls vorhanden
-            if hasattr(service, 'close'):
-                await service.close()
+            if hasattr(provider, '__aexit__'):
+                await provider.__aexit__(None, None, None)
+            if hasattr(provider, 'close'):
+                await provider.close()
         except Exception as e:
-            logger.warning(f"Error closing {service_name}: {str(e)}")
+            logger.error(f"Error closing {provider_name}: {str(e)}")
     
-    async def _safe_close_api_provider(self):
-        """Sicheres Schließen des API-Providers"""
+    async def _safe_close_api_manager(self):
+        """Sicheres Schließen des API-Managers"""
         try:
-            await self.api_provider.__aexit__(None, None, None)
-            if hasattr(self.api_provider, 'close'):
-                await self.api_provider.close()
+            await self.api_manager.close()
         except Exception as e:
-            logger.warning(f"Error closing API provider: {str(e)}")
-    
+            logger.warning(f"Error closing API manager: {str(e)}")
+
     async def scan_low_cap_tokens(self, max_tokens: int = None) -> List[Dict[str, Any]]:
         """Hauptfunktion zum Scannen von Low-Cap Tokens"""
         max_tokens = max_tokens or self.config.max_tokens_per_scan
@@ -264,38 +401,18 @@ class TokenAnalyzer:
         # Cache-Schlüssel für diese Anfrage
         cache_key = f"low_cap_tokens_{max_tokens}_{self.config.max_market_cap}"
         
-        # Prüfe, ob die Daten im Cache vorhanden sind - angepasst für AnalysisCache
+        # Prüfe, ob die Daten im Cache vorhanden sind
         if self.cache:
             cached_result = await self.cache.get(cache_key)
             if cached_result:
                 logger.info(f"Returning cached low-cap tokens data")
                 return cached_result
         
-        # Hole Low-Cap Tokens über den API-Provider - Angepasst an BaseAPIProvider
-        try:
-            # BaseAPIProvider hat keine get_low_cap_tokens-Methode, also müssen wir eine alternative Implementierung verwenden
-            # Hier verwenden wir get_token_price mit einer Liste bekannter Token-Adressen
-            # In einer echten Implementierung müsste dies angepasst werden
-            
-            # Placeholder für die Token-Liste - in einer echten Implementierung würde dies anders gehandhabt
-            known_tokens = [
-                ("0x1234567890123456789012345678901234567890", "ethereum"),
-                ("0x0987654321098765432109876543210987654321", "ethereum")
-                # Weitere Token-Adressen würden hier stehen
-            ]
-            
-            tokens = []
-            for address, chain in known_tokens[:max_tokens]:
-                try:
-                    price_data = await self.api_provider.get_token_price(address, chain)
-                    if price_data:
-                        tokens.append(price_data)
-                except Exception as e:
-                    logger.warning(f"Error fetching token data for {address}: {e}")
-                    continue
-        except Exception as e:
-            logger.error(f"Error fetching low-cap tokens: {e}")
-            tokens = []
+        # Hole Low-Cap Tokens über den API-Manager
+        tokens = await self.api_manager.get_low_cap_tokens(
+            max_market_cap=self.config.max_market_cap,
+            limit=max_tokens
+        )
         
         if not tokens:
             logger.error("No tokens found")
@@ -318,13 +435,13 @@ class TokenAnalyzer:
                 logger.error(f"Error analyzing {token.symbol}: {e}")
                 continue
         
-        # Speichere das Ergebnis im Cache - angepasst für AnalysisCache
+        # Speichere das Ergebnis im Cache
         if self.cache:
             await self.cache.set(results, self.config.cache_ttl_seconds, cache_key)
         
         logger.info(f"Analysis completed. {len(results)} tokens successfully analyzed.")
         return results
-    
+
     async def analyze_token(self, token_address: str, chain: str) -> Dict[str, Any]:
         """Analysiert einen Token und gibt eine umfassende Bewertung zurück"""
         try:
@@ -411,13 +528,13 @@ class TokenAnalyzer:
         chain = chain.lower().strip()
         
         # Prüfe, ob der TokenAnalyzer initialisiert ist
-        if not self.api_provider:
-            error_msg = "API-Provider ist nicht initialisiert. Verwenden Sie den Analyzer innerhalb eines async-Kontext-Managers (async with)."
+        if not self.api_manager:
+            error_msg = "API-Manager ist nicht initialisiert. Verwenden Sie den Analyzer innerhalb eines async-Kontext-Managers (async with)."
             self.logger.error(error_msg)
             raise CustomAnalysisException(error_msg)
     
         try:
-            # Hole Token-Daten vom API-Provider
+            # Hole Token-Daten vom API-Manager
             token_data = await self._fetch_custom_token_data(token_address, chain)
             
             if not token_data:
@@ -535,8 +652,8 @@ class TokenAnalyzer:
                     logger.info(f"Returning cached token data for {token_address}")
                     return cached_result
             
-            # Hole Token-Daten vom API-Provider - Ersetzt APIManager durch BaseAPIProvider
-            price_data = await self.api_provider.get_token_price(token_address, chain)
+            # Hole Token-Daten vom API-Manager
+            price_data = await self.api_manager.get_token_price(token_address, chain)
             
             # PRÜFEN, OB price_data None IST
             if price_data is None:
@@ -581,7 +698,7 @@ class TokenAnalyzer:
             # Cache-Schlüssel für diese Anfrage
             cache_key = f"evm_token_data_{token.address}_{token.chain}"
             
-            # Prüfe, ob die Daten im Cache vorhanden sind - angepasst für AnalysisCache
+            # Prüfe, ob die Daten im Cache vorhanden sind
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
@@ -654,7 +771,7 @@ class TokenAnalyzer:
             except Exception:
                 pass
             
-            # Speichere das Ergebnis im Cache - angepasst für AnalysisCache
+            # Speichere das Ergebnis im Cache
             if self.cache:
                 await self.cache.set(token, self.config.cache_ttl_seconds, cache_key)
             
@@ -669,7 +786,7 @@ class TokenAnalyzer:
             # Cache-Schlüssel für diese Anfrage
             cache_key = f"solana_token_data_{token.address}"
             
-            # Prüfe, ob die Daten im Cache vorhanden sind - angepasst für AnalysisCache
+            # Prüfe, ob die Daten im Cache vorhanden sind
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
@@ -684,7 +801,7 @@ class TokenAnalyzer:
                     token.symbol = token_info.get('symbol', '')
                     token.creation_date = token_info.get('creation_date')
             
-            # Speichere das Ergebnis im Cache - angepasst für AnalysisCache
+            # Speichere das Ergebnis im Cache
             if self.cache:
                 await self.cache.set(token, self.config.cache_ttl_seconds, cache_key)
             
@@ -699,7 +816,7 @@ class TokenAnalyzer:
             # Cache-Schlüssel für diese Anfrage
             cache_key = f"sui_token_data_{token.address}"
             
-            # Prüfe, ob die Daten im Cache vorhanden sind - angepasst für AnalysisCache
+            # Prüfe, ob die Daten im Cache vorhanden sind
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
@@ -714,7 +831,7 @@ class TokenAnalyzer:
                     token.symbol = token_info.get('symbol', '')
                     token.creation_date = token_info.get('creation_date')
             
-            # Speichere das Ergebnis im Cache - angepasst für AnalysisCache
+            # Speichere das Ergebnis im Cache
             if self.cache:
                 await self.cache.set(token, self.config.cache_ttl_seconds, cache_key)
             
@@ -724,170 +841,55 @@ class TokenAnalyzer:
             return token
     
     async def _fetch_token_holders(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
-        """Holt Wallets, die in den letzten 6 Stunden mit dem Smart Contract interagiert haben"""
+        """Holt Wallet-Holder-Adressen von einem Smart Contract"""
         try:
             # Cache-Schlüssel für diese Anfrage
-            cache_key = f"active_wallets_{token_address}_{chain}"
+            cache_key = f"token_holders_{token_address}_{chain}"
             
             # Prüfe, ob die Daten im Cache vorhanden sind
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
-                    logger.info(f"Verwende gecachte aktive Wallet-Daten für {token_address} auf {chain}")
+                    logger.info(f"Verwende gecachte Wallet-Daten für {token_address} auf {chain}: {len(cached_result)} Wallets")
+                    # Zeige nur eine Zusammenfassung der gecachten Wallets
+                    if cached_result:
+                        top_wallets = cached_result[:5]  # Nur die Top 5 Wallets anzeigen
+                        wallet_summary = ", ".join([f"{w.get('address', 'N/A')[:10]}... ({w.get('percentage', 0):.2f}%)" for w in top_wallets])
+                        logger.info(f"Top Wallets: {wallet_summary}")
                     return cached_result
             
-            # Wähle den richtigen Provider basierend auf der Blockchain
-            if chain.lower() == 'ethereum':
-                provider = self.ethereum_provider
-            elif chain.lower() == 'bsc':
-                provider = self.bsc_provider
-            elif chain.lower() == 'solana':
-                provider = self.solana_provider
-            elif chain.lower() == 'sui':
-                provider = self.sui_provider
-            else:
-                logger.error(f"Unsupported blockchain: {chain}")
-                return []
+            # Rufe die zentrale Methode get_token_holders auf
+            holders = await self.api_manager.get_token_holders(token_address, chain)
             
-            if not provider:
-                logger.error(f"No provider available for blockchain: {chain}")
-                return []
-            
-            # Hole die Transaktionen des Smart Contracts der letzten 6 Stunden
-            logger.info(f"Rufe Transaktionen für {token_address} auf {chain} der letzten 6 Stunden ab")
-            
-            try:
-                # Hole Transaktionen über den Provider
-                transactions = await provider.get_contract_transactions(token_address, hours=6)
+            # Zusammenfassung der Ergebnisse
+            if holders:
+                logger.info(f"=== WALLET-ZUSAMMENFASSUNG FÜR {token_address} auf {chain} ===")
+                logger.info(f"Anzahl der Wallets: {len(holders)}")
                 
-                if not transactions:
-                    logger.warning(f"Keine Transaktionen für {token_address} auf {chain} in den letzten 6 Stunden gefunden")
-                    
-                    # Erweitere den Zeitraum auf 24 Stunden, wenn in 6 Stunden keine Transaktionen gefunden wurden
-                    logger.info(f"Versuche, Transaktionen der letzten 24 Stunden für {token_address} zu finden")
-                    transactions = await provider.get_contract_transactions(token_address, hours=24)
-                    
-                    if not transactions:
-                        logger.warning(f"Keine Transaktionen für {token_address} auf {chain} in den letzten 24 Stunden gefunden")
-                        
-                        # Letzter Versuch: Hole aktuelle Top-Holder als Fallback
-                        try:
-                            logger.info(f"Versuche, Top-Holder als Fallback für {token_address} zu finden")
-                            if hasattr(provider, 'get_token_holders'):
-                                holders = await provider.get_token_holders(token_address, chain)
-                                
-                                if holders:
-                                    # Konvertiere in das erwartete Format
-                                    active_wallets = []
-                                    total_supply = 0
-                                    
-                                    for holder in holders:
-                                        try:
-                                            # Je nach Provider-Format anpassen
-                                            if 'TokenHolderAddress' in holder and 'TokenHolderQuantity' in holder:
-                                                address = holder['TokenHolderAddress']
-                                                balance = float(holder['TokenHolderQuantity'])
-                                            elif 'address' in holder and 'balance' in holder:
-                                                address = holder['address']
-                                                balance = float(holder['balance'])
-                                            else:
-                                                # Unbekanntes Format, überspringen
-                                                continue
-                                            
-                                            active_wallets.append({
-                                                'address': address,
-                                                'balance': balance,
-                                                'percentage': 0,  # Wird später berechnet
-                                                'is_top_holder': True  # Markiere als Fallback
-                                            })
-                                            total_supply += balance
-                                        except (ValueError, KeyError) as e:
-                                            logger.warning(f"Ungültiges Holder-Format: {holder}, Fehler: {e}")
-                                            continue
-                                    
-                                    # Berechne die Prozentsätze
-                                    for wallet in active_wallets:
-                                        if total_supply > 0:
-                                            wallet['percentage'] = (wallet['balance'] / total_supply) * 100
-                                        else:
-                                            wallet['percentage'] = 0
-                                    
-                                    # Sortiere die Wallets nach Balance (absteigend)
-                                    active_wallets.sort(key=lambda x: x['balance'], reverse=True)
-                                    
-                                    # Begrenze die Anzahl der Wallets
-                                    active_wallets = active_wallets[:self.config.max_holders_to_analyze]
-                                    
-                                    # Speichere das Ergebnis im Cache
-                                    if self.cache:
-                                        await self.cache.set(active_wallets, self.config.cache_ttl_seconds, cache_key)
-                                    
-                                    logger.info(f"Top-Holder (Fallback) für {token_address}: {len(active_wallets)} Wallets gefunden")
-                                    return active_wallets
-                        except Exception as fallback_error:
-                            logger.error(f"Fallback-Methode fehlgeschlagen: {fallback_error}")
-                        
-                        return []
+                # Zeige die Top 10 Wallets mit ihren Adressen und Anteilen
+                logger.info("Top 10 Wallet-Adressen:")
+                for i, holder in enumerate(holders[:10], 1):
+                    address = holder.get('address', 'N/A')
+                    percentage = holder.get('percentage', 0)
+                    balance = holder.get('balance', 0)
+                    logger.info(f"  {i}. {address} - {percentage:.2f}% (Balance: {balance})")
                 
-                # Extrahiere die einzigartigen Wallet-Adressen aus den Transaktionen
-                wallet_addresses = set()
-                for tx in transactions:
-                    # Füge Absender und Empfänger hinzu
-                    if 'from' in tx and tx['from']:
-                        wallet_addresses.add(tx['from'])
-                    if 'to' in tx and tx['to']:
-                        wallet_addresses.add(tx['to'])
-                    # Bei Token-Transaktionen könnten auch andere Felder relevant sein
-                    if 'contract_address' in tx and tx['contract_address']:
-                        wallet_addresses.add(tx['contract_address'])
+                if len(holders) > 10:
+                    logger.info(f"... und {len(holders) - 10} weitere Wallets")
                 
-                logger.info(f"Gefundene aktive Wallet-Adressen: {len(wallet_addresses)}")
-                
-                # Für jede Wallet-Adresse, hole den aktuellen Token-Bestand
-                active_wallets = []
-                total_supply = 0
-                
-                for address in wallet_addresses:
-                    try:
-                        # Hole den Token-Bestand für diese Adresse
-                        balance = await provider.get_token_balance(token_address, address)
-                        if balance > 0:
-                            active_wallets.append({
-                                'address': address,
-                                'balance': balance,
-                                'percentage': 0,  # Wird später berechnet
-                                'last_interaction': None  # Könnte später aus Transaktionen extrahiert werden
-                            })
-                            total_supply += balance
-                    except Exception as e:
-                        logger.warning(f"Fehler beim Abrufen des Token-Bestands für {address}: {e}")
-                        continue
-                
-                # Berechne die Prozentsätze
-                for wallet in active_wallets:
-                    if total_supply > 0:
-                        wallet['percentage'] = (wallet['balance'] / total_supply) * 100
-                    else:
-                        wallet['percentage'] = 0
-                
-                # Sortiere die Wallets nach Balance (absteigend)
-                active_wallets.sort(key=lambda x: x['balance'], reverse=True)
-                
-                # Begrenze die Anzahl der Wallets
-                active_wallets = active_wallets[:self.config.max_holders_to_analyze]
+                # Berechne und zeige Verteilungsstatistiken
+                top_10_percentage = sum(h.get('percentage', 0) for h in holders[:10])
+                logger.info(f"Die Top 10 Wallets halten zusammen {top_10_percentage:.2f}% der Tokens")
                 
                 # Speichere das Ergebnis im Cache
                 if self.cache:
-                    await self.cache.set(active_wallets, self.config.cache_ttl_seconds, cache_key)
-                
-                logger.info(f"Aktive Wallets für {token_address}: {len(active_wallets)} Wallets gefunden")
-                return active_wallets
-                
-            except Exception as e:
-                logger.error(f"Fehler beim Abrufen der aktiven Wallets für {token_address} auf {chain}: {e}")
-                return []
+                    await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
+            else:
+                logger.warning(f"Keine Wallet-Daten für {token_address} auf {chain} gefunden")
+            
+            return holders
         except Exception as e:
-            logger.error(f"Fehler beim Abrufen der Token-Holder für {token_address} auf {chain}: {e}")
+            logger.error(f"Fehler beim Abrufen der Wallet-Daten für {token_address} auf {chain}: {e}")
             return []
     
     async def _analyze_wallets(self, token_data: Token, holders: List[Dict[str, Any]]) -> List[WalletAnalysis]:
@@ -902,23 +904,14 @@ class TokenAnalyzer:
         
         for holder in holders_to_analyze:
             try:
-                # Passe das Datenformat an - je nachdem, ob es aktive Wallets oder Top-Holder sind
-                if 'balance' in holder:
-                    balance = float(holder.get('balance', 0))
-                    wallet_address = holder.get('address', '')
-                elif 'TokenHolderQuantity' in holder:
-                    balance = float(holder.get('TokenHolderQuantity', 0))
-                    wallet_address = holder.get('TokenHolderAddress', '')
-                else:
-                    logger.warning(f"Unbekanntes Holder-Format: {holder}")
-                    continue
-                    
+                balance = float(holder.get('balance', 0))
+                wallet_address = holder.get('address', '')
                 percentage = (balance / total_supply) * 100 if total_supply > 0 else 0
                 
                 # Cache-Schlüssel für diese Anfrage
                 cache_key = f"wallet_analysis_{wallet_address}_{token_data.address}"
                 
-                # Prüfe, ob die Daten im Cache vorhanden sind - angepasst für AnalysisCache
+                # Prüfe, ob die Daten im Cache vorhanden sind
                 if self.cache:
                     cached_result = await self.cache.get(cache_key)
                     if cached_result:
@@ -946,12 +939,12 @@ class TokenAnalyzer:
                 
                 wallet_analyses.append(wallet_analysis)
                 
-                # Speichere das Ergebnis im Cache - angepasst für AnalysisCache
+                # Speichere das Ergebnis im Cache
                 if self.cache:
                     await self.cache.set(wallet_analysis, self.config.cache_ttl_seconds, cache_key)
                     
             except Exception as e:
-                logger.error(f"Error analyzing wallet {holder.get('address', holder.get('TokenHolderAddress', 'Unknown'))}: {e}")
+                logger.error(f"Error analyzing wallet {holder.get('address', 'Unknown')}: {e}")
                 continue
         
         return wallet_analyses
@@ -962,7 +955,7 @@ class TokenAnalyzer:
             # Cache-Schlüssel für diese Anfrage
             cache_key = f"wallet_transactions_{wallet_address}_{chain}"
             
-            # Prüfe, ob die Daten im Cache vorhanden sind - angepasst für AnalysisCache
+            # Prüfe, ob die Daten im Cache vorhanden sind
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
@@ -981,7 +974,7 @@ class TokenAnalyzer:
             elif chain == 'sui' and self.sui_provider:
                 transaction_data = await self.sui_provider.get_wallet_transactions(wallet_address)
             
-            # Speichere das Ergebnis im Cache - angepasst für AnalysisCache
+            # Speichere das Ergebnis im Cache
             if self.cache:
                 await self.cache.set(transaction_data, self.config.cache_ttl_seconds, cache_key)
             
@@ -1318,9 +1311,9 @@ class TokenAnalyzer:
         """Schließt alle offenen Ressourcen wie Provider-Sessions."""
         close_tasks = []
         
-        # Schließe API-Provider
-        if self.api_provider:
-            close_tasks.append(self._safe_close_api_provider())
+        # Schließe API-Manager
+        if self.api_manager:
+            close_tasks.append(self._safe_close_api_manager())
         
         # Schließe Blockchain-Provider
         providers = [
