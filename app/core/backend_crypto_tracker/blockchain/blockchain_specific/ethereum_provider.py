@@ -26,55 +26,49 @@ class EthereumProvider:
         self.session = None
         self.coingecko_provider = CoinGeckoProvider()
         
-        # Verwende die übergebene RPC-URL, die Umgebungsvariable oder als Fallback GetBlock
-        self.rpc_url = rpc_url or os.getenv('ETHEREUM_RPC_URL', "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047")
+        # Zuverlässige RPC-URLs mit Priorität
+        self.rpc_urls = [
+            rpc_url if rpc_url else None,
+            os.getenv('ETHEREUM_RPC_URL'),
+            "https://eth.public-rpc.com",  # Öffentliches RPC
+            "https://rpc.ankr.com/eth",     # Ankr RPC
+            "https://cloudflare-eth.com",   # Cloudflare ETH
+            "https://mainnet.infura.io/v3/1JTTMXUDJ2D2DKAW9BU6PED8NZJD7G4G9V",
+            "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
+        ]
         
-        logger.info(f"Using Ethereum RPC URL: {self.rpc_url}")
+        # Filtere None-Werte heraus
+        self.rpc_urls = [url for url in self.rpc_urls if url]
+        
+        logger.info(f"Available Ethereum RPC URLs: {len(self.rpc_urls)} configured")
     
     async def __aenter__(self):
-        # Initialisiere Web3-Verbindung mit der korrekten RPC-URL
-        self.w3 = Web3(Web3.HTTPProvider(self.rpc_url))
-        
-        # Teste die Verbindung
-        try:
-            if self.w3.is_connected():
-                latest_block = self.w3.eth.block_number
-                logger.info(f"Successfully connected to Ethereum node. Latest block: {latest_block}")
-            else:
-                logger.error("Failed to connect to Ethereum node")
-                # Versuche alternative RPC-URLs
-                await self._try_alternative_connections()
-        except Exception as e:
-            logger.error(f"Error connecting to Ethereum node: {e}")
-            # Versuche alternative RPC-URLs
-            await self._try_alternative_connections()
+        # Versuche Verbindung mit allen verfügbaren RPC-URLs
+        for i, rpc_url in enumerate(self.rpc_urls):
+            try:
+                logger.info(f"Attempting to connect to Ethereum node #{i+1}: {rpc_url}")
+                self.w3 = Web3(Web3.HTTPProvider(rpc_url))
+                
+                if self.w3.is_connected():
+                    latest_block = self.w3.eth.block_number
+                    logger.info(f"Successfully connected to Ethereum node. Latest block: {latest_block}")
+                    self.rpc_url = rpc_url  # Speichere die funktionierende URL
+                    break
+                else:
+                    logger.warning(f"Connection failed to Ethereum node: {rpc_url}")
+            except Exception as e:
+                logger.error(f"Error connecting to Ethereum node {rpc_url}: {e}")
+                continue
+        else:
+            # Wenn alle Verbindungsversuche fehlschlagen
+            logger.error("All connection attempts failed for Ethereum nodes")
+            self.w3 = None
         
         if self.etherscan_provider:
             await self.etherscan_provider.__aenter__()
         if self.coingecko_provider:
             await self.coingecko_provider.__aenter__()
         return self
-    
-    async def _try_alternative_connections(self):
-        """Versucht alternative RPC-Verbindungen, wenn die Standardverbindung fehlschlägt"""
-        alternative_urls = [
-            "https://mainnet.infura.io/v3/1JTTMXUDJ2D2DKAW9BU6PED8NZJD7G4G9V",
-            "https://eth-mainnet.alchemyapi.io/v2/your-api-key",
-            "https://api.mycryptoapi.com/eth"
-        ]
-        
-        for url in alternative_urls:
-            try:
-                self.w3 = Web3(Web3.HTTPProvider(url))
-                if self.w3.is_connected():
-                    latest_block = self.w3.eth.block_number
-                    logger.info(f"Successfully connected to Ethereum node using alternative URL: {url}. Latest block: {latest_block}")
-                    self.rpc_url = url
-                    return
-            except Exception as e:
-                logger.warning(f"Failed to connect to alternative Ethereum node {url}: {e}")
-        
-        logger.error("All connection attempts failed")
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.etherscan_provider:
@@ -128,6 +122,11 @@ class EthereumProvider:
     async def get_contract_transactions(self, contract_address: str, hours: int = 24) -> List[Dict]:
         """Holt die Transaktionen eines Smart-Contracts der letzten Stunden"""
         try:
+            # Prüfe, ob wir eine Web3-Verbindung haben
+            if not self.w3 or not self.w3.is_connected():
+                logger.error("No Web3 connection available for contract transaction lookup")
+                return []
+            
             if self.etherscan_provider:
                 # Berechne den Zeitstempel vor X Stunden
                 since_timestamp = int((datetime.now() - timedelta(hours=hours)).timestamp())
@@ -162,6 +161,11 @@ class EthereumProvider:
     async def _get_contract_transactions_via_rpc(self, contract_address: str, hours: int) -> List[Dict]:
         """Fallback-Methode über RPC-Abfragen"""
         try:
+            # Prüfe, ob wir eine Web3-Verbindung haben
+            if not self.w3 or not self.w3.is_connected():
+                logger.error("No Web3 connection available for RPC transaction lookup")
+                return []
+            
             # Berechne den Block vor X Stunden
             latest_block = self.w3.eth.block_number
             blocks_per_hour = 240  # Ca. 15 Sekunden pro Block
@@ -171,18 +175,22 @@ class EthereumProvider:
             
             # Hole alle Transaktionen in diesem Blockbereich
             for block_num in range(start_block, latest_block + 1):
-                block = self.w3.eth.get_block(block_num, full_transactions=True)
-                
-                for tx in block.transactions:
-                    # Prüfe, ob die Transaktion den Contract betrifft
-                    if (tx.to and tx.to.lower() == contract_address.lower()) or \
-                       (tx.input and tx.input.startswith('0xa9059cbb')):  # ERC20 Transfer
-                        transactions.append({
-                            'from': tx['from'],
-                            'to': tx['to'],
-                            'hash': tx.hash.hex(),
-                            'timeStamp': block.timestamp
-                        })
+                try:
+                    block = self.w3.eth.get_block(block_num, full_transactions=True)
+                    
+                    for tx in block.transactions:
+                        # Prüfe, ob die Transaktion den Contract betrifft
+                        if (tx.to and tx.to.lower() == contract_address.lower()) or \
+                           (tx.input and tx.input.startswith('0xa9059cbb')):  # ERC20 Transfer
+                            transactions.append({
+                                'from': tx['from'],
+                                'to': tx['to'],
+                                'hash': tx.hash.hex(),
+                                'timeStamp': block.timestamp
+                            })
+                except Exception as e:
+                    logger.warning(f"Error processing block {block_num}: {e}")
+                    continue
             
             return transactions
         except Exception as e:
@@ -232,8 +240,9 @@ class EthereumProvider:
     async def get_token_balance(self, token_address: str, wallet_address: str) -> float:
         """Holt den Token-Bestand einer Wallet"""
         try:
-            if not self.w3:
-                logger.error("Web3 connection not initialized")
+            # Prüfe, ob wir eine Web3-Verbindung haben
+            if not self.w3 or not self.w3.is_connected():
+                logger.error("No Web3 connection available for token balance lookup")
                 return 0
             
             # ERC20-ABI für balanceOf
@@ -362,6 +371,11 @@ class EthereumProvider:
     async def _get_token_price_from_dex(self, token_address: str) -> Optional[float]:
         """Holt Token-Preis von dezentralen Börsen"""
         try:
+            # Prüfe, ob wir eine Web3-Verbindung haben
+            if not self.w3 or not self.w3.is_connected():
+                logger.error("No Web3 connection available for DEX price lookup")
+                return None
+            
             # Uniswap V2 Factory Address
             factory_address = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
             factory_abi = [
@@ -445,6 +459,11 @@ class EthereumProvider:
         try:
             logger.info(f"Starte Analyse der Top-Holder für Token {token_address}")
             
+            # Prüfe, ob wir eine Web3-Verbindung haben
+            if not self.w3 or not self.w3.is_connected():
+                logger.error("No Web3 connection available for token holder analysis")
+                return []
+            
             # Schritt 1: Hole die Transaktionen des Smart-Contracts der letzten 24 Stunden
             logger.info(f"Rufe Transaktionen für {token_address} auf {chain} ab")
             transactions = await self.get_contract_transactions(token_address, hours=24)
@@ -510,6 +529,11 @@ class EthereumProvider:
         """Holt die Wallets, die in den letzten X Stunden aktiv waren"""
         try:
             logger.info(f"Starte Analyse der aktiven Wallets für Token {token_address} der letzten {hours} Stunden")
+            
+            # Prüfe, ob wir eine Web3-Verbindung haben
+            if not self.w3 or not self.w3.is_connected():
+                logger.error("No Web3 connection available for active wallet analysis")
+                return []
             
             # Hole die Transaktionen des Smart-Contracts der letzten X Stunden
             transactions = await self.get_contract_transactions(token_address, hours=hours)
