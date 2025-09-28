@@ -65,6 +65,37 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
                 token_address=request.token_address,
                 chain=request.chain
             )
+            
+            # Prüfe, ob der Token gefunden wurde
+            if result.get('token_info', {}).get('name') == 'Unknown':
+                # Token nicht gefunden - gib eine detaillierte Fehlermeldung zurück
+                error_details = {
+                    "error": "TOKEN_NOT_FOUND",
+                    "message": f"Token mit der Adresse {request.token_address} konnte nicht in den Datenbanken gefunden werden.",
+                    "details": {
+                        "token_address": request.token_address,
+                        "chain": request.chain,
+                        "possible_reasons": [
+                            "Die Token-Adresse ist falsch",
+                            "Der Token existiert nicht mehr",
+                            "Der Token ist noch nicht in den Datenbanken gelistet",
+                            "Der Token ist auf einer anderen Blockchain"
+                        ],
+                        "suggestions": [
+                            "Überprüfen Sie die Token-Adresse auf Tippfehler",
+                            "Stellen Sie sicher, dass die richtige Blockchain ausgewählt ist",
+                            "Versuchen Sie es mit einer bekannten Token-Adresse zur Überprüfung"
+                        ]
+                    }
+                }
+                
+                return CustomAnalysisResponse(
+                    success=False,
+                    token_address=request.token_address,
+                    chain=request.chain,
+                    error_message=f"Token nicht gefunden: {request.token_address}",
+                    analyzed_at=datetime.utcnow()
+                )
         
         # Bereinige das Ergebnis von ungültigen Float-Werten
         sanitized_result = sanitize_value(result)
@@ -82,7 +113,7 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
         response_dict = response_data.dict()
         sanitized_response_dict = sanitize_value(response_dict)
         
-        # Verwende json.dumps mit SafeJSONEncoder und erstelle dann JSONResponse
+        # Verwende json.dumps mit SafeJSONEncoder
         json_content = json.dumps(sanitized_response_dict, cls=SafeJSONEncoder)
         
         return JSONResponse(
@@ -113,7 +144,7 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
         user_msg = "Ein unerwarteter Fehler ist aufgetreten. Bitte versuchen Sie es später erneut."
         
         if "Tokendaten konnten nicht abgerufen werden" in error_msg:
-            user_msg = error_msg
+            user_msg = f"Token mit der Adresse {request.token_address} konnte nicht gefunden werden. Bitte überprüfen Sie die Adresse oder versuchen Sie es mit einem anderen Token."
         elif "Analyse fehlgeschlagen" in error_msg:
             user_msg = error_msg
         elif "Rate limit exceeded" in error_msg:
