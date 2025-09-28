@@ -493,6 +493,11 @@ class LowCapAnalyzer:
             risk_flags = analysis_result.get('risk_flags', [])
             metrics = analysis_result.get('metrics', {})
             
+            # Stelle sicher, dass alle Metriken gültige Zahlen sind
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)):
+                    metrics[key] = sanitize_float(value)
+            
             # Erweiterte Risiko-Faktoren
             extended_risk_factors = []
             
@@ -533,7 +538,7 @@ class LowCapAnalyzer:
             
             # Berechne finalen Risiko-Score
             risk_penalty = len(extended_risk_factors) * 5  # 5 Punkte pro Risikofaktor
-            final_risk_score = max(0, base_risk - risk_penalty)
+            final_risk_score = max(0, min(100, base_risk - risk_penalty))
             
             # Klassifiziere Risiko-Level
             if final_risk_score >= 80:
@@ -547,10 +552,10 @@ class LowCapAnalyzer:
             
             # Erstelle erweiterte Risikobewertung mit overall_risk Attribut
             extended_assessment = {
-                'overall_risk': final_risk_score,  # Dies ist das fehlende Attribut!
+                'overall_risk': sanitize_float(final_risk_score),
                 'risk_level': risk_level,
-                'base_score': base_risk,
-                'risk_penalty': risk_penalty,
+                'base_score': sanitize_float(base_risk),
+                'risk_penalty': sanitize_float(risk_penalty),
                 'extended_risk_factors': extended_risk_factors,
                 'all_risk_flags': risk_flags + extended_risk_factors,
                 'risk_breakdown': {
@@ -564,7 +569,7 @@ class LowCapAnalyzer:
             
             # Aktualisiere das ursprüngliche Ergebnis
             analysis_result['extended_risk_assessment'] = extended_assessment
-            analysis_result['final_risk_score'] = final_risk_score
+            analysis_result['final_risk_score'] = sanitize_float(final_risk_score)
             analysis_result['risk_level'] = risk_level
             
             return extended_assessment
@@ -573,10 +578,10 @@ class LowCapAnalyzer:
             self.logger.error(f"Fehler bei der erweiterten Risikobewertung: {e}")
             # Fallback-Risikobewertung mit overall_risk
             return {
-                'overall_risk': 50,  # Fallback-Wert
+                'overall_risk': sanitize_float(50),
                 'risk_level': 'moderate',
-                'base_score': 50,
-                'risk_penalty': 0,
+                'base_score': sanitize_float(50),
+                'risk_penalty': sanitize_float(0),
                 'extended_risk_factors': [],
                 'all_risk_flags': [],
                 'error': str(e)
