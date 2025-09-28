@@ -258,31 +258,32 @@ class EtherscanProvider(BaseAPIProvider):
             'recent_large_sells': 0
         }
 
-    async def get_contract_transactions(
+    async def get_wallet_token_transactions(
         self, 
-        contract_address: str, 
-        hours: int = 24, 
+        wallet_address: str, 
+        token_address: Optional[str] = None,
+        hours: int = 24,
         start_block: Optional[int] = None,
-        end_block: Optional[int] = None,
-        sort: str = 'desc',
-        **kwargs  # Akzeptiere beliebige zusätzliche Parameter
+        sort: str = 'desc'
     ) -> List[Dict]:
         """
-        Holt die Transaktionen eines Smart-Contracts der letzten Stunden
-        oder in einem bestimmten Blockbereich
+        Holt die Token-Transaktionen einer Wallet, optional gefiltert nach einem bestimmten Token
         
         Args:
-            contract_address: Contract-Adresse
+            wallet_address: Wallet-Adresse
+            token_address: Optionale Token-Adresse, um nur Transaktionen für diesen Token zu erhalten
             hours: Zeitraum in Stunden (wenn start_block nicht angegeben)
             start_block: Optionale Start-Blocknummer
-            end_block: Optionale End-Blocknummer (wird ignoriert)
             sort: Sortierreihenfolge (asc/desc)
-            **kwargs: Zusätzliche Parameter (werden ignoriert)
             
         Returns:
-            Liste der Transaktionen
+            Liste der Token-Transaktionen
         """
         try:
+            # Bestimme die richtige API-URL basierend auf der Chain
+            base_url = self.base_url
+            api_key = self.api_key
+            
             # Berechne den Zeitstempel basierend auf Parametern
             if start_block is not None:
                 # Prüfe auf ungültige Blocknummer
@@ -300,26 +301,30 @@ class EtherscanProvider(BaseAPIProvider):
                 since_timestamp = int((datetime.now() - timedelta(hours=hours)).timestamp())
             
             # Logge die Parameter für Debugging
-            logger.info(f"Suche Transaktionen für Contract {contract_address} seit {'Block ' + str(start_block) if start_block else str(hours) + ' Stunden'}")
+            logger.info(f"Suche Token-Transaktionen für Wallet {wallet_address} seit {'Block ' + str(start_block) if start_block else str(hours) + ' Stunden'}")
             
             # Hole Token-Transfers über die Etherscan-API mit Zeitstempel-Filter
-            # Etherscan unterstützt starttimestamp/endtimestamp direkt
             params = {
                 'module': 'account',
                 'action': 'tokentx',
-                'contractaddress': contract_address,
+                'address': wallet_address,
                 'starttimestamp': str(since_timestamp),
                 'endtimestamp': str(int(datetime.now().timestamp())),
                 'sort': sort,
-                'apikey': self.api_key
+                'apikey': api_key
             }
             
+            # Wenn eine Token-Adresse angegeben ist, füge sie hinzu
+            if token_address:
+                params['contractaddress'] = token_address
+                logger.info(f"Filtere nach Token: {token_address}")
+            
             # Führe den API-Aufruf durch
-            data = await self._make_request(self.base_url, params)
+            data = await self._make_request(base_url, params)
             
             if data and data.get('status') == '1' and data.get('result'):
                 transactions = data.get('result', [])
-                logger.info(f"Etherscan API gab {len(transactions)} Transaktionen zurück")
+                logger.info(f"Etherscan API gab {len(transactions)} Token-Transaktionen zurück")
                 
                 # Bereite die Transaktionsdaten auf
                 result_transactions = []
@@ -329,33 +334,36 @@ class EtherscanProvider(BaseAPIProvider):
                         'to': tx.get('to'),
                         'hash': tx.get('hash'),
                         'timeStamp': int(tx.get('timeStamp', 0)),
-                        'contract_address': contract_address,
+                        'contract_address': tx.get('contractAddress'),
                         'value': int(tx.get('value', 0)),
                         'tokenSymbol': tx.get('tokenSymbol'),
                         'tokenDecimal': int(tx.get('tokenDecimal', 18))
                     })
                 
-                logger.info(f"Verarbeite {len(result_transactions)} Transaktionen seit {'Block ' + str(start_block) if start_block else str(hours) + ' Stunden'}")
+                logger.info(f"Verarbeite {len(result_transactions)} Token-Transaktionen seit {'Block ' + str(start_block) if start_block else str(hours) + ' Stunden'}")
                 return result_transactions
             else:
                 error_msg = data.get('message', 'Unknown error') if data else 'No response'
-                logger.warning(f"Keine Transaktionsdaten von Etherscan API erhalten: {error_msg}")
+                logger.warning(f"Keine Token-Transaktionsdaten von Etherscan API erhalten: {error_msg}")
                 
                 # Versuche Fallback ohne Zeitstempel-Filter
                 logger.info("Versuche Fallback ohne Zeitstempel-Filter...")
                 fallback_params = {
                     'module': 'account',
                     'action': 'tokentx',
-                    'contractaddress': contract_address,
+                    'address': wallet_address,
                     'sort': 'desc',
-                    'apikey': self.api_key
+                    'apikey': api_key
                 }
                 
-                fallback_data = await self._make_request(self.base_url, fallback_params)
+                if token_address:
+                    fallback_params['contractaddress'] = token_address
+                
+                fallback_data = await self._make_request(base_url, fallback_params)
                 
                 if fallback_data and fallback_data.get('status') == '1' and fallback_data.get('result'):
                     all_transactions = fallback_data.get('result', [])
-                    logger.info(f"Fallback: Etherscan API gab {len(all_transactions)} Transaktionen zurück (ungefiltert)")
+                    logger.info(f"Fallback: Etherscan API gab {len(all_transactions)} Token-Transaktionen zurück (ungefiltert)")
                     
                     # Manuell nach Zeit filtern
                     result_transactions = []
@@ -367,23 +375,23 @@ class EtherscanProvider(BaseAPIProvider):
                                 'to': tx.get('to'),
                                 'hash': tx.get('hash'),
                                 'timeStamp': tx_timestamp,
-                                'contract_address': contract_address,
+                                'contract_address': tx.get('contractAddress'),
                                 'value': int(tx.get('value', 0)),
                                 'tokenSymbol': tx.get('tokenSymbol'),
                                 'tokenDecimal': int(tx.get('tokenDecimal', 18))
                             })
                     
-                    logger.info(f"Fallback: Gefiltert {len(result_transactions)} Transaktionen seit {'Block ' + str(start_block) if start_block else str(hours) + ' Stunden'}")
+                    logger.info(f"Fallback: Gefiltert {len(result_transactions)} Token-Transaktionen seit {'Block ' + str(start_block) if start_block else str(hours) + ' Stunden'}")
                     return result_transactions
                 else:
                     logger.error("Sowohl Hauptversuch als auch Fallback fehlgeschlagen")
                     return []
                 
         except asyncio.CancelledError:
-            logger.warning("Contract transactions request was cancelled")
+            logger.warning("Wallet token transactions request was cancelled")
             return []
         except Exception as e:
-            logger.error(f"Fehler beim Abrufen der Contract-Transaktionen: {e}")
+            logger.error(f"Fehler beim Abrufen der Wallet-Token-Transaktionen: {e}")
             return []
 
     async def _get_block_timestamp(self, block_number: int) -> int:
