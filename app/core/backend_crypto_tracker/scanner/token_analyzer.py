@@ -117,23 +117,31 @@ class TokenAnalyzer:
         self.cex_wallets = scanner_config.rpc_config.cex_wallets
 
     async def __aenter__(self):
-        # API-Provider initialisieren - Ersetzt APIManager
-        await self._initialize_api_provider()
+        # API-Manager initialisieren
+        await self._initialize_api_manager()
         
-        # Blockchain-Provider initialisieren
+        # Blockchain-Provider initialisieren mit GetBlock RPC-URL
         if os.getenv('ETHERSCAN_API_KEY'):
-            self.ethereum_provider = EthereumProvider(self.etherscan_key)
+            # Verwende die GetBlock RPC-URL
+            ethereum_rpc = self.ethereum_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
+            self.ethereum_provider = EthereumProvider(self.etherscan_key, rpc_url=ethereum_rpc)
             logger.info("Ethereum provider initialized")
         else:
             logger.warning("Etherscan API key not provided, using limited functionality")
-            self.ethereum_provider = EthereumProvider()  # Funktioniert auch ohne API-Key
+            # Verwende die GetBlock RPC-URL auch ohne API-Key
+            ethereum_rpc = self.ethereum_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
+            self.ethereum_provider = EthereumProvider(rpc_url=ethereum_rpc)
         
         if os.getenv('BSCSCAN_API_KEY'):
-            self.bsc_provider = EthereumProvider(self.bscscan_key)  # BSC verwendet auch EthereumProvider
+            # Verwende die GetBlock RPC-URL für BSC
+            bsc_rpc = self.bsc_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
+            self.bsc_provider = EthereumProvider(self.bscscan_key, rpc_url=bsc_rpc)
             logger.info("BSC provider initialized")
         else:
             logger.warning("BSCscan API key not provided, using limited functionality")
-            self.bsc_provider = EthereumProvider()  # Funktioniert auch ohne API-Key
+            # Verwende die GetBlock RPC-URL auch ohne API-Key
+            bsc_rpc = self.bsc_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
+            self.bsc_provider = EthereumProvider(rpc_url=bsc_rpc)
         
         if os.getenv('SOLANA_RPC_URL'):
             self.solana_provider = SolanaProvider()
