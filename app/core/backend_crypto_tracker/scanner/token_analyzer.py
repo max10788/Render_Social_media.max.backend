@@ -36,6 +36,7 @@ from app.core.backend_crypto_tracker.processor.database.models.wallet import Wal
 from app.core.backend_crypto_tracker.blockchain.onchain.etherscan_provider import EtherscanProvider
 from app.core.backend_crypto_tracker.config.blockchain_api_keys import get_api_keys
 from app.core.backend_crypto_tracker.utils.json_helpers import sanitize_float
+from app.core.backend_crypto_tracker.utils.token_data_resolver import TokenDataResolver
 
 logger = get_logger(__name__)
 
