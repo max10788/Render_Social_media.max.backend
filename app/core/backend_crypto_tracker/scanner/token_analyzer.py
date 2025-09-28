@@ -1129,8 +1129,24 @@ class TokenAnalyzer:
                 risk_flags.append("rugpull_suspects")
             
             # Gini-Koeffizient
-            balances = [w.balance for w in wallet_analyses]
-            gini = self._calculate_gini_coefficient(balances)
+            balances = [w.balance for w in wallet_analyses if w.balance > 0]  # Nur positive Salden berücksichtigen
+            gini = 0.0  # Standardwert
+            
+            if len(balances) > 1:  # Nur berechnen, wenn es mehr als einen Wallet gibt
+                try:
+                    sorted_balances = sorted(balances)
+                    n = len(sorted_balances)
+                    cumsum = sum(sorted_balances)
+                    
+                    if cumsum > 0:  # Vermeide Division durch Null
+                        # Gini-Koeffizient berechnen
+                        gini = (2.0 * sum((i + 1) * balance for i, balance in enumerate(sorted_balances))) / (n * cumsum) - (n + 1) / n
+                        # Sicherstellen, dass Gini im gültigen Bereich [0, 1] liegt
+                        gini = max(0.0, min(1.0, gini))
+                except Exception as e:
+                    logger.warning(f"Error calculating Gini coefficient: {e}")
+                    gini = 0.0
+            
             if gini > 0.8:  # Sehr ungleiche Verteilung
                 score -= 20
                 risk_flags.append("very_uneven_distribution")
@@ -1143,24 +1159,27 @@ class TokenAnalyzer:
             risk_flags.append("no_wallet_data")
             
             # Setze Standardwerte für die Metriken
-            whale_percentage = 0
-            dev_percentage = 0
+            whale_percentage = 0.0
+            dev_percentage = 0.0
             rugpull_suspects = 0
-            gini = 0
+            gini = 0.0
         
-        # Metriken sammeln
+        # Sicherstellen, dass der Score im gültigen Bereich [0, 100] liegt
+        score = max(0.0, min(100.0, score))
+        
+        # Metriken sammeln und sicherstellen, dass alle Werte gültig sind
         metrics = {
             'total_holders_analyzed': len(wallet_analyses),
             'whale_wallets': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.WHALE_WALLET]),
             'dev_wallets': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.DEV_WALLET]),
             'rugpull_suspects': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.RUGPULL_SUSPECT]),
-            'gini_coefficient': gini,
-            'whale_percentage': whale_percentage,
-            'dev_percentage': dev_percentage
+            'gini_coefficient': float(gini),  # Sicherstellen, dass es ein Float ist
+            'whale_percentage': float(whale_percentage),  # Sicherstellen, dass es ein Float ist
+            'dev_percentage': float(dev_percentage)  # Sicherstellen, dass es ein Float ist
         }
         
         return {
-            'total_score': max(0, min(100, score)),
+            'total_score': float(score),  # Sicherstellen, dass es ein Float ist
             'metrics': metrics,
             'risk_flags': risk_flags
         }
