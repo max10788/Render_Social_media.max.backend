@@ -284,6 +284,8 @@ class TokenAnalyzer:
         # Bekannte Contract-Adressen
         self.known_contracts = scanner_config.rpc_config.known_contracts
         self.cex_wallets = scanner_config.rpc_config.cex_wallets
+        self.config = config or TokenAnalysisConfig()
+        self.token_resolver = None
 
     async def __aenter__(self):
         # API-Manager initialisieren
@@ -343,6 +345,8 @@ class TokenAnalyzer:
         
         if self.sui_provider:
             await self.sui_provider.__aenter__()
+        
+        self.token_resolver = TokenDataResolver(self.api_manager)
         
         return self
 
