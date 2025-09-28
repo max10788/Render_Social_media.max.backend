@@ -1063,10 +1063,19 @@ class TokenAnalyzer:
         
         sorted_balances = sorted(balances)
         n = len(sorted_balances)
-        cumsum = np.cumsum(sorted_balances)
+        cumsum = sum(sorted_balances)
+        
+        # Vermeide Division durch Null
+        if cumsum <= 0:
+            return 0.0
         
         # Gini-Koeffizient berechnen
-        return (2.0 * sum((i + 1) * balance for i, balance in enumerate(sorted_balances))) / (n * cumsum[-1]) - (n + 1) / n
+        gini = (2.0 * sum((i + 1) * balance for i, balance in enumerate(sorted_balances))) / (n * cumsum) - (n + 1) / n
+        
+        # Stelle sicher, dass der Gini-Koeffizient im gültigen Bereich [0, 1] liegt
+        gini = max(0.0, min(1.0, gini))
+        
+        return gini
     
     def _calculate_token_score(self, token_data: Token, wallet_analyses: List[WalletAnalysis]) -> Dict[str, Any]:
         """Berechnet einen Risiko-Score für den Token"""
