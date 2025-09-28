@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import List, Dict, Any
 from enum import Enum
+from app.core.backend_crypto_tracker.utils.json_helpers import sanitize_float
 
 # --- Enums ---
 class RiskLevel(Enum):
