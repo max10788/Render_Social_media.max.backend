@@ -175,18 +175,122 @@ class AdvancedRiskAssessor(RiskAssessor):
         # Gini-Koeffizient berechnen
         gini = self._calculate_gini_coefficient(balances)
         
-        # Konzentrations-Score berechnen (0-100)
-        hhi_score = min(100, hhi * 200)  # HHI von 0-1 zu 0-100 skaliert
-        gini_score = gini * 100  # Gini von 0-1 zu 0-100 skaliert
+        # Konzentrations-Score berechnen
+        hhi_score = min(100, hhi * 200)
+        gini_score = gini * 100
         
-        # Gewichteter Durchschnitt
         concentration_score = (hhi_score + gini_score) / 2
         
         return {
-            'hhi': hhi,
-            'gini': gini,
-            'score': concentration_score,
-            'top_10_concentration': sum(sorted(balances, reverse=True)[:10]) / total_supply if total_supply > 0 else 0
+            'hhi': sanitize_float(hhi),
+            'gini': sanitize_float(gini),
+            'score': sanitize_float(concentration_score),
+            'top_10_concentration': sanitize_float(sum(sorted(balances, reverse=True)[:10]) / total_supply if total_supply > 0 else 0)
+        }
+    
+    def _calculate_liquidity_metrics(self, token_data: Dict[str, Any], 
+                                  transaction_history: List[Dict] = None) -> Dict[str, Any]:
+        """Berechnet Liquiditätsrisiko mit Amihud Illiquidity Ratio"""
+        market_cap = token_data.get('market_cap', 0)
+        liquidity = token_data.get('liquidity', 0)
+        volume_24h = token_data.get('volume_24h', 0)
+        
+        # Amihud Illiquidity Ratio
+        if market_cap > 0 and volume_24h > 0:
+            amihud_ratio = (1 / market_cap) / volume_24h
+        else:
+            amihud_ratio = float('inf')
+        
+        # Liquiditäts-Score
+        if amihud_ratio == float('inf'):
+            liquidity_score = 100
+        elif amihud_ratio > 0.001:
+            liquidity_score = 90
+        elif amihud_ratio > 0.0001:
+            liquidity_score = 70
+        elif amihud_ratio > 0.00001:
+            liquidity_score = 40
+        else:
+            liquidity_score = 20
+        
+        # Perzentil-Rang
+        illiquidity_percentile = min(99, max(1, int(liquidity_score * 0.99)))
+        
+        return {
+            'amihud_ratio': sanitize_float(amihud_ratio),
+            'illiquidity_percentile': sanitize_float(illiquidity_percentile),
+            'score': sanitize_float(liquidity_score),
+            'liquidity_to_market_cap': sanitize_float(liquidity / market_cap if market_cap > 0 else 0)
+        }
+    
+    def _calculate_liquidity_metrics(self, token_data: Dict[str, Any], 
+                                  transaction_history: List[Dict] = None) -> Dict[str, Any]:
+        """Berechnet Liquiditätsrisiko mit Amihud Illiquidity Ratio"""
+        market_cap = token_data.get('market_cap', 0)
+        liquidity = token_data.get('liquidity', 0)
+        volume_24h = token_data.get('volume_24h', 0)
+        
+        # Amihud Illiquidity Ratio
+        if market_cap > 0 and volume_24h > 0:
+            amihud_ratio = (1 / market_cap) / volume_24h
+        else:
+            amihud_ratio = float('inf')
+        
+        # Liquiditäts-Score
+        if amihud_ratio == float('inf'):
+            liquidity_score = 100
+        elif amihud_ratio > 0.001:
+            liquidity_score = 90
+        elif amihud_ratio > 0.0001:
+            liquidity_score = 70
+        elif amihud_ratio > 0.00001:
+            liquidity_score = 40
+        else:
+            liquidity_score = 20
+        
+        # Perzentil-Rang
+        illiquidity_percentile = min(99, max(1, int(liquidity_score * 0.99)))
+        
+        return {
+            'amihud_ratio': sanitize_float(amihud_ratio),
+            'illiquidity_percentile': sanitize_float(illiquidity_percentile),
+            'score': sanitize_float(liquidity_score),
+            'liquidity_to_market_cap': sanitize_float(liquidity / market_cap if market_cap > 0 else 0)
+        }
+    
+    def _calculate_liquidity_metrics(self, token_data: Dict[str, Any], 
+                                  transaction_history: List[Dict] = None) -> Dict[str, Any]:
+        """Berechnet Liquiditätsrisiko mit Amihud Illiquidity Ratio"""
+        market_cap = token_data.get('market_cap', 0)
+        liquidity = token_data.get('liquidity', 0)
+        volume_24h = token_data.get('volume_24h', 0)
+        
+        # Amihud Illiquidity Ratio
+        if market_cap > 0 and volume_24h > 0:
+            amihud_ratio = (1 / market_cap) / volume_24h
+        else:
+            amihud_ratio = float('inf')
+        
+        # Liquiditäts-Score
+        if amihud_ratio == float('inf'):
+            liquidity_score = 100
+        elif amihud_ratio > 0.001:
+            liquidity_score = 90
+        elif amihud_ratio > 0.0001:
+            liquidity_score = 70
+        elif amihud_ratio > 0.00001:
+            liquidity_score = 40
+        else:
+            liquidity_score = 20
+        
+        # Perzentil-Rang
+        illiquidity_percentile = min(99, max(1, int(liquidity_score * 0.99)))
+        
+        return {
+            'amihud_ratio': sanitize_float(amihud_ratio),
+            'illiquidity_percentile': sanitize_float(illiquidity_percentile),
+            'score': sanitize_float(liquidity_score),
+            'liquidity_to_market_cap': sanitize_float(liquidity / market_cap if market_cap > 0 else 0)
         }
     
     def _calculate_liquidity_metrics(self, token_data: Dict[str, Any], 
