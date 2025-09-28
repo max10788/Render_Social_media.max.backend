@@ -309,100 +309,183 @@ class EthereumProvider:
         return None
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
-        """Ethereum-spezifische Token-Preisabfrage"""
+        """Holt Token-Preisdaten - NURTY für interne Berechnungen, nicht für Top-Coins"""
         try:
-            # Versuche zuerst, den Preis über CoinGecko zu erhalten (genauere Daten)
-            if self.coingecko_provider:
-                coingecko_price = await self.coingecko_provider.get_token_price(token_address, chain)
-                if coingecko_price:
-                    return coingecko_price
-                
-            # Fallback auf Etherscan
-            params = {
-                'module': 'stats',
-                'action': 'tokenprice',
-                'contractaddress': token_address,
-                'apikey': self.api_key
-            }
+            # Diese Methode sollte nur für interne Berechnungen verwendet werden
+            # und nicht für die Abfrage von allgemeinen Börsendaten
             
-            data = await self._make_request(self.base_url, params)
+            # Versuche, den Preis über DEX-Daten zu ermitteln
+            dex_price = await self._get_token_price_from_dex(token_address)
+            if dex_price and dex_price > 0:
+                return TokenPriceData(
+                    price=dex_price,
+                    market_cap=0,  # Nicht verfügbar
+                    volume_24h=0,  # Nicht verfügbar
+                    price_change_percentage_24h=0,  # Nicht verfügbar
+                    source="DEX",
+                    last_updated=datetime.now()
+                )
             
-            # Prüfe, ob die Antwort gültig ist
-            if not data or data.get('status') != '1':
-                logger.warning(f"Ungültige Antwort von Etherscan für Token {token_address}")
-                return None
-                
-            result = data.get('result', {})
-            if not result or not result.get('ethusd'):
-                logger.warning(f"Keine Preisdaten von Etherscan für Token {token_address}")
-                return None
-                
-            return TokenPriceData(
-                price=float(result.get('ethusd', 0)),
-                market_cap=0,  # Nicht verfügbar
-                volume_24h=0,  # Nicht verfügbar
-                price_change_percentage_24h=0,  # Nicht verfügbar
-                source="Etherscan",
-                last_updated=datetime.now()
-            )
+            # Fallback: Keine Preisdaten verfügbar
+            logger.warning(f"Keine Preisdaten für Token {token_address} verfügbar")
+            return None
+            
         except Exception as e:
-            logger.error(f"Error fetching Ethereum token price: {e}")
-        
-        return None
+            logger.error(f"Error fetching token price: {e}")
+            return None
+    
+    async def _get_token_price_from_dex(self, token_address: str) -> Optional[float]:
+        """Holt Token-Preis von dezentralen Börsen"""
+        try:
+            # Uniswap V2 Factory Address
+            factory_address = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
+            factory_abi = [
+                {
+                    "inputs": [{"internalType": "address", "name": "tokenA", "type": "address"}, {"internalType": "address", "name": "tokenB", "type": "address"}],
+                    "name": "getPair",
+                    "outputs": [{"internalType": "address", "name": "pair", "type": "address"}],
+                    "stateMutability": "view",
+                    "type": "function"
+                }
+            ]
+            
+            factory_contract = self.w3.eth.contract(address=factory_address, abi=factory_abi)
+            
+            # WETH Address
+            weth_address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+            
+            # Finde das Paar
+            pair_address = await factory_contract.functions.getPair(token_address, weth_address).call()
+            
+            if pair_address != "0x0000000000000000000000000000000000000000":
+                # Hole Reserven
+                pair_abi = [
+                    {
+                        "inputs": [],
+                        "name": "getReserves",
+                        "outputs": [
+                            {"internalType": "uint112", "name": "reserve0", "type": "uint112"},
+                            {"internalType": "uint112", "name": "reserve1", "type": "uint112"}
+                        ],
+                        "stateMutability": "view",
+                        "type": "function"
+                    },
+                    {
+                        "inputs": [],
+                        "name": "token0",
+                        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+                        "stateMutability": "view",
+                        "type": "function"
+                    },
+                    {
+                        "inputs": [],
+                        "name": "token1",
+                        "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+                        "stateMutability": "view",
+                        "type": "function"
+                    }
+                ]
+                
+                pair_contract = self.w3.eth.contract(address=pair_address, abi=pair_abi)
+                
+                # Hole Token-Adressen und Reserven
+                token0 = await pair_contract.functions.token0().call()
+                token1 = await pair_contract.functions.token1().call()
+                reserves = await pair_contract.functions.getReserves().call()
+                
+                # Bestimme, welche Reserven zu welchem Token gehören
+                if token0.lower() == token_address.lower():
+                    token_reserve = reserves[0]
+                    weth_reserve = reserves[1]
+                else:
+                    token_reserve = reserves[1]
+                    weth_reserve = reserves[0]
+                
+                # Hole WETH-Preis (vereinfacht)
+                weth_price_usd = 2000  # Fallback-Wert, in einer echten Implementierung würde dies von einer API geholt
+                
+                # Berechne Token-Preis
+                if token_reserve > 0:
+                    token_price = (weth_reserve * weth_price_usd) / token_reserve
+                    return token_price
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting token price from DEX: {e}")
+            return None
     
     async def get_token_holders(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
-        """Holt Token-Holder mit Etherscan API"""
+        """Holt die Top-Holder eines Tokens durch Analyse der Transaktionen"""
         try:
-            api_key = os.getenv('ETHERSCAN_API_KEY')
-            if not api_key:
-                logger.warning("Etherscan API key not provided")
+            logger.info(f"Starte Analyse der Top-Holder für Token {token_address}")
+            
+            # Cache-Schlüssel für diese Anfrage
+            cache_key = f"token_holders_{token_address}_{chain}"
+            
+            # Schritt 1: Hole die Transaktionen des Smart-Contracts der letzten 24 Stunden
+            logger.info(f"Rufe Transaktionen für {token_address} auf {chain} ab")
+            transactions = await self.get_contract_transactions(token_address, hours=24)
+            
+            if not transactions:
+                logger.warning(f"Keine Transaktionen für {token_address} gefunden")
                 return []
             
-            # Bestimme die richtige URL basierend auf der Chain
-            if chain.lower() == 'ethereum':
-                base_url = "https://api.etherscan.io/api"
-            elif chain.lower() == 'bsc':
-                base_url = "https://api.bscscan.com/api"
-            else:
-                logger.warning(f"Etherscan API not supported for chain: {chain}")
-                return []
+            # Schritt 2: Extrahiere die einzigartigen Wallet-Adressen aus den Transaktionen
+            wallet_addresses = set()
+            for tx in transactions:
+                # Extrahiere Absender und Empfänger
+                if 'from' in tx and tx['from']:
+                    wallet_addresses.add(tx['from'])
+                if 'to' in tx and tx['to']:
+                    wallet_addresses.add(tx['to'])
             
-            params = {
-                'module': 'token',
-                'action': 'tokenholderlist',
-                'contractaddress': token_address,
-                'page': '1',
-                'offset': '100',
-                'sort': 'desc',
-                'apikey': api_key
-            }
+            logger.info(f"Gefundene aktive Wallet-Adressen: {len(wallet_addresses)}")
             
-            data = await self._make_request(base_url, params)
+            # Schritt 3: Für jede Wallet-Adresse, hole den aktuellen Token-Bestand
+            holders = []
+            total_supply = 0
             
-            if data and data.get('status') == '1' and data.get('message') == 'OK':
-                result = []
-                for holder in data.get('result', []):
-                    result.append({
-                        'TokenHolderAddress': holder.get('TokenHolderAddress'),
-                        'TokenHolderQuantity': holder.get('TokenHolderQuantity')
-                    })
-                return result
+            for address in wallet_addresses:
+                try:
+                    # Hole den Token-Bestand für diese Adresse
+                    balance = await self.get_token_balance(token_address, address)
+                    if balance > 0:
+                        holders.append({
+                            'address': address,
+                            'balance': balance,
+                            'percentage': 0,  # Wird später berechnet
+                            'last_interaction': None  # Könnte später aus Transaktionen extrahiert werden
+                        })
+                        total_supply += balance
+                except Exception as e:
+                    logger.warning(f"Fehler beim Abrufen des Token-Bestands für {address}: {e}")
+                    continue
+            
+            # Schritt 4: Berechne die Prozentsätze
+            for holder in holders:
+                if total_supply > 0:
+                    holder['percentage'] = (holder['balance'] / total_supply) * 100
+                else:
+                    holder['percentage'] = 0
+            
+            # Schritt 5: Sortiere die Wallets nach Balance (absteigend)
+            holders.sort(key=lambda x: x['balance'], reverse=True)
+            
+            # Schritt 6: Begrenze die Anzahl der Wallets
+            holders = holders[:100]  # Top 100 Holder
+            
+            logger.info(f"Top-Holder für {token_address}: {len(holders)} Wallets gefunden")
+            return holders
+            
         except Exception as e:
-            logger.error(f"Error fetching token holders: {e}")
-        
-        return []
+            logger.error(f"Fehler beim Abrufen der Token-Holder: {e}")
+            return []
     
     async def _get_holders_from_etherscan(self, token_address: str, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Ermittelt Token-Halter durch Analyse von Token-Transfers über Etherscan.
-        Dies ist eine Fallback-Methode, die weniger genau ist als dedizierte APIs.
-        
-        Args:
-            token_address: Die Token-Vertragsadresse
-            limit: Maximale Anzahl an Haltern, die abgerufen werden sollen
-            
-        Returns:
-            Eine Liste von Dictionaries mit Halter-Informationen
+        Fallback-Methode: Ermittelt Token-Halter durch Analyse von Token-Transfers über Etherscan.
+        Dies ist eine Fallback-Methode, die weniger genau ist als die primäre Methode.
         """
         try:
             # Hole Token-Transfers
