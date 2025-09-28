@@ -1,6 +1,17 @@
 import math
 from typing import Any, Dict, List, Union
 
+class SafeJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return None
+        elif isinstance(obj, Decimal):
+            return float(obj)
+        elif isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return super().default(obj)
+
 def sanitize_float(value: Any) -> Any:
     """Konvertiert NaN oder Infinity zu None für JSON-Serialisierung"""
     if isinstance(value, float):
