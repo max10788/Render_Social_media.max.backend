@@ -936,7 +936,7 @@ class TokenAnalyzer:
                         continue
                 
                 # Hole Transaktionsdaten für die Wallet
-                transaction_data = await self._fetch_wallet_transaction_data(wallet_address, token_data.chain)
+                transaction_data = await self._fetch_wallet_transaction_data(wallet_address, token_data.chain, token_data.address)
                 
                 # Klassifiziere die Wallet
                 wallet_type = self._classify_wallet(wallet_address, balance, percentage, transaction_data, token_data)
@@ -965,11 +965,11 @@ class TokenAnalyzer:
         
         return wallet_analyses
     
-    async def _fetch_wallet_transaction_data(self, wallet_address: str, chain: str) -> Dict[str, Any]:
+    async def _fetch_wallet_transaction_data(self, wallet_address: str, chain: str, token_address: Optional[str] = None) -> Dict[str, Any]:
         """Holt Transaktionsdaten für eine Wallet"""
         try:
             # Cache-Schlüssel für diese Anfrage
-            cache_key = f"wallet_transactions_{wallet_address}_{chain}"
+            cache_key = f"wallet_transactions_{wallet_address}_{chain}_{token_address}"
             
             # Prüfe, ob die Daten im Cache vorhanden sind
             if self.cache:
@@ -982,9 +982,43 @@ class TokenAnalyzer:
             
             if chain in ['ethereum', 'bsc']:
                 if chain == 'ethereum' and self.ethereum_provider:
-                    transaction_data = await self.ethereum_provider.get_wallet_transactions(wallet_address, chain)
+                    transactions = await self.ethereum_provider.get_wallet_token_transactions(wallet_address, token_address, hours=24)
                 elif chain == 'bsc' and self.bsc_provider:
-                    transaction_data = await self.bsc_provider.get_wallet_transactions(wallet_address, chain)
+                    transactions = await self.bsc_provider.get_wallet_token_transactions(wallet_address, token_address, hours=24)
+                else:
+                    transactions = []
+                
+                # Verarbeite die Transaktionen
+                if transactions:
+                    # Sortiere nach Zeitstempel
+                    sorted_tx = sorted(transactions, key=lambda x: x['timeStamp'])
+                    first_tx_time = datetime.fromtimestamp(sorted_tx[0]['timeStamp'])
+                    last_tx_time = datetime.fromtimestamp(sorted_tx[-1]['timeStamp'])
+                    
+                    # Zähle die Anzahl der Transaktionen
+                    tx_count = len(transactions)
+                    
+                    # Analysiere die Transaktionen auf große Verkäufe
+                    recent_large_sells = 0
+                    if token_address:
+                        for tx in transactions:
+                            if tx['from'].lower() == wallet_address.lower() and tx['to'].lower() != wallet_address.lower():
+                                # Verkauf
+                                recent_large_sells += 1
+                    
+                    transaction_data = {
+                        'tx_count': tx_count,
+                        'first_tx_time': first_tx_time,
+                        'last_tx_time': last_tx_time,
+                        'recent_large_sells': recent_large_sells
+                    }
+                else:
+                    transaction_data = {
+                        'tx_count': 0,
+                        'first_tx_time': None,
+                        'last_tx_time': None,
+                        'recent_large_sells': 0
+                    }
             elif chain == 'solana' and self.solana_provider:
                 transaction_data = await self.solana_provider.get_wallet_transactions(wallet_address)
             elif chain == 'sui' and self.sui_provider:
@@ -997,7 +1031,12 @@ class TokenAnalyzer:
             return transaction_data
         except Exception as e:
             logger.error(f"Error fetching transaction data for {wallet_address} on {chain}: {e}")
-            return {}
+            return {
+                'tx_count': 0,
+                'first_tx_time': None,
+                'last_tx_time': None,
+                'recent_large_sells': 0
+            }
     
     def _classify_wallet(self, wallet_address: str, balance: float, percentage: float,
                         transaction_data: Dict[str, Any], token_data: Token) -> WalletTypeEnum:
