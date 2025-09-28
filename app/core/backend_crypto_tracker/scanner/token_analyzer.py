@@ -1143,15 +1143,7 @@ class TokenAnalyzer:
             
             if len(balances) > 1:  # Nur berechnen, wenn es mehr als einen Wallet gibt
                 try:
-                    sorted_balances = sorted(balances)
-                    n = len(sorted_balances)
-                    cumsum = sum(sorted_balances)
-                    
-                    if cumsum > 0:  # Vermeide Division durch Null
-                        # Gini-Koeffizient berechnen
-                        gini = (2.0 * sum((i + 1) * balance for i, balance in enumerate(sorted_balances))) / (n * cumsum) - (n + 1) / n
-                        # Sicherstellen, dass Gini im gültigen Bereich [0, 1] liegt
-                        gini = max(0.0, min(1.0, gini))
+                    gini = self._calculate_gini_coefficient(balances)
                 except Exception as e:
                     logger.warning(f"Error calculating Gini coefficient: {e}")
                     gini = 0.0
@@ -1182,13 +1174,13 @@ class TokenAnalyzer:
             'whale_wallets': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.WHALE_WALLET]),
             'dev_wallets': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.DEV_WALLET]),
             'rugpull_suspects': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.RUGPULL_SUSPECT]),
-            'gini_coefficient': float(gini),  # Sicherstellen, dass es ein Float ist
-            'whale_percentage': float(whale_percentage),  # Sicherstellen, dass es ein Float ist
-            'dev_percentage': float(dev_percentage)  # Sicherstellen, dass es ein Float ist
+            'gini_coefficient': float(gini),
+            'whale_percentage': float(whale_percentage),
+            'dev_percentage': float(dev_percentage)
         }
         
         return {
-            'total_score': float(score),  # Sicherstellen, dass es ein Float ist
+            'total_score': float(score),
             'metrics': metrics,
             'risk_flags': risk_flags
         }
