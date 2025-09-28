@@ -22,6 +22,7 @@ Base = declarative_base()
 from app.core.backend_crypto_tracker.services.multichain.chainalysis_service import ChainalysisIntegration
 from app.core.backend_crypto_tracker.services.multichain.elliptic_service import EllipticIntegration
 from app.core.backend_crypto_tracker.services.multichain.community_labels_service import CommunityLabelsAPI
+from app.core.backend_crypto_tracker.utils.json_helpers import sanitize_float
 
 # Importiere Konfigurationen
 from app.core.backend_crypto_tracker.config.scanner_config import (
