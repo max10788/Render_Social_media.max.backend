@@ -284,7 +284,8 @@ class TokenAnalyzer:
         # Bekannte Contract-Adressen
         self.known_contracts = scanner_config.rpc_config.known_contracts
         self.cex_wallets = scanner_config.rpc_config.cex_wallets
-        self.config = config or TokenAnalysisConfig()
+        
+        # Token-Resolver initialisieren
         self.token_resolver = None
 
     async def __aenter__(self):
@@ -346,6 +347,7 @@ class TokenAnalyzer:
         if self.sui_provider:
             await self.sui_provider.__aenter__()
         
+        # Token-Resolver initialisieren
         self.token_resolver = TokenDataResolver(self.api_manager)
         
         return self
@@ -540,10 +542,19 @@ class TokenAnalyzer:
             raise CustomAnalysisException(error_msg)
     
         try:
-            # Hole Token-Daten vom API-Manager
-            token_data = await self._fetch_custom_token_data(token_address, chain)
+            # Hole Token-Daten vom Token-Resolver
+            if self.token_resolver:
+                token_data = await self.token_resolver.resolve_token_data(token_address, chain)
+            else:
+                # Fallback auf alte Methode
+                token_data = await self._fetch_custom_token_data_fallback(token_address, chain)
             
             if not token_data:
+                raise ValueError("Token data could not be retrieved")
+            
+            # Prüfe, ob der Token gefunden wurde
+            if token_data.name == "Unknown":
+                self.logger.warning(f"Token {token_address} nicht gefunden auf {chain}")
                 raise ValueError("Token data could not be retrieved")
             
             # Hole Wallet-Daten
@@ -644,9 +655,8 @@ class TokenAnalyzer:
             self.logger.error(f"Unerwarteter Fehler bei der Token-Analyse: {str(e)}", exc_info=True)
             raise CustomAnalysisException(f"Unerwarteter Fehler bei der Analyse: {str(e)}") from e
     
-    @retry_with_backoff(max_retries=3, base_delay=2, max_delay=30)
-    async def _fetch_custom_token_data(self, token_address: str, chain: str) -> Optional[Token]:
-        """Holt Token-Daten für verschiedene Chains mit Rate-Limit-Handling"""
+    async def _fetch_custom_token_data_fallback(self, token_address: str, chain: str) -> Optional[Token]:
+        """Fallback-Methode für die Token-Datenabfrage"""
         try:
             # Cache-Schlüssel für diese Anfrage
             cache_key = f"token_data_{token_address}_{chain}"
@@ -696,7 +706,7 @@ class TokenAnalyzer:
             return token
         except Exception as e:
             logger.error(f"Error fetching token data for {token_address} on {chain}: {e}")
-        return None
+            return None
     
     async def _fetch_evm_token_data(self, token: Token) -> Token:
         """Holt zusätzliche Token-Daten für EVM-Chains"""
