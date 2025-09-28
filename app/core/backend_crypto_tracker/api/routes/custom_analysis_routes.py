@@ -1,12 +1,16 @@
 from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, validator
 from typing import Optional
 from datetime import datetime
 import re
 import logging
 
+# Importieren Sie die Hilfsfunktionen für JSON-Bereinigung
+from app.core.backend_crypto_tracker.utils.json_helpers import sanitize_value, SafeJSONEncoder
+
 router = APIRouter(prefix="/api/analyze", tags=["custom-analysis"])
-logger = logging.getLogger(__name__)  # Logger korrekt initialisieren
+logger = logging.getLogger(__name__)
 
 class CustomAnalysisRequest(BaseModel):
     token_address: str
@@ -46,7 +50,7 @@ class CustomAnalysisResponse(BaseModel):
     error_message: Optional[str] = None
     analyzed_at: datetime
 
-@router.post("/custom", response_model=CustomAnalysisResponse)
+@router.post("/custom")
 async def analyze_custom_token(request: CustomAnalysisRequest):
     """Analysiert einen benutzerdefinierten Token basierend auf Adresse und Chain"""
     try:
@@ -61,17 +65,38 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
                 chain=request.chain
             )
         
-        return CustomAnalysisResponse(
+        # Bereinige das Ergebnis von ungültigen Float-Werten
+        sanitized_result = sanitize_value(result)
+        
+        # Erstelle die Antwort
+        response_data = CustomAnalysisResponse(
             success=True,
             token_address=request.token_address,
             chain=request.chain,
-            analysis_result=result,
+            analysis_result=sanitized_result,
             analyzed_at=datetime.utcnow()
+        )
+        
+        # Konvertiere zu Dictionary und bereinige erneut (für Sicherheit)
+        response_dict = response_data.dict()
+        sanitized_response_dict = sanitize_value(response_dict)
+        
+        # Verwende JSONResponse mit SafeJSONEncoder
+        return JSONResponse(
+            content=sanitized_response_dict,
+            media_type="application/json",
+            json_encoder=SafeJSONEncoder
         )
         
     except ValueError as e:
         logger.error(f"Validation error: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+        # Bereinige die Fehlermeldung
+        sanitized_error = sanitize_value({"error": str(e)})
+        return JSONResponse(
+            content=sanitized_error,
+            status_code=400,
+            json_encoder=SafeJSONEncoder
+        )
     except Exception as e:
         # Detaillierte Fehlermeldung für Debugging
         error_msg = str(e)
@@ -87,10 +112,20 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
         elif "Rate limit exceeded" in error_msg:
             user_msg = "Zu viele Anfragen. Bitte warten Sie einige Minuten und versuchen Sie es erneut."
         
-        return CustomAnalysisResponse(
+        # Bereinige die Fehlerantwort
+        error_response = CustomAnalysisResponse(
             success=False,
             token_address=request.token_address,
             chain=request.chain,
             error_message=user_msg,
             analyzed_at=datetime.utcnow()
+        )
+        
+        error_dict = error_response.dict()
+        sanitized_error_dict = sanitize_value(error_dict)
+        
+        return JSONResponse(
+            content=sanitized_error_dict,
+            status_code=500,
+            json_encoder=SafeJSONEncoder
         )
