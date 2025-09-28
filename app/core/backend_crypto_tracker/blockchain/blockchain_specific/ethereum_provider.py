@@ -26,57 +26,24 @@ class EthereumProvider:
         self.session = None
         self.coingecko_provider = CoinGeckoProvider()
         
-        # Zuverlässige Ethereum RPC-URLs (nur echte Ethereum-Endpunkte)
-        self.rpc_urls = [
-            # Zuerst die übergebene URL oder Umgebungsvariable
-            rpc_url if rpc_url else os.getenv('ETHEREUM_RPC_URL'),
-            # Öffentliche Ethereum RPCs
-            "https://ethereum.publicnode.com",
-            "https://eth.llamarpc.com",
-            "https://eth.meowrpc.com",
-            "https://1rpc.io/eth",
-            "https://rpc.ankr.com/eth",
-            "https://cloudflare-eth.com",
-            # Infura mit API-Key
-            "https://mainnet.infura.io/v3/1JTTMXUDJ2D2DKAW9BU6PED8NZJD7G4G9V",
-            # GetBlock
-            "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
-        ]
+        # Verwende die übergebene RPC-URL, die Umgebungsvariable oder als Fallback GetBlock
+        self.rpc_url = rpc_url or os.getenv('ETHEREUM_RPC_URL', "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047")
         
-        # Filtere None-Werte heraus
-        self.rpc_urls = [url for url in self.rpc_urls if url]
-        
-        logger.info(f"Available Ethereum RPC URLs: {len(self.rpc_urls)} configured")
+        logger.info(f"Using Ethereum RPC URL: {self.rpc_url}")
     
     async def __aenter__(self):
-        # Versuche Verbindung mit allen verfügbaren RPC-URLs
-        for i, rpc_url in enumerate(self.rpc_urls):
-            try:
-                logger.info(f"Attempting to connect to Ethereum node #{i+1}: {rpc_url}")
-                self.w3 = Web3(Web3.HTTPProvider(rpc_url))
-                
-                if self.w3.is_connected():
-                    latest_block = self.w3.eth.block_number
-                    # Zusätzliche Prüfung: Sicherstellen, dass wir mit dem richtigen Netzwerk verbunden sind
-                    chain_id = self.w3.eth.chain_id
-                    logger.info(f"Connected to node. Chain ID: {chain_id}, Latest block: {latest_block}")
-                    
-                    # Ethereum Mainnet hat Chain ID 1
-                    if chain_id == 1:
-                        logger.info(f"Successfully connected to Ethereum mainnet. Latest block: {latest_block}")
-                        self.rpc_url = rpc_url  # Speichere die funktionierende URL
-                        break
-                    else:
-                        logger.warning(f"Connected to wrong network (Chain ID: {chain_id}), expected Ethereum (1)")
-                else:
-                    logger.warning(f"Connection failed to Ethereum node: {rpc_url}")
-            except Exception as e:
-                logger.error(f"Error connecting to Ethereum node {rpc_url}: {e}")
-                continue
-        else:
-            # Wenn alle Verbindungsversuche fehlschlagen
-            logger.error("All connection attempts failed for Ethereum nodes")
-            self.w3 = None
+        # Initialisiere Web3-Verbindung mit der korrekten RPC-URL
+        self.w3 = Web3(Web3.HTTPProvider(self.rpc_url))
+        
+        # Teste die Verbindung
+        try:
+            if self.w3.is_connected():
+                latest_block = self.w3.eth.block_number
+                logger.info(f"Successfully connected to Ethereum node. Latest block: {latest_block}")
+            else:
+                logger.error("Failed to connect to Ethereum node")
+        except Exception as e:
+            logger.error(f"Error connecting to Ethereum node: {e}")
         
         if self.etherscan_provider:
             await self.etherscan_provider.__aenter__()
@@ -110,11 +77,6 @@ class EthereumProvider:
     async def get_address_balance(self, address: str) -> Optional[Dict[str, Any]]:
         """Holt den Kontostand einer Ethereum-Adresse"""
         try:
-            # Prüfe, ob wir eine Web3-Verbindung haben
-            if not self.w3 or not self.w3.is_connected():
-                logger.error("No Web3 connection available for balance lookup")
-                return None
-                
             params = {
                 'module': 'account',
                 'action': 'balance',
@@ -141,11 +103,6 @@ class EthereumProvider:
     async def get_contract_transactions(self, contract_address: str, hours: int = 24) -> List[Dict]:
         """Holt die Transaktionen eines Smart-Contracts der letzten Stunden"""
         try:
-            # Prüfe, ob wir eine Web3-Verbindung haben
-            if not self.w3 or not self.w3.is_connected():
-                logger.error("No Web3 connection available for contract transaction lookup")
-                return []
-            
             if self.etherscan_provider:
                 # Berechne den Zeitstempel vor X Stunden
                 since_timestamp = int((datetime.now() - timedelta(hours=hours)).timestamp())
@@ -180,11 +137,6 @@ class EthereumProvider:
     async def _get_contract_transactions_via_rpc(self, contract_address: str, hours: int) -> List[Dict]:
         """Fallback-Methode über RPC-Abfragen"""
         try:
-            # Prüfe, ob wir eine Web3-Verbindung haben
-            if not self.w3 or not self.w3.is_connected():
-                logger.error("No Web3 connection available for RPC transaction lookup")
-                return []
-            
             # Berechne den Block vor X Stunden
             latest_block = self.w3.eth.block_number
             blocks_per_hour = 240  # Ca. 15 Sekunden pro Block
@@ -194,22 +146,18 @@ class EthereumProvider:
             
             # Hole alle Transaktionen in diesem Blockbereich
             for block_num in range(start_block, latest_block + 1):
-                try:
-                    block = self.w3.eth.get_block(block_num, full_transactions=True)
-                    
-                    for tx in block.transactions:
-                        # Prüfe, ob die Transaktion den Contract betrifft
-                        if (tx.to and tx.to.lower() == contract_address.lower()) or \
-                           (tx.input and tx.input.startswith('0xa9059cbb')):  # ERC20 Transfer
-                            transactions.append({
-                                'from': tx['from'],
-                                'to': tx['to'],
-                                'hash': tx.hash.hex(),
-                                'timeStamp': block.timestamp
-                            })
-                except Exception as e:
-                    logger.warning(f"Error processing block {block_num}: {e}")
-                    continue
+                block = self.w3.eth.get_block(block_num, full_transactions=True)
+                
+                for tx in block.transactions:
+                    # Prüfe, ob die Transaktion den Contract betrifft
+                    if (tx.to and tx.to.lower() == contract_address.lower()) or \
+                       (tx.input and tx.input.startswith('0xa9059cbb')):  # ERC20 Transfer
+                        transactions.append({
+                            'from': tx['from'],
+                            'to': tx['to'],
+                            'hash': tx.hash.hex(),
+                            'timeStamp': block.timestamp
+                        })
             
             return transactions
         except Exception as e:
@@ -259,9 +207,8 @@ class EthereumProvider:
     async def get_token_balance(self, token_address: str, wallet_address: str) -> float:
         """Holt den Token-Bestand einer Wallet"""
         try:
-            # Prüfe, ob wir eine Web3-Verbindung haben
-            if not self.w3 or not self.w3.is_connected():
-                logger.error("No Web3 connection available for token balance lookup")
+            if not self.w3:
+                logger.error("Web3 connection not initialized")
                 return 0
             
             # ERC20-ABI für balanceOf
@@ -362,7 +309,7 @@ class EthereumProvider:
         return None
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
-        """Holt Token-Preisdaten - NUR für interne Berechnungen, nicht für Top-Coins"""
+        """Holt Token-Preisdaten - NURTY für interne Berechnungen, nicht für Top-Coins"""
         try:
             # Diese Methode sollte nur für interne Berechnungen verwendet werden
             # und nicht für die Abfrage von allgemeinen Börsendaten
@@ -390,11 +337,6 @@ class EthereumProvider:
     async def _get_token_price_from_dex(self, token_address: str) -> Optional[float]:
         """Holt Token-Preis von dezentralen Börsen"""
         try:
-            # Prüfe, ob wir eine Web3-Verbindung haben
-            if not self.w3 or not self.w3.is_connected():
-                logger.error("No Web3 connection available for DEX price lookup")
-                return None
-            
             # Uniswap V2 Factory Address
             factory_address = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f"
             factory_abi = [
@@ -478,10 +420,8 @@ class EthereumProvider:
         try:
             logger.info(f"Starte Analyse der Top-Holder für Token {token_address}")
             
-            # Prüfe, ob wir eine Web3-Verbindung haben
-            if not self.w3 or not self.w3.is_connected():
-                logger.error("No Web3 connection available for token holder analysis")
-                return []
+            # Cache-Schlüssel für diese Anfrage
+            cache_key = f"token_holders_{token_address}_{chain}"
             
             # Schritt 1: Hole die Transaktionen des Smart-Contracts der letzten 24 Stunden
             logger.info(f"Rufe Transaktionen für {token_address} auf {chain} ab")
@@ -489,8 +429,7 @@ class EthereumProvider:
             
             if not transactions:
                 logger.warning(f"Keine Transaktionen für {token_address} gefunden")
-                # Versuche, Holder über Etherscan direkt zu bekommen
-                return await self._get_holders_from_etherscan(token_address)
+                return []
             
             # Schritt 2: Extrahiere die einzigartigen Wallet-Adressen aus den Transaktionen
             wallet_addresses = set()
@@ -541,18 +480,12 @@ class EthereumProvider:
             
         except Exception as e:
             logger.error(f"Fehler beim Abrufen der Token-Holder: {e}")
-            # Fallback: Versuche, Holder über Etherscan direkt zu bekommen
-            return await self._get_holders_from_etherscan(token_address)
+            return []
     
     async def get_active_wallets(self, token_address: str, hours: int = 6) -> List[Dict[str, Any]]:
         """Holt die Wallets, die in den letzten X Stunden aktiv waren"""
         try:
             logger.info(f"Starte Analyse der aktiven Wallets für Token {token_address} der letzten {hours} Stunden")
-            
-            # Prüfe, ob wir eine Web3-Verbindung haben
-            if not self.w3 or not self.w3.is_connected():
-                logger.error("No Web3 connection available for active wallet analysis")
-                return []
             
             # Hole die Transaktionen des Smart-Contracts der letzten X Stunden
             transactions = await self.get_contract_transactions(token_address, hours=hours)
