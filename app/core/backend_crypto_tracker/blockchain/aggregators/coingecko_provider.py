@@ -5,6 +5,7 @@ CoinGecko API provider implementation.
 import json
 import os
 import re
+import math
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -65,6 +66,21 @@ class CoinGeckoProvider(BaseAPIProvider):
         
         return False
     
+    def _sanitize_float_values(self, data):
+        """
+        Bereinigt ungültige Float-Werte (NaN, Infinity) in einem Dictionary oder einer Liste.
+        Ersetzt sie durch 0.0, um JSON-Kompatibilität sicherzustellen.
+        """
+        if isinstance(data, dict):
+            return {k: self._sanitize_float_values(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._sanitize_float_values(v) for v in data]
+        elif isinstance(data, float):
+            if math.isnan(data) or math.isinf(data):
+                return 0.0
+            return data
+        return data
+    
     async def _make_request(self, url: str, params: Dict = None, headers: Dict = None) -> Dict:
         """
         Führt eine API-Anfrage durch und loggt die direkte Antwort.
@@ -80,6 +96,9 @@ class CoinGeckoProvider(BaseAPIProvider):
         try:
             # Führe die eigentliche Anfrage durch
             response = await super()._make_request(url, params, headers)
+            
+            # Bereinige ungültige Float-Werte in der Antwort
+            response = self._sanitize_float_values(response)
             
             # Logge die direkte API-Antwort
             logger.info(f"CoinGecko API Response - URL: {url}")
@@ -145,11 +164,14 @@ class CoinGeckoProvider(BaseAPIProvider):
             
             token_data = data.get(token_address.lower(), {})
             if token_data:
+                # Bereinige alle Float-Werte vor der Erstellung des TokenPriceData-Objekts
+                token_data = self._sanitize_float_values(token_data)
+                
                 return TokenPriceData(
-                    price=token_data.get('usd', 0),
-                    market_cap=token_data.get('usd_market_cap', 0),
-                    volume_24h=token_data.get('usd_24h_vol', 0),
-                    price_change_percentage_24h=token_data.get('usd_24h_change'),
+                    price=float(token_data.get('usd', 0)),
+                    market_cap=float(token_data.get('usd_market_cap', 0)),
+                    volume_24h=float(token_data.get('usd_24h_vol', 0)),
+                    price_change_percentage_24h=float(token_data.get('usd_24h_change', 0)),
                     source=self.name,
                     last_updated=datetime.now()
                 )
@@ -185,6 +207,9 @@ class CoinGeckoProvider(BaseAPIProvider):
             data = await self._make_request(url, params, headers)
             
             if data:
+                # Bereinige alle Float-Werte in der Antwort
+                data = self._sanitize_float_values(data)
+                
                 return {
                     'name': data.get('name'),
                     'symbol': data.get('symbol'),
@@ -225,11 +250,14 @@ class CoinGeckoProvider(BaseAPIProvider):
             data = await self._make_request(url, params, headers)
             
             if data and data.get('prices'):
+                # Bereinige alle Float-Werte in der Antwort
+                data = self._sanitize_float_values(data)
+                
                 # Konvertiere Zeitstempel in lesbare Daten
                 historical_prices = {}
                 for timestamp, price in data['prices']:
                     date = datetime.fromtimestamp(timestamp / 1000).strftime('%Y-%m-%d')
-                    historical_prices[date] = price
+                    historical_prices[date] = float(price)
                 
                 return historical_prices
         except Exception as e:
@@ -252,10 +280,13 @@ class CoinGeckoProvider(BaseAPIProvider):
             data = await self._make_request(url, {}, headers)
             
             if data and data.get('data'):
+                # Bereinige alle Float-Werte in der Antwort
+                data = self._sanitize_float_values(data)
+                
                 return {
-                    'total_market_cap_usd': data['data'].get('total_market_cap', {}).get('usd'),
-                    'total_volume_24h_usd': data['data'].get('total_volume', {}).get('usd'),
-                    'btc_dominance': data['data'].get('market_cap_percentage', {}).get('btc'),
+                    'total_market_cap_usd': float(data['data'].get('total_market_cap', {}).get('usd', 0)),
+                    'total_volume_24h_usd': float(data['data'].get('total_volume', {}).get('usd', 0)),
+                    'btc_dominance': float(data['data'].get('market_cap_percentage', {}).get('btc', 0)),
                     'active_cryptocurrencies': data['data'].get('active_cryptocurrencies'),
                     'last_updated': datetime.now()
                 }
@@ -279,6 +310,9 @@ class CoinGeckoProvider(BaseAPIProvider):
             data = await self._make_request(url, {}, headers)
             
             if data and data.get('coins'):
+                # Bereinige alle Float-Werte in der Antwort
+                data = self._sanitize_float_values(data)
+                
                 trending_tokens = []
                 for coin in data['coins']:
                     item = coin.get('item')
@@ -345,12 +379,15 @@ class CoinGeckoProvider(BaseAPIProvider):
             response = await self._make_request(url, params, headers)
             
             if response and response.get('data'):
+                # Bereinige alle Float-Werte in der Antwort
+                response = self._sanitize_float_values(response)
+                
                 holders = []
                 for holder_data in response['data']:
                     holders.append({
                         'address': holder_data.get('address'),
-                        'amount': holder_data.get('token_balance'),
-                        'percentage': holder_data.get('percentage'),
+                        'amount': float(holder_data.get('token_balance', 0)),
+                        'percentage': float(holder_data.get('percentage', 0)),
                         'rank': holder_data.get('rank')
                     })
                 return holders
@@ -380,14 +417,17 @@ class CoinGeckoProvider(BaseAPIProvider):
             response = await self._make_request(url, params)
             
             if response and response.get('data'):
+                # Bereinige alle Float-Werte in der Antwort
+                response = self._sanitize_float_values(response)
+                
                 token_data = response['data']
                 if token_data.get('top_holders'):
                     holders = []
                     for holder_data in token_data['top_holders'][:limit]:
                         holders.append({
                             'address': holder_data.get('address'),
-                            'amount': holder_data.get('amount'),
-                            'percentage': holder_data.get('percentage')
+                            'amount': float(holder_data.get('amount', 0)),
+                            'percentage': float(holder_data.get('percentage', 0))
                         })
                     return holders
                 
@@ -413,6 +453,9 @@ class CoinGeckoProvider(BaseAPIProvider):
             data = await self._make_request(url, {}, headers)
             
             if data:
+                # Bereinige alle Float-Werte in der Antwort
+                data = self._sanitize_float_values(data)
+                
                 return data.get('id')
         except Exception as e:
             logger.error(f"Error getting coin ID from address in CoinGecko: {e}")
