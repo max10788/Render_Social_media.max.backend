@@ -857,7 +857,7 @@ class EnhancedWalletClassifier:
         }
     
     def _calculate_risk_score(self, wallet_type: WalletTypeEnum, balance: float, total_supply: float, chain: str) -> float:
-        """Enhanced risk score calculation with support for all wallet types and chain-specific adjustments"""
+        """Enhanced risk score calculation"""
         base_scores = {
             WalletTypeEnum.DEV_WALLET: 80.0,
             WalletTypeEnum.RUGPULL_SUSPECT: 95.0,
@@ -869,82 +869,50 @@ class EnhancedWalletClassifier:
             WalletTypeEnum.LIQUIDITY_PROVIDER: 25.0,
             WalletTypeEnum.UNKNOWN: 30.0
         }
+        
         base_score = base_scores.get(wallet_type, 30.0)
         
-        # Enhanced percentage-based adjustments
         if total_supply and balance > 0:
             percentage = (balance / total_supply) * 100
-            # Different risk multipliers for different wallet types
+            
             if wallet_type == WalletTypeEnum.DEV_WALLET:
                 if percentage > 50:
-                    base_score += 15  # Extremely high dev control
+                    base_score += 15
                 elif percentage > 30:
                     base_score += 10
                 elif percentage > 20:
                     base_score += 5
             elif wallet_type == WalletTypeEnum.WHALE_WALLET:
                 if percentage > 20:
-                    base_score += 25  # Market manipulation risk
+                    base_score += 25
                 elif percentage > 10:
                     base_score += 15
                 elif percentage > 5:
                     base_score += 10
-            elif wallet_type == WalletTypeEnum.TEAM_WALLET:
-                if percentage > 25:
-                    base_score += 20  # High team control risk
-                elif percentage > 15:
-                    base_score += 10
-                elif percentage > 10:
-                    base_score += 5
-            elif wallet_type == WalletTypeEnum.LIQUIDITY_PROVIDER:
-                # Lower risk adjustment for LPs as they provide utility
-                if percentage > 15:
-                    base_score += 10
-                elif percentage > 10:
-                    base_score += 5
-                elif percentage > 5:
-                    base_score += 2
-            else:
-                # Generic percentage-based risk for other types
-                if percentage > 20:
-                    base_score += 20
-                elif percentage > 10:
-                    base_score += 10
-                elif percentage > 5:
-                    base_score += 5
         
-        # Absolute balance risk adjustments
         if balance > 0:
-            if balance > 100000000:  # 100M+ tokens
+            if balance > 100000000:
                 base_score += 15
-            elif balance > 50000000:  # 50M+ tokens
+            elif balance > 50000000:
                 base_score += 10
-            elif balance > 10000000:  # 10M+ tokens
+            elif balance > 10000000:
                 base_score += 5
         
-        # Special risk adjustments for certain wallet types
         if wallet_type == WalletTypeEnum.RUGPULL_SUSPECT:
-            # Rugpull suspects maintain high risk regardless of balance
             base_score = max(base_score, 90.0)
         elif wallet_type == WalletTypeEnum.DEX_CONTRACT:
-            # DEX contracts have lower risk but can increase with unusual patterns
             base_score = min(base_score, 30.0)
         elif wallet_type == WalletTypeEnum.BURN_WALLET:
-            # Burn wallets always have zero risk
             base_score = 0.0
         
-        # Chain-spezifische Anpassungen
-        # Lade die Konfiguration für die gegebene Kette
-        chain_config = load_config(chain)  # <--- KONFIGURATION JETZT HIER LADEN
+        chain_config = load_config(chain)
         min_scores = chain_config.get('min_scores', {})
-        chain_min_score = min_scores.get(chain, 30) # Default Mindestscore
-        # Stelle sicher, dass der Score nicht unter den chain-spezifischen Mindestscore fällt,
-        # es sei denn, es ist ein Burn-Wallet (0) oder ein explizit sehr niedriger Score gerechtfertigt ist.
-        # Oder passe den Score *an* den Mindestscore an, falls er darunter liegt und nicht 0 ist.
-        if wallet_type != WalletTypeEnum.BURN_WALLET and base_score > 0:
-             base_score = max(base_score, chain_min_score)
+        chain_min_score = min_scores.get(chain, 30)
         
-        return min(100.0, max(0.0, base_score))
+        if wallet_type != WalletTypeEnum.BURN_WALLET and base_score > 0:
+            base_score = max(base_score, chain_min_score)
+        
+        return sanitize_float(min(100.0, max(0.0, base_score)))
     
     def _load_known_addresses(self) -> Dict[str, Dict[str, WalletTypeEnum]]:
         """Lädt bekannte Adressen für alle unterstützten Chains."""
