@@ -62,30 +62,29 @@ class MultiChainScoringEngine:
     
     def calculate_token_score_custom(self, token_data, wallet_analyses: List, chain: str) -> Dict:
         """Berechnet Token Score für benutzerdefinierte Token"""
-        
         metrics = {}
         risk_flags = []
         
-        # 1. Holder Distribution Score (30%)
+        # 1. Holder Distribution Score
         holder_score = self._calculate_holder_distribution_score(wallet_analyses, chain)
-        metrics['holder_distribution'] = holder_score
+        metrics['holder_distribution'] = sanitize_float(holder_score)
         
-        # 2. Liquidity Score (25%)
+        # 2. Liquidity Score
         liquidity_score = self._calculate_liquidity_score(token_data, chain)
-        metrics['liquidity'] = liquidity_score
+        metrics['liquidity'] = sanitize_float(liquidity_score)
         
-        # 3. Market Metrics Score (20%)
+        # 3. Market Metrics Score
         market_score = self._calculate_market_metrics_score(token_data, chain)
-        metrics['market_metrics'] = market_score
+        metrics['market_metrics'] = sanitize_float(market_score)
         
-        # 4. Risk Assessment Score (15%)
+        # 4. Risk Assessment Score
         risk_score, flags = self._calculate_risk_assessment_score(wallet_analyses, chain)
-        metrics['risk_assessment'] = risk_score
+        metrics['risk_assessment'] = sanitize_float(risk_score)
         risk_flags.extend(flags)
         
-        # 5. Chain-specific Score (10%)
+        # 5. Chain-specific Score
         chain_score = self._calculate_chain_specific_score(token_data, chain)
-        metrics['chain_specific'] = chain_score
+        metrics['chain_specific'] = sanitize_float(chain_score)
         
         # Gewichtete Gesamtbewertung
         total_score = (
@@ -96,12 +95,11 @@ class MultiChainScoringEngine:
             chain_score * 0.10
         )
         
-        # Chain-spezifische Gewichtung anwenden
         chain_weight = self.chain_weights.get(chain, 0.8)
         total_score *= chain_weight
         
         return {
-            'total_score': min(100.0, max(0.0, total_score)),
+            'total_score': sanitize_float(min(100.0, max(0.0, total_score))),
             'metrics': metrics,
             'risk_flags': risk_flags,
             'chain_weight_applied': chain_weight
