@@ -18,17 +18,33 @@ logger = get_logger(__name__)
 
 
 class EthereumProvider:
-    def __init__(self, api_key=None):
+    def __init__(self, api_key=None, rpc_url=None):
         self.api_key = api_key
         self.etherscan_provider = EtherscanProvider(api_key) if api_key else None
         self.w3 = None
         self.base_url = "https://api.etherscan.io/api"
         self.session = None
         self.coingecko_provider = CoinGeckoProvider()
+        
+        # Verwende die übergebene RPC-URL, die Umgebungsvariable oder als Fallback GetBlock
+        self.rpc_url = rpc_url or os.getenv('ETHEREUM_RPC_URL', "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047")
+        
+        logger.info(f"Using Ethereum RPC URL: {self.rpc_url}")
     
     async def __aenter__(self):
-        # Initialisiere Web3-Verbindung
-        self.w3 = Web3(Web3.HTTPProvider(os.getenv('ETHEREUM_RPC_URL')))
+        # Initialisiere Web3-Verbindung mit der korrekten RPC-URL
+        self.w3 = Web3(Web3.HTTPProvider(self.rpc_url))
+        
+        # Teste die Verbindung
+        try:
+            if self.w3.is_connected():
+                latest_block = self.w3.eth.block_number
+                logger.info(f"Successfully connected to Ethereum node. Latest block: {latest_block}")
+            else:
+                logger.error("Failed to connect to Ethereum node")
+        except Exception as e:
+            logger.error(f"Error connecting to Ethereum node: {e}")
+        
         if self.etherscan_provider:
             await self.etherscan_provider.__aenter__()
         if self.coingecko_provider:
@@ -107,8 +123,7 @@ class EthereumProvider:
                             'from': tx.get('from'),
                             'to': tx.get('to'),
                             'hash': tx.get('hash'),
-                            'timeStamp': tx.get('timeStamp'),
-                            'contract_address': contract_address  # Füge Contract-Adresse hinzu
+                            'timeStamp': tx.get('timeStamp')
                         })
                 
                 return filtered_transactions
@@ -193,6 +208,7 @@ class EthereumProvider:
         """Holt den Token-Bestand einer Wallet"""
         try:
             if not self.w3:
+                logger.error("Web3 connection not initialized")
                 return 0
             
             # ERC20-ABI für balanceOf
