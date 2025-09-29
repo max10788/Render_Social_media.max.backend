@@ -306,27 +306,17 @@ class TokenAnalyzer:
         await self.api_manager.initialize()
         
         # Blockchain-Provider initialisieren mit GetBlock RPC-URL
-        if os.getenv('ETHERSCAN_API_KEY'):
-            # Verwende die GetBlock RPC-URL
-            ethereum_rpc = self.ethereum_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
-            self.ethereum_provider = EthereumProvider(self.etherscan_key, rpc_url=ethereum_rpc)
-            logger.info("Ethereum provider initialized")
+        if 'ethereum' in self.api_manager.providers:
+            self.ethereum_provider = self.api_manager.providers['ethereum']
         else:
-            logger.warning("Etherscan API key not provided, using limited functionality")
-            # Verwende die GetBlock RPC-URL auch ohne API-Key
-            ethereum_rpc = self.ethereum_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
-            self.ethereum_provider = EthereumProvider(rpc_url=ethereum_rpc)
+            logger.warning("Ethereum provider not available in API manager")
+            self.ethereum_provider = None
         
-        if os.getenv('BSCSCAN_API_KEY'):
-            # Verwende die GetBlock RPC-URL für BSC
-            bsc_rpc = self.bsc_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
-            self.bsc_provider = EthereumProvider(self.bscscan_key, rpc_url=bsc_rpc)
-            logger.info("BSC provider initialized")
+        if 'bsc' in self.api_manager.providers:
+            self.bsc_provider = self.api_manager.providers['bsc']
         else:
-            logger.warning("BSCscan API key not provided, using limited functionality")
-            # Verwende die GetBlock RPC-URL auch ohne API-Key
-            bsc_rpc = self.bsc_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
-            self.bsc_provider = EthereumProvider(rpc_url=bsc_rpc)
+            logger.warning("BSC provider not available in API manager")
+            self.bsc_provider = None
         
         if os.getenv('SOLANA_RPC_URL'):
             self.solana_provider = SolanaProvider()
@@ -348,10 +338,10 @@ class TokenAnalyzer:
             self.w3_bsc = Web3(Web3.HTTPProvider(self.bsc_rpc))
         
         # Provider-Sessions initialisieren
-        if self.ethereum_provider:
+        if self.ethereum_provider and not hasattr(self.ethereum_provider, 'session'):
             await self.ethereum_provider.__aenter__()
         
-        if self.bsc_provider:
+        if self.bsc_provider and not hasattr(self.bsc_provider, 'session'):
             await self.bsc_provider.__aenter__()
         
         if self.solana_provider:
