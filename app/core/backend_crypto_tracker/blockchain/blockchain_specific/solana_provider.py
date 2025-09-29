@@ -4,6 +4,7 @@ Solana blockchain API provider implementation.
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import os
 
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
