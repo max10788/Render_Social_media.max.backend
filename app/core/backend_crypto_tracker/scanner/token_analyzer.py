@@ -396,7 +396,7 @@ class TokenAnalyzer:
         
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # Sicheres Schließen aller Ressourcen
         close_tasks = []
         
@@ -407,6 +407,7 @@ class TokenAnalyzer:
         # Schließe Blockchain-Provider
         providers = [
             self.ethereum_provider,
+            self.etherscan_provider,  # Neu hinzugefügt
             self.bsc_provider,
             self.solana_provider,
             self.sui_provider
