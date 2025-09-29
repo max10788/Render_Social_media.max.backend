@@ -451,6 +451,70 @@ class EtherscanProvider(BaseAPIProvider):
             logger.error(f"Fehler beim Abrufen des Block-Zeitstempels für Block {block_number}: {e}")
             return 0
 
+    async def get_token_holders(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
+        """Holt Token-Holder für einen Solana-Token"""
+        try:
+            # Log für Debugging
+            logger.info(f"Fetching token holders for Solana token {token_address}")
+            
+            # Prüfe, ob eine RPC-URL verfügbar ist
+            if not hasattr(self, 'rpc_url') or not self.rpc_url:
+                logger.error("No RPC URL configured for Solana provider")
+                return []
+            
+            # Erstelle die Anfrage für Solana Token-Konten
+            params = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getProgramAccounts",
+                "params": [
+                    token_address,
+                    {
+                        "encoding": "jsonParsed",
+                        "filters": [
+                            {
+                                "dataSize": 165  # Größe eines SPL-Token-Kontos
+                            }
+                        ]
+                    }
+                ]
+            }
+            
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            async with self.session.post(self.rpc_url, json=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if 'result' in data and 'value' in data['result']:
+                        holders = []
+                        for account in data['result']['value']:
+                            try:
+                                # Extrahiere die relevanten Informationen aus dem Konto
+                                account_data = account['account']['data']['parsed']['info']
+                                holder_info = {
+                                    'address': account['pubkey'],
+                                    'balance': account_data['tokenAmount']['amount'],
+                                    'percentage': 0
+                                }
+                                holders.append(holder_info)
+                            except (KeyError, TypeError) as e:
+                                logger.warning(f"Error parsing account data: {e}")
+                                continue
+                        
+                        logger.info(f"Retrieved {len(holders)} token holders from Solana")
+                        return holders
+                    else:
+                        logger.warning(f"Unexpected response format from Solana RPC: {data}")
+                else:
+                    logger.error(f"HTTP error {response.status} from Solana RPC")
+            
+            logger.warning("No token holders found for Solana token")
+            return []
+        except Exception as e:
+            logger.error(f"Error retrieving token holders from Solana: {e}")
+            return []
+
     async def close(self):
         """Schließt die Session und gibt Ressourcen frei"""
         if self.session:
