@@ -396,7 +396,7 @@ class TokenAnalyzer:
         
         return self
 
-     async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         # Sicheres Schließen aller Ressourcen
         close_tasks = []
         
