@@ -92,7 +92,7 @@ class APIManager:
         self.active_provider = None
         self.provider_failures = {}
         self.session = None
-        
+            
     async def initialize(self):
         """Initialisiert alle Provider und die HTTP-Session"""
         self.session = aiohttp.ClientSession()
@@ -147,6 +147,19 @@ class APIManager:
             logger.info("Bitquery provider initialized")
         else:
             logger.warning("Bitquery API key not provided, skipping this provider")
+        
+        # Etherscan-Provider für Ethereum und BSC hinzufügen
+        if os.getenv('ETHERSCAN_API_KEY'):
+            self.providers['ethereum'] = EtherscanProvider(os.getenv('ETHERSCAN_API_KEY'))
+            logger.info("Etherscan provider for Ethereum initialized")
+        else:
+            logger.warning("Etherscan API key not provided, skipping Ethereum provider")
+        
+        if os.getenv('BSCSCAN_API_KEY'):
+            self.providers['bsc'] = EtherscanProvider(os.getenv('BSCSCAN_API_KEY'))
+            logger.info("Etherscan provider for BSC initialized")
+        else:
+            logger.warning("BSCscan API key not provided, skipping BSC provider")
         
         # Provider-Sessions initialisieren
         for provider_name, provider in self.providers.items():
