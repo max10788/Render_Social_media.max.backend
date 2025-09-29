@@ -22,7 +22,7 @@ from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider
 from app.core.backend_crypto_tracker.utils.cache import AnalysisCache
 
 # Import all providers
-from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
+from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider, UnifiedAPIProvider
 from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
 from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap_provider import CoinMarketCapProvider
 from app.core.backend_crypto_tracker.blockchain.aggregators.cryptocompare_provider import CryptoCompareProvider
@@ -98,6 +98,7 @@ class TokenAnalyzer:
         # Base Provider als zentralen API-Manager verwenden
         self.base_provider = None
         self.ethereum_provider = None
+        self.etherscan_provider = None  # Explizit initialisieren
         self.bsc_provider = None
         self.solana_provider = None
         self.sui_provider = None
@@ -123,11 +124,7 @@ class TokenAnalyzer:
 
     async def __aenter__(self):
         # Base Provider als zentralen API-Manager initialisieren
-        self.base_provider = BaseAPIProvider(
-            name="UnifiedAPIProvider",
-            base_url="https://api.example.com",  # Platzhalter-URL
-            api_key_env="UNIFIED_API_KEY"  # Platzhalter für API-Key
-        )
+        self.base_provider = UnifiedAPIProvider()
         await self.base_provider.__aenter__()
         
         # Blockchain-Provider initialisieren mit GetBlock RPC-URL
@@ -1113,6 +1110,7 @@ class TokenAnalyzer:
         # Schließe Blockchain-Provider
         providers = [
             self.ethereum_provider,
+            self.etherscan_provider,
             self.bsc_provider,
             self.solana_provider,
             self.sui_provider
