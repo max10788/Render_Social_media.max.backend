@@ -54,18 +54,18 @@ class EtherscanProvider(BaseAPIProvider):
             # Bestimme die richtige API-URL basierend auf der Chain
             if chain.lower() == 'ethereum':
                 base_url = "https://api.etherscan.io/api"
-                api_key = os.getenv('ETHERSCAN_API_KEY')
+                api_key = self.api_key or os.getenv('ETHERSCAN_API_KEY')
             elif chain.lower() == 'bsc':
                 base_url = "https://api.bscscan.com/api"
-                api_key = os.getenv('BSCSCAN_API_KEY') or os.getenv('ETHERSCAN_API_KEY')
+                api_key = self.api_key or os.getenv('BSCSCAN_API_KEY')
             else:
                 logger.warning(f"Unsupported chain for Etherscan: {chain}")
                 return []
-
+    
             if not api_key:
                 logger.warning(f"No API key provided for {chain} scan")
                 return await self._get_holders_from_transfers(token_address, base_url, limit)
-
+    
             # Versuche zuerst die direkte Token-Holder-API
             params = {
                 'module': 'token',
@@ -76,10 +76,10 @@ class EtherscanProvider(BaseAPIProvider):
                 'sort': 'desc',
                 'apikey': api_key
             }
-
+    
             if not self.session:
                 self.session = aiohttp.ClientSession()
-
+    
             async with self.session.get(base_url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
@@ -87,8 +87,8 @@ class EtherscanProvider(BaseAPIProvider):
                         holders = []
                         for holder in data.get('result', []):
                             holders.append({
-                                'TokenHolderAddress': holder.get('TokenHolderAddress'),
-                                'TokenHolderQuantity': holder.get('TokenHolderQuantity'),
+                                'address': holder.get('TokenHolderAddress'),
+                                'balance': holder.get('TokenHolderQuantity'),
                                 'percentage': 0
                             })
                         logger.info(f"Retrieved {len(holders)} token holders from {chain}scan API")
@@ -99,7 +99,7 @@ class EtherscanProvider(BaseAPIProvider):
                 else:
                     logger.warning(f"HTTP error {response.status} from {chain}scan")
                     return await self._get_holders_from_transfers(token_address, base_url, limit)
-
+    
         except asyncio.CancelledError:
             logger.warning("Token holders request was cancelled")
             return []
@@ -118,10 +118,10 @@ class EtherscanProvider(BaseAPIProvider):
                 'sort': 'desc',
                 'apikey': api_key
             }
-
+    
             if not self.session:
                 self.session = aiohttp.ClientSession()
-
+    
             async with self.session.get(base_url, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
@@ -140,7 +140,7 @@ class EtherscanProvider(BaseAPIProvider):
                                 balances[to_addr] = 0
                             balances[from_addr] -= token_amount
                             balances[to_addr] += token_amount
-
+    
                         positive_balances = {
                             addr: bal for addr, bal in balances.items()
                             if bal > 0
@@ -150,27 +150,27 @@ class EtherscanProvider(BaseAPIProvider):
                             key=lambda x: x[1],
                             reverse=True
                         )[:limit]
-
+    
                         holders = []
                         for address, balance in sorted_holders:
                             holders.append({
-                                'TokenHolderAddress': address,
-                                'TokenHolderQuantity': str(int(balance * (10 ** decimals))),
+                                'address': address,
+                                'balance': balance,
                                 'percentage': 0
                             })
-
+    
                         logger.info(f"Calculated {len(holders)} token holders from transfer analysis")
                         return holders
                     else:
                         logger.warning(f"No transfer data available: {data.get('message', 'Unknown')}")
                 else:
                     logger.warning(f"HTTP error {response.status} from {base_url}")
-        except asyncio.CancelledError:
-            logger.warning("Transfer analysis request was cancelled")
+            except asyncio.CancelledError:
+                logger.warning("Transfer analysis request was cancelled")
+                return []
+            except Exception as e:
+                logger.error(f"Error analyzing transfers for holders: {e}")
             return []
-        except Exception as e:
-            logger.error(f"Error analyzing transfers for holders: {e}")
-        return []
 
     async def get_contract_creation_tx(self, contract_address: str, chain: str) -> Optional[str]:
         """Holt die Contract-Erstellungs-Transaktion"""
