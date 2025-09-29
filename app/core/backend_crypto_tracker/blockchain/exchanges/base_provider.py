@@ -231,6 +231,14 @@ class BaseAPIProvider(ABC):
         logger.warning(f"Using fallback method for contract info on {chain}")
         return {}
     
+    async def get_low_cap_tokens(self, max_market_cap: float = 5_000_000, limit: int = 100) -> List[Any]:
+        """
+        Ruft Low-Cap Tokens ab.
+        Diese Methode muss von konkreten Implementierungen überschrieben werden.
+        """
+        logger.warning("Using fallback method for low_cap_tokens")
+        return []
+    
     def _refill_tokens(self):
         """Füllt Tokens gemäß dem Refill-Rate auf (Token-Bucket-Algorithmus)"""
         now = time.time()
@@ -406,5 +414,156 @@ class BaseAPIProvider(ABC):
                 if hasattr(provider, 'close'):
                     await provider.close()
                 logger.info(f"{provider_name} provider closed successfully")
+            except Exception as e:
+                logger.error(f"Error closing {provider_name}: {str(e)}")
+
+
+class UnifiedAPIProvider(BaseAPIProvider):
+    """
+    Konkrete Implementierung des BaseAPIProvider, die als zentraler API-Manager dient.
+    Diese Klasse implementiert die abstrakten Methoden und leitet Anfragen an die entsprechenden
+    blockchain-spezifischen Provider weiter.
+    """
+    
+    def __init__(self):
+        super().__init__(
+            name="UnifiedAPIProvider",
+            base_url="https://api.example.com",  # Platzhalter-URL
+            api_key_env="UNIFIED_API_KEY"  # Platzhalter für API-Key
+        )
+        
+        # Zusätzliche Provider für Preisdaten
+        self.price_providers = {}
+    
+    async def __aenter__(self):
+        await super().__aenter__()
+        await self._initialize_price_providers()
+        return self
+    
+    async def _initialize_price_providers(self):
+        """Initialisiert die Preisdaten-Provider"""
+        try:
+            from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
+            from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap_provider import CoinMarketCapProvider
+            from app.core.backend_crypto_tracker.blockchain.aggregators.cryptocompare_provider import CryptoCompareProvider
+            
+            # Initialisiere CoinGecko-Provider
+            if os.getenv('COINGECKO_API_KEY'):
+                self.price_providers['coingecko'] = CoinGeckoProvider()
+                logger.info("CoinGecko provider initialized in UnifiedAPIProvider")
+            else:
+                logger.warning("CoinGecko API key not provided, using limited functionality")
+                # CoinGecko funktioniert auch ohne API-Key, aber mit Limits
+                self.price_providers['coingecko'] = CoinGeckoProvider()
+            
+            # Initialisiere CoinMarketCap-Provider
+            if os.getenv('COINMARKETCAP_API_KEY'):
+                self.price_providers['coinmarketcap'] = CoinMarketCapProvider()
+                logger.info("CoinMarketCap provider initialized in UnifiedAPIProvider")
+            else:
+                logger.warning("CoinMarketCap API key not provided, skipping this provider")
+            
+            # Initialisiere CryptoCompare-Provider
+            if os.getenv('CRYPTOCOMPARE_API_KEY'):
+                self.price_providers['cryptocompare'] = CryptoCompareProvider()
+                logger.info("CryptoCompare provider initialized in UnifiedAPIProvider")
+            else:
+                logger.warning("CryptoCompare API key not provided, skipping this provider")
+            
+            # Initialisiere die Sessions der Preisdaten-Provider
+            for provider_name, provider in self.price_providers.items():
+                if hasattr(provider, '__aenter__'):
+                    try:
+                        await provider.__aenter__()
+                    except Exception as e:
+                        logger.error(f"Failed to initialize {provider_name}: {e}")
+                        self.price_providers.pop(provider_name, None)
+                        
+        except ImportError as e:
+            logger.error(f"Failed to import price providers: {e}")
+    
+    async def get_token_price(self, token_address: str, chain: str):
+        """Ruft Token-Preisdaten von einem der Preisdaten-Provider ab"""
+        providers_to_try = ['coingecko', 'coinmarketcap', 'cryptocompare']
+        
+        last_exception = None
+        for provider_name in providers_to_try:
+            provider = self.price_providers.get(provider_name)
+            if not provider:
+                continue
+                
+            try:
+                logger.info(f"Trying to get token price from {provider_name}")
+                price_data = await provider.get_token_price(token_address, chain)
+                
+                if price_data:
+                    logger.info(f"Successfully got token price from {provider_name}")
+                    return price_data
+                    
+            except Exception as e:
+                last_exception = e
+                logger.warning(f"Error with provider {provider_name}: {str(e)}")
+        
+        # Wenn alle Provider fehlschlagen, werfe die letzte Exception
+        if last_exception:
+            raise last_exception
+        else:
+            raise APIException("All price providers failed")
+    
+    def get_rate_limits(self) -> Dict[str, int]:
+        """Gibt die Rate-Limits zurück (requests_per_minute, requests_per_hour, etc.)"""
+        return {
+            "requests_per_minute": 30,
+            "requests_per_hour": 1000,
+            "requests_per_day": 10000
+        }
+    
+    async def get_low_cap_tokens(self, max_market_cap: float = 5_000_000, limit: int = 100) -> List[Any]:
+        """
+        Ruft Low-Cap Tokens von einem der Preisdaten-Provider ab
+        """
+        providers_to_try = ['coingecko', 'coinmarketcap', 'cryptocompare']
+        
+        last_exception = None
+        for provider_name in providers_to_try:
+            provider = self.price_providers.get(provider_name)
+            if not provider:
+                continue
+                
+            try:
+                logger.info(f"Trying to get low-cap tokens from {provider_name}")
+                
+                # Prüfe, ob der Provider eine get_low_cap_tokens-Methode hat
+                if hasattr(provider, 'get_low_cap_tokens'):
+                    tokens = await provider.get_low_cap_tokens(max_market_cap, limit)
+                    
+                    if tokens:
+                        logger.info(f"Successfully got {len(tokens)} low-cap tokens from {provider_name}")
+                        return tokens
+                else:
+                    logger.warning(f"Provider {provider_name} does not support get_low_cap_tokens")
+                    
+            except Exception as e:
+                last_exception = e
+                logger.warning(f"Error with provider {provider_name}: {str(e)}")
+        
+        # Wenn alle Provider fehlschlagen, werfe die letzte Exception
+        if last_exception:
+            raise last_exception
+        else:
+            logger.warning("No providers available for low-cap tokens")
+            return []
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await super().__aexit__(exc_type, exc_val, exc_tb)
+        
+        # Schließe alle Preisdaten-Provider
+        for provider_name, provider in self.price_providers.items():
+            try:
+                if hasattr(provider, '__aexit__'):
+                    await provider.__aexit__(None, None, None)
+                if hasattr(provider, 'close'):
+                    await provider.close()
+                logger.info(f"{provider_name} price provider closed successfully")
             except Exception as e:
                 logger.error(f"Error closing {provider_name}: {str(e)}")
