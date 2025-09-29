@@ -12,10 +12,10 @@ logger = get_logger(__name__)
 
 
 class SolanaProvider(BaseAPIProvider):
-    """Solana Blockchain API-Anbieter"""
-    
-    def __init__(self, api_key: Optional[str] = None):
-        super().__init__("Solana", "https://api.mainnet-beta.solana.com", api_key, "SOLANA_API_KEY")
+    def __init__(self):
+        super().__init__("Solana", os.getenv('SOLANA_RPC_URL'), None)
+        self.rpc_url = os.getenv('SOLANA_RPC_URL')
+        self.min_request_interval = 0.1  # 10 RPS für Solana RPC
     
     async def get_account_balance(self, pubkey: str) -> Optional[Dict[str, Any]]:
         """Holt den Kontostand einer Solana-Adresse"""
