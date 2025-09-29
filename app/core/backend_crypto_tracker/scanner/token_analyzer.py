@@ -918,36 +918,75 @@ class TokenAnalyzer:
                         logger.info(f"Top Wallets: {wallet_summary}")
                     return cached_result
             
-            # Rufe die zentrale Methode get_token_holders auf
-            holders = await self.api_manager.get_token_holders(token_address, chain)
+            # Für Ethereum verwenden wir die beiden spezifischen Provider
+            if chain.lower() == 'ethereum':
+                holders = []
+                
+                # Versuche zuerst den blockchain_specific.ethereum_provider
+                if self.ethereum_provider and hasattr(self.ethereum_provider, 'get_token_holders'):
+                    try:
+                        logger.info(f"Versuche Holder-Abfrage über blockchain_specific.ethereum_provider für {token_address}")
+                        holders = await self.ethereum_provider.get_token_holders(token_address, chain)
+                        if holders:
+                            logger.info(f"Erfolgreich {len(holders)} Holder von blockchain_specific.ethereum_provider abgerufen")
+                            # Speichere das Ergebnis im Cache
+                            if self.cache:
+                                await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
+                            return holders
+                    except Exception as e:
+                        logger.error(f"Fehler bei blockchain_specific.ethereum_provider: {e}")
+                
+                # Fallback: Versuche den etherscan_provider
+                if self.etherscan_provider and hasattr(self.etherscan_provider, 'get_token_holders'):
+                    try:
+                        logger.info(f"Versuche Holder-Abfrage über etherscan_provider für {token_address}")
+                        holders = await self.etherscan_provider.get_token_holders(token_address, chain)
+                        if holders:
+                            logger.info(f"Erfolgreich {len(holders)} Holder von etherscan_provider abgerufen")
+                            # Speichere das Ergebnis im Cache
+                            if self.cache:
+                                await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
+                            return holders
+                    except Exception as e:
+                        logger.error(f"Fehler bei etherscan_provider: {e}")
+                
+                # Wenn beide fehlschlagen, logge den Fehler und gebe leere Liste zurück
+                logger.error(f"Beide Ethereum-Provider für {token_address} fehlgeschlagen")
+                return []
             
-            # Zusammenfassung der Ergebnisse
-            if holders:
-                logger.info(f"=== WALLET-ZUSAMMENFASSUNG FÜR {token_address} auf {chain} ===")
-                logger.info(f"Anzahl der Wallets: {len(holders)}")
-                
-                # Zeige die Top 10 Wallets mit ihren Adressen und Anteilen
-                logger.info("Top 10 Wallet-Adressen:")
-                for i, holder in enumerate(holders[:10], 1):
-                    address = holder.get('address', 'N/A')
-                    percentage = holder.get('percentage', 0)
-                    balance = holder.get('balance', 0)
-                    logger.info(f"  {i}. {address} - {percentage:.2f}% (Balance: {balance})")
-                
-                if len(holders) > 10:
-                    logger.info(f"... und {len(holders) - 10} weitere Wallets")
-                
-                # Berechne und zeige Verteilungsstatistiken
-                top_10_percentage = sum(h.get('percentage', 0) for h in holders[:10])
-                logger.info(f"Die Top 10 Wallets halten zusammen {top_10_percentage:.2f}% der Tokens")
-                
-                # Speichere das Ergebnis im Cache
-                if self.cache:
-                    await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
             else:
-                logger.warning(f"Keine Wallet-Daten für {token_address} auf {chain} gefunden")
+                # Für andere Chains: Verwende den APIManager
+                logger.info(f"Verwende APIManager für {chain} Holder-Abfrage")
+                holders = await self.api_manager.get_token_holders(token_address, chain)
+                
+                # Zusammenfassung der Ergebnisse
+                if holders:
+                    logger.info(f"=== WALLET-ZUSAMMENFASSUNG FÜR {token_address} auf {chain} ===")
+                    logger.info(f"Anzahl der Wallets: {len(holders)}")
+                    
+                    # Zeige die Top 10 Wallets mit ihren Adressen und Anteilen
+                    logger.info("Top 10 Wallet-Adressen:")
+                    for i, holder in enumerate(holders[:10], 1):
+                        address = holder.get('address', 'N/A')
+                        percentage = holder.get('percentage', 0)
+                        balance = holder.get('balance', 0)
+                        logger.info(f"  {i}. {address} - {percentage:.2f}% (Balance: {balance})")
+                    
+                    if len(holders) > 10:
+                        logger.info(f"... und {len(holders) - 10} weitere Wallets")
+                    
+                    # Berechne und zeige Verteilungsstatistiken
+                    top_10_percentage = sum(h.get('percentage', 0) for h in holders[:10])
+                    logger.info(f"Die Top 10 Wallets halten zusammen {top_10_percentage:.2f}% der Tokens")
+                    
+                    # Speichere das Ergebnis im Cache
+                    if self.cache:
+                        await self.cache.set(holders, self.config.cache_ttl_seconds, cache_key)
+                else:
+                    logger.warning(f"Keine Wallet-Daten für {token_address} auf {chain} gefunden")
+                
+                return holders
             
-            return holders
         except Exception as e:
             logger.error(f"Fehler beim Abrufen der Wallet-Daten für {token_address} auf {chain}: {e}")
             return []
