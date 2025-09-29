@@ -13,11 +13,27 @@ logger = get_logger(__name__)
 
 class EtherscanProvider(BaseAPIProvider):
     """Etherscan API Provider für On-Chain-Daten"""
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, chain: str = 'ethereum'):
         if api_key is None:
-            api_key = os.getenv('ETHERSCAN_API_KEY')
-        super().__init__("Etherscan", "https://api.etherscan.io/api", api_key)
+            if chain.lower() == 'ethereum':
+                api_key = os.getenv('ETHERSCAN_API_KEY')
+                base_url = "https://api.etherscan.io/api"
+            elif chain.lower() == 'bsc':
+                api_key = os.getenv('BSCSCAN_API_KEY')
+                base_url = "https://api.bscscan.com/api"
+            else:
+                raise ValueError(f"Unsupported blockchain: {chain}")
+        else:
+            if chain.lower() == 'ethereum':
+                base_url = "https://api.etherscan.io/api"
+            elif chain.lower() == 'bsc':
+                base_url = "https://api.bscscan.com/api"
+            else:
+                raise ValueError(f"Unsupported blockchain: {chain}")
+        
+        super().__init__(f"Etherscan-{chain}", base_url, api_key)
         self.min_request_interval = 0.2  # 5 RPS für kostenlose API
+        self.chain = chain
 
     async def get_token_price(self, token_address: str, chain: str):
         """Implementiert abstrakte Methode, aber nicht verwendet für Preise"""
