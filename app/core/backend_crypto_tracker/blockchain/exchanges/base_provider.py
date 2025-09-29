@@ -12,7 +12,6 @@ import aiohttp
 
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, RateLimitExceededException
 from app.core.backend_crypto_tracker.utils.logger import get_logger
-from ..rate_limiters.rate_limiter import RateLimiter
 
 logger = get_logger(__name__)
 
@@ -29,12 +28,16 @@ class BaseAPIProvider(ABC):
         else:
             self.api_key = api_key
         self.session = None
-        self.rate_limiter = RateLimiter()
         self.last_request_time = 0
         self.min_request_interval = 1.0  # Sekunden zwischen Anfragen
         self.is_available = True
         self.retry_count = 0
         self.max_retries = 3
+        # Rate-Limiting mit Token-Bucket-Algorithmus
+        self.request_tokens = 10  # Start mit 10 Tokens
+        self.max_tokens = 10  # Maximale Anzahl von Tokens
+        self.refill_rate = 0.5  # Tokens pro Sekunde nachfüllen (30 pro Minute)
+        self.last_refill = time.time()
         
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -58,12 +61,35 @@ class BaseAPIProvider(ABC):
         """Gibt die Rate-Limits zurück (requests_per_minute, requests_per_hour, etc.)"""
         pass
     
+    def _refill_tokens(self):
+        """Füllt Tokens gemäß dem Refill-Rate auf (Token-Bucket-Algorithmus)"""
+        now = time.time()
+        elapsed = now - self.last_refill
+        # Füge Tokens basierend auf der verstrichenen Zeit hinzu
+        tokens_to_add = elapsed * self.refill_rate
+        self.request_tokens = min(self.max_tokens, self.request_tokens + tokens_to_add)
+        self.last_refill = now
+        
+    async def _wait_for_token(self):
+        """Wartet, bis ein Token verfügbar ist"""
+        self._refill_tokens()
+        
+        if self.request_tokens >= 1:
+            self.request_tokens -= 1
+            return
+        
+        # Berechne, wie lange wir warten müssen, bis ein Token verfügbar ist
+        wait_time = (1 - self.request_tokens) / self.refill_rate
+        logger.info(f"Rate limit reached for {self.name}. Waiting {wait_time:.2f} seconds...")
+        await asyncio.sleep(wait_time)
+        
+        # Nach dem Warten, verwende ein Token
+        self.request_tokens -= 1
+    
     async def _make_request(self, url: str, params: Dict[str, Any], headers: Dict[str, str] = None) -> Dict[str, Any]:
-        """Interne Methode für HTTP-Anfragen mit Rate-Limiting und Retry-Logik"""
-        # Rate-Limiting prüfen
-        rate_limits = self.get_rate_limits()
-        if not await self.rate_limiter.acquire(self.name, rate_limits.get("requests_per_minute", 10), 60):
-            raise RateLimitExceededException(self.name, rate_limits.get("requests_per_minute", 10), "minute")
+        """Interne Methode für HTTP-Anfragen mit verbessertem Rate-Limiting und Retry-Logik"""
+        # Warte auf ein Token (Rate-Limiting)
+        await self._wait_for_token()
         
         # Mindestabstand zwischen Anfragen
         current_time = time.time()
@@ -84,14 +110,24 @@ class BaseAPIProvider(ABC):
                     # Retry-Logik für Rate-Limit-Fehler
                     self.retry_count += 1
                     if self.retry_count <= self.max_retries:
-                        # Exponentielles Backoff
-                        retry_after = int(response.headers.get('Retry-After', 5 * (2 ** (self.retry_count - 1))))
+                        # Versuche, Retry-After aus den Headern zu lesen
+                        retry_after = int(response.headers.get('Retry-After', 0))
+                        
+                        # Wenn kein Retry-After angegeben ist, verwende exponentielles Backoff
+                        if retry_after <= 0:
+                            retry_after = min(60, 5 * (2 ** (self.retry_count - 1)))
+                        
                         logger.warning(f"Rate limit exceeded. Retry {self.retry_count}/{self.max_retries} after {retry_after} seconds")
                         await asyncio.sleep(retry_after)
+                        
+                        # Setze die Tokens zurück, um weitere Rate-Limits zu vermeiden
+                        self.request_tokens = 0
+                        
                         return await self._make_request(url, params, headers)
                     else:
-                        self.retry_count = 0  # Reset retry count
-                        raise RateLimitExceededException(self.name, rate_limits.get("requests_per_minute", 10), "minute")
+                        # Max retries erreicht, setze Zähler zurück
+                        self.retry_count = 0
+                        raise RateLimitExceededException(self.name, self.max_tokens, "minute")
                 
                 # Reset retry count bei erfolgreicher Anfrage
                 self.retry_count = 0
@@ -115,11 +151,9 @@ class BaseAPIProvider(ABC):
             raise APIException(f"Timeout error for {self.name}")
     
     async def _make_post_request(self, url: str, json_data: Dict[str, Any], headers: Dict[str, str] = None) -> Dict[str, Any]:
-        """Interne Methode für POST-Anfragen mit Rate-Limiting und Retry-Logik"""
-        # Rate-Limiting prüfen
-        rate_limits = self.get_rate_limits()
-        if not await self.rate_limiter.acquire(self.name, rate_limits.get("requests_per_minute", 10), 60):
-            raise RateLimitExceededException(self.name, rate_limits.get("requests_per_minute", 10), "minute")
+        """Interne Methode für POST-Anfragen mit verbessertem Rate-Limiting und Retry-Logik"""
+        # Warte auf ein Token (Rate-Limiting)
+        await self._wait_for_token()
         
         # Mindestabstand zwischen Anfragen
         current_time = time.time()
@@ -140,14 +174,24 @@ class BaseAPIProvider(ABC):
                     # Retry-Logik für Rate-Limit-Fehler
                     self.retry_count += 1
                     if self.retry_count <= self.max_retries:
-                        # Exponentielles Backoff
-                        retry_after = int(response.headers.get('Retry-After', 5 * (2 ** (self.retry_count - 1))))
+                        # Versuche, Retry-After aus den Headern zu lesen
+                        retry_after = int(response.headers.get('Retry-After', 0))
+                        
+                        # Wenn kein Retry-After angegeben ist, verwende exponentielles Backoff
+                        if retry_after <= 0:
+                            retry_after = min(60, 5 * (2 ** (self.retry_count - 1)))
+                        
                         logger.warning(f"Rate limit exceeded. Retry {self.retry_count}/{self.max_retries} after {retry_after} seconds")
                         await asyncio.sleep(retry_after)
+                        
+                        # Setze die Tokens zurück, um weitere Rate-Limits zu vermeiden
+                        self.request_tokens = 0
+                        
                         return await self._make_post_request(url, json_data, headers)
                     else:
-                        self.retry_count = 0  # Reset retry count
-                        raise RateLimitExceededException(self.name, rate_limits.get("requests_per_minute", 10), "minute")
+                        # Max retries erreicht, setze Zähler zurück
+                        self.retry_count = 0
+                        raise RateLimitExceededException(self.name, self.max_tokens, "minute")
                 
                 # Reset retry count bei erfolgreicher Anfrage
                 self.retry_count = 0
