@@ -161,6 +161,26 @@ class APIManager:
         else:
             logger.warning("BSCscan API key not provided, skipping BSC provider")
         
+        # Solana-Provider für Holder-Daten hinzufügen
+        if os.getenv('SOLANA_RPC_URL'):
+            try:
+                self.providers['solana'] = SolanaProvider()
+                logger.info("Solana provider initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize Solana provider: {e}")
+        else:
+            logger.warning("Solana RPC URL not provided, skipping Solana provider")
+        
+        # Sui-Provider für Holder-Daten hinzufügen
+        if os.getenv('SUI_RPC_URL'):
+            try:
+                self.providers['sui'] = SuiProvider()
+                logger.info("Sui provider initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize Sui provider: {e}")
+        else:
+            logger.warning("Sui RPC URL not provided, skipping Sui provider")
+        
         # Provider-Sessions initialisieren
         for provider_name, provider in self.providers.items():
             if hasattr(provider, '__aenter__'):
