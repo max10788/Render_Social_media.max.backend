@@ -140,6 +140,7 @@ class TokenDataResolver:
             logger.warning(f"Error getting onchain data for {token_address}: {e}")
             return None
     
+    # === ANGEPASSTE METHODE - LÖSUNG 1 ===
     def _is_valid_price_data(self, price_data: TokenPriceData) -> bool:
         """Prüft, ob die Preisdaten gültig sind"""
         if not price_data:
@@ -150,7 +151,7 @@ class TokenDataResolver:
             return False
         
         # Name und Symbol sind optional - entferne diese Prüfungen
-    return True
+        return True
     
     def _is_valid_metadata(self, metadata: Dict[str, Any]) -> bool:
         """Prüft, ob die Metadaten gültig sind"""
@@ -168,8 +169,8 @@ class TokenDataResolver:
         """Erstellt ein Token-Objekt aus Preisdaten"""
         return Token(
             address=token_address,
-            name=getattr(price_data, 'name', 'Unknown'),
-            symbol=getattr(price_data, 'symbol', 'UNKNOWN'),
+            name=getattr(price_data, 'name', 'Unknown'),  # Standardwert 'Unknown'
+            symbol=getattr(price_data, 'symbol', 'UNKNOWN'),  # Standardwert 'UNKNOWN'
             chain=chain,
             market_cap=getattr(price_data, 'market_cap', 0),
             volume_24h=getattr(price_data, 'volume_24h', 0),
