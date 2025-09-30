@@ -130,6 +130,25 @@ class CoinGeckoProvider(BaseAPIProvider):
             raise
     
     async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
+        """
+        Holt Token-Preisdaten mit automatischer Netzwerkerkennung und Korrektur
+        """
+        # Versuche zuerst mit dem übergebenen chain
+        result = await self._get_token_price_for_chain(token_address, chain)
+        if result is not None:
+            return result
+
+        # Wenn chain 'ethereum' war und wir kein Ergebnis bekommen haben, versuche es mit BSC
+        if chain.lower() == 'ethereum':
+            logger.info(f"No data found for {token_address} on ethereum, trying binance-smart-chain")
+            result = await self._get_token_price_for_chain(token_address, 'bsc')
+            if result is not None:
+                return result
+
+        return None
+    
+    async def _get_token_price_for_chain(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
+        """Holt Token-Preisdaten für eine spezifische Blockchain"""
         try:
             platform_id = self._get_platform_id(chain)
             url = f"{self.base_url}/simple/token_price/{platform_id}"
@@ -181,10 +200,28 @@ class CoinGeckoProvider(BaseAPIProvider):
         return None
     
     async def get_token_metadata(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
-        """Holt Token-Metadaten wie Beschreibung, Website, Social Links"""
+        """
+        Holt Token-Metadaten mit automatischer Netzwerkerkennung und Korrektur
+        """
+        # Versuche zuerst mit dem übergebenen chain
+        result = await self._get_token_metadata_for_chain(token_address, chain)
+        if result is not None:
+            return result
+
+        # Wenn chain 'ethereum' war und wir kein Ergebnis bekommen haben, versuche es mit BSC
+        if chain.lower() == 'ethereum':
+            logger.info(f"No metadata found for {token_address} on ethereum, trying binance-smart-chain")
+            result = await self._get_token_metadata_for_chain(token_address, 'bsc')
+            if result is not None:
+                return result
+
+        return None
+    
+    async def _get_token_metadata_for_chain(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
+        """Holt Token-Metadaten für eine spezifische Blockchain"""
         try:
             # Zuerst Coin-ID von der Adresse holen
-            coin_id = await self._get_coin_id_from_address(token_address, chain)
+            coin_id = await self._get_coin_id_from_address_for_chain(token_address, chain)
             if not coin_id:
                 return None
             
@@ -228,9 +265,25 @@ class CoinGeckoProvider(BaseAPIProvider):
     
     async def get_historical_prices(self, token_address: str, chain: str, days: int = 30) -> Optional[Dict[str, float]]:
         """Holt historische Preisdaten für einen bestimmten Zeitraum"""
+        # Versuche zuerst mit dem übergebenen chain
+        result = await self._get_historical_prices_for_chain(token_address, chain, days)
+        if result is not None:
+            return result
+
+        # Wenn chain 'ethereum' war und wir kein Ergebnis bekommen haben, versuche es mit BSC
+        if chain.lower() == 'ethereum':
+            logger.info(f"No historical prices found for {token_address} on ethereum, trying binance-smart-chain")
+            result = await self._get_historical_prices_for_chain(token_address, 'bsc', days)
+            if result is not None:
+                return result
+
+        return None
+    
+    async def _get_historical_prices_for_chain(self, token_address: str, chain: str, days: int) -> Optional[Dict[str, float]]:
+        """Holt historische Preisdaten für eine spezifische Blockchain"""
         try:
             # Zuerst Coin-ID von der Adresse holen
-            coin_id = await self._get_coin_id_from_address(token_address, chain)
+            coin_id = await self._get_coin_id_from_address_for_chain(token_address, chain)
             if not coin_id:
                 return None
             
@@ -437,8 +490,8 @@ class CoinGeckoProvider(BaseAPIProvider):
             logger.error(f"Error fetching holders from GeckoTerminal: {e}")
             return []
     
-    async def _get_coin_id_from_address(self, token_address: str, chain: str) -> Optional[str]:
-        """Holt die Coin-ID von einer Contract-Adresse"""
+    async def _get_coin_id_from_address_for_chain(self, token_address: str, chain: str) -> Optional[str]:
+        """Holt die Coin-ID von einer Contract-Adresse für eine spezifische Blockchain"""
         try:
             platform_id = self._get_platform_id(chain)
             url = f"{self.base_url}/coins/{platform_id}/contract/{token_address}"
