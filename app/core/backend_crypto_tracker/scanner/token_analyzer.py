@@ -22,7 +22,7 @@ from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider
 from app.core.backend_crypto_tracker.utils.cache import AnalysisCache
 
 # Import all providers
-from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider, UnifiedAPIProvider
+from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider, get_unified_api_provider
 from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
 from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap_provider import CoinMarketCapProvider
 from app.core.backend_crypto_tracker.blockchain.aggregators.cryptocompare_provider import CryptoCompareProvider
@@ -95,7 +95,7 @@ class TokenAnalyzer:
         self.enable_cache = self.config.enable_cache
         self.cache_ttl = self.config.cache_ttl_seconds
         
-        # Base Provider als zentralen API-Manager verwenden
+        # Base Provider als zentralen API-Manager verwenden (Singleton)
         self.base_provider = None
         self.ethereum_provider = None
         self.etherscan_provider = None  # Explizit initialisieren
@@ -121,114 +121,123 @@ class TokenAnalyzer:
         
         # Token-Resolver initialisieren
         self.token_resolver = None
+        
+        # Flag, um zu überprüfen, ob die Provider bereits initialisiert wurden
+        self._initialized = False
 
     async def __aenter__(self):
-        # Base Provider als zentralen API-Manager initialisieren
-        self.base_provider = UnifiedAPIProvider()
-        await self.base_provider.__aenter__()
-        
-        # Blockchain-Provider initialisieren mit GetBlock RPC-URL
-        if os.getenv('ETHERSCAN_API_KEY'):
-            # Verwende die GetBlock RPC-URL
-            ethereum_rpc = self.ethereum_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
-            self.ethereum_provider = EthereumProvider(self.etherscan_key, rpc_url=ethereum_rpc)
-            logger.info("Ethereum provider initialized")
-        else:
-            logger.warning("Etherscan API key not provided, using limited functionality")
-            # Verwende die GetBlock RPC-URL auch ohne API-Key
-            ethereum_rpc = self.ethereum_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
-            self.ethereum_provider = EthereumProvider(rpc_url=ethereum_rpc)
-        
-        # Initialisiere den Etherscan-Provider für On-Chain-Daten
-        if os.getenv('ETHERSCAN_API_KEY'):
-            self.etherscan_provider = EtherscanProvider(os.getenv('ETHERSCAN_API_KEY'))
-            logger.info("Etherscan provider initialized")
-        else:
-            logger.warning("Etherscan API key not provided, skipping Etherscan provider")
-            self.etherscan_provider = None
-        
-        if os.getenv('BSCSCAN_API_KEY'):
-            # Verwende die GetBlock RPC-URL für BSC
-            bsc_rpc = self.bsc_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
-            self.bsc_provider = EthereumProvider(self.bscscan_key, rpc_url=bsc_rpc)
-            logger.info("BSC provider initialized")
-        else:
-            logger.warning("BSCscan API key not provided, using limited functionality")
-            # Verwende die GetBlock RPC-URL auch ohne API-Key
-            bsc_rpc = self.bsc_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
-            self.bsc_provider = EthereumProvider(rpc_url=bsc_rpc)
-        
-        if os.getenv('SOLANA_RPC_URL'):
-            self.solana_provider = SolanaProvider()
-            logger.info("Solana provider initialized")
-        else:
-            logger.warning("Solana RPC URL not provided, skipping this provider")
-        
-        if os.getenv('SUI_RPC_URL'):
-            self.sui_provider = SuiProvider()
-            logger.info("Sui provider initialized")
-        else:
-            logger.warning("Sui RPC URL not provided, skipping this provider")
-        
-        # Web3-Verbindungen initialisieren
-        if self.ethereum_rpc:
-            self.w3_eth = Web3(Web3.HTTPProvider(self.ethereum_rpc))
-        
-        if self.bsc_rpc:
-            self.w3_bsc = Web3(Web3.HTTPProvider(self.bsc_rpc))
-        
-        # Provider-Sessions initialisieren
-        if self.ethereum_provider:
-            await self.ethereum_provider.__aenter__()
-        
-        if self.etherscan_provider:
-            await self.etherscan_provider.__aenter__()
-        
-        if self.bsc_provider:
-            await self.bsc_provider.__aenter__()
-        
-        if self.solana_provider:
-            await self.solana_provider.__aenter__()
-        
-        if self.sui_provider:
-            await self.sui_provider.__aenter__()
-        
-        # Token-Resolver initialisieren
-        self.token_resolver = TokenDataResolver(self.base_provider)
+        # Nur initialisieren, wenn noch nicht geschehen
+        if not self._initialized:
+            # Base Provider als zentralen API-Manager initialisieren (Singleton)
+            self.base_provider = get_unified_api_provider()
+            await self.base_provider.__aenter__()
+            
+            # Blockchain-Provider initialisieren mit GetBlock RPC-URL
+            if os.getenv('ETHERSCAN_API_KEY'):
+                # Verwende die GetBlock RPC-URL
+                ethereum_rpc = self.ethereum_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
+                self.ethereum_provider = EthereumProvider(self.etherscan_key, rpc_url=ethereum_rpc)
+                logger.debug("Ethereum provider initialized")
+            else:
+                logger.debug("Etherscan API key not provided, using limited functionality")
+                # Verwende die GetBlock RPC-URL auch ohne API-Key
+                ethereum_rpc = self.ethereum_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
+                self.ethereum_provider = EthereumProvider(rpc_url=ethereum_rpc)
+            
+            # Initialisiere den Etherscan-Provider für On-Chain-Daten
+            if os.getenv('ETHERSCAN_API_KEY'):
+                self.etherscan_provider = EtherscanProvider(os.getenv('ETHERSCAN_API_KEY'))
+                logger.debug("Etherscan provider initialized")
+            else:
+                logger.debug("Etherscan API key not provided, skipping Etherscan provider")
+                self.etherscan_provider = None
+            
+            if os.getenv('BSCSCAN_API_KEY'):
+                # Verwende die GetBlock RPC-URL für BSC
+                bsc_rpc = self.bsc_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
+                self.bsc_provider = EthereumProvider(self.bscscan_key, rpc_url=bsc_rpc)
+                logger.debug("BSC provider initialized")
+            else:
+                logger.debug("BSCscan API key not provided, using limited functionality")
+                # Verwende die GetBlock RPC-URL auch ohne API-Key
+                bsc_rpc = self.bsc_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
+                self.bsc_provider = EthereumProvider(rpc_url=bsc_rpc)
+            
+            if os.getenv('SOLANA_RPC_URL'):
+                self.solana_provider = SolanaProvider()
+                logger.debug("Solana provider initialized")
+            else:
+                logger.debug("Solana RPC URL not provided, skipping this provider")
+            
+            if os.getenv('SUI_RPC_URL'):
+                self.sui_provider = SuiProvider()
+                logger.debug("Sui provider initialized")
+            else:
+                logger.debug("Sui RPC URL not provided, skipping this provider")
+            
+            # Web3-Verbindungen initialisieren
+            if self.ethereum_rpc:
+                self.w3_eth = Web3(Web3.HTTPProvider(self.ethereum_rpc))
+            
+            if self.bsc_rpc:
+                self.w3_bsc = Web3(Web3.HTTPProvider(self.bsc_rpc))
+            
+            # Provider-Sessions initialisieren
+            if self.ethereum_provider:
+                await self.ethereum_provider.__aenter__()
+            
+            if self.etherscan_provider:
+                await self.etherscan_provider.__aenter__()
+            
+            if self.bsc_provider:
+                await self.bsc_provider.__aenter__()
+            
+            if self.solana_provider:
+                await self.solana_provider.__aenter__()
+            
+            if self.sui_provider:
+                await self.sui_provider.__aenter__()
+            
+            # Token-Resolver initialisieren
+            self.token_resolver = TokenDataResolver(self.base_provider)
+            
+            # Markiere als initialisiert
+            self._initialized = True
         
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # Sicheres Schließen aller Ressourcen
-        close_tasks = []
-        
-        # Schließe Base Provider
-        if self.base_provider:
-            close_tasks.append(self._safe_close_provider(self.base_provider, "BaseProvider"))
-        
-        # Schließe Blockchain-Provider
-        providers = [
-            self.ethereum_provider,
-            self.etherscan_provider,
-            self.bsc_provider,
-            self.solana_provider,
-            self.sui_provider
-        ]
-        
-        for provider in providers:
-            if provider:
-                close_tasks.append(self._safe_close_provider(provider, provider.__class__.__name__))
-        
-        # Führe alle Schließvorgänge parallel ausführen
-        if close_tasks:
-            await asyncio.gather(*close_tasks, return_exceptions=True)
-        
-        # Web3-Verbindungen trennen
-        if hasattr(self, 'w3_eth') and self.w3_eth:
-            self.w3_eth = None
-        
-        if hasattr(self, 'w3_bsc') and self.w3_bsc:
-            self.w3_bsc = None
+        # Nur schließen, wenn initialisiert wurde
+        if self._initialized:
+            # Sicheres Schließen aller Ressourcen
+            close_tasks = []
+            
+            # Schließe Blockchain-Provider
+            providers = [
+                self.ethereum_provider,
+                self.etherscan_provider,
+                self.bsc_provider,
+                self.solana_provider,
+                self.sui_provider
+            ]
+            
+            for provider in providers:
+                if provider:
+                    close_tasks.append(self._safe_close_provider(provider, provider.__class__.__name__))
+            
+            # Führe alle Schließvorgänge parallel ausführen
+            if close_tasks:
+                await asyncio.gather(*close_tasks, return_exceptions=True)
+            
+            # Web3-Verbindungen trennen
+            if hasattr(self, 'w3_eth') and self.w3_eth:
+                self.w3_eth = None
+            
+            if hasattr(self, 'w3_bsc') and self.w3_bsc:
+                self.w3_bsc = None
+            
+            # Setze das Initialisierungsflag zurück
+            self._initialized = False
     
     async def _safe_close_provider(self, provider, provider_name):
         """Sicheres Schließen eines Providers"""
@@ -505,7 +514,7 @@ class TokenAnalyzer:
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
-                    logger.info(f"Returning cached token data for {token_address}")
+                    logger.debug(f"Returning cached token data for {token_address}")
                     return cached_result
             
             # Hole Token-Daten vom Base Provider
@@ -513,7 +522,7 @@ class TokenAnalyzer:
             
             # PRÜFEN, OB price_data None IST
             if price_data is None:
-                logger.warning(f"Keine Preisdaten für Token {token_address} auf {chain} verfügbar")
+                logger.debug(f"Keine Preisdaten für Token {token_address} auf {chain} verfügbar")
                 return None
             
             # Erstelle Token-Objekt mit getattr für sicheren Attributzugriff
@@ -558,7 +567,7 @@ class TokenAnalyzer:
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
-                    logger.info(f"Returning cached EVM token data for {token.address}")
+                    logger.debug(f"Returning cached EVM token data for {token.address}")
                     return cached_result
             
             # Wähle den richtigen Web3-Provider
@@ -646,7 +655,7 @@ class TokenAnalyzer:
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
-                    logger.info(f"Returning cached Solana token data for {token.address}")
+                    logger.debug(f"Returning cached Solana token data for {token.address}")
                     return cached_result
             
             if self.solana_provider:
@@ -676,7 +685,7 @@ class TokenAnalyzer:
             if self.cache:
                 cached_result = await self.cache.get(cache_key)
                 if cached_result:
-                    logger.info(f"Returning cached Sui token data for {token.address}")
+                    logger.debug(f"Returning cached Sui token data for {token.address}")
                     return cached_result
             
             if self.sui_provider:
@@ -719,7 +728,7 @@ class TokenAnalyzer:
                 if self.cache:
                     cached_result = await self.cache.get(cache_key)
                     if cached_result:
-                        logger.info(f"Returning cached wallet analysis for {wallet_address}")
+                        logger.debug(f"Returning cached wallet analysis for {wallet_address}")
                         wallet_analyses.append(cached_result)
                         continue
                 
@@ -1103,10 +1112,6 @@ class TokenAnalyzer:
         """Schließt alle offenen Ressourcen wie Provider-Sessions."""
         close_tasks = []
         
-        # Schließe Base Provider
-        if self.base_provider:
-            close_tasks.append(self._safe_close_provider(self.base_provider, "BaseProvider"))
-        
         # Schließe Blockchain-Provider
         providers = [
             self.ethereum_provider,
@@ -1124,4 +1129,4 @@ class TokenAnalyzer:
         if close_tasks:
             await asyncio.gather(*close_tasks, return_exceptions=True)
         
-        logger.info("TokenAnalyzer resources closed successfully")
+        logger.debug("TokenAnalyzer resources closed successfully")
