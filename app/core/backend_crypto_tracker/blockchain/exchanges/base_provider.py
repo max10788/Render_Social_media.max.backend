@@ -56,8 +56,8 @@ class BaseAPIProvider(ABC):
         
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
-        await self._initialize_blockchain_providers()
-        await self._initialize_price_providers()
+        # WICHTIG: Keine Provider-Initialisierung hier!
+        # Provider werden nur in UnifiedAPIProvider initialisiert
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -67,151 +67,6 @@ class BaseAPIProvider(ABC):
                 await self.session.connector.close()
             # Dann schließe die Session
             await self.session.close()
-        
-        # Schließe alle blockchain-spezifischen Provider
-        for provider_name, provider in self.blockchain_providers.items():
-            if hasattr(provider, '__aexit__'):
-                await provider.__aexit__(None, None, None)
-            if hasattr(provider, 'close'):
-                await provider.close()
-        
-        # Schließe alle Preisdaten-Provider
-        for provider_name, provider in self.price_providers.items():
-            if hasattr(provider, '__aexit__'):
-                await provider.__aexit__(None, None, None)
-            if hasattr(provider, 'close'):
-                await provider.close()
-    
-    async def _initialize_blockchain_providers(self):
-        """Initialisiert die blockchain-spezifischen Provider nur einmal global"""
-        global _blockchain_providers_initialized, _global_blockchain_providers
-        
-        # Prüfe, ob die Provider bereits global initialisiert wurden
-        if _blockchain_providers_initialized:
-            # Verwende die globalen Provider
-            self.blockchain_providers = _global_blockchain_providers
-            logger.debug("Using globally initialized blockchain providers")
-            return
-            
-        logger.debug("Initializing blockchain providers globally...")
-        
-        # Importiere hier die blockchain-spezifischen Provider, um zirkuläre Importe zu vermeiden
-        try:
-            from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
-            from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
-            from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
-            from app.core.backend_crypto_tracker.blockchain.blockchain_specific.bitcoin_provider import BitcoinProvider
-            
-            # Initialisiere Ethereum-Provider
-            if 'ethereum' not in self.blockchain_providers and os.getenv('ETHERSCAN_API_KEY'):
-                try:
-                    self.blockchain_providers['ethereum'] = EthereumProvider(os.getenv('ETHERSCAN_API_KEY'))
-                    logger.debug("Ethereum provider initialized globally")
-                except Exception as e:
-                    logger.error(f"Failed to initialize Ethereum provider: {e}")
-            
-            # Initialisiere Solana-Provider
-            if 'solana' not in self.blockchain_providers and os.getenv('SOLANA_RPC_URL'):
-                try:
-                    self.blockchain_providers['solana'] = SolanaProvider()
-                    logger.debug("Solana provider initialized globally")
-                except Exception as e:
-                    logger.error(f"Failed to initialize Solana provider: {e}")
-            
-            # Initialisiere Sui-Provider
-            if 'sui' not in self.blockchain_providers and os.getenv('SUI_RPC_URL'):
-                try:
-                    self.blockchain_providers['sui'] = SuiProvider()
-                    logger.debug("Sui provider initialized globally")
-                except Exception as e:
-                    logger.error(f"Failed to initialize Sui provider: {e}")
-            
-            # Initialisiere Bitcoin-Provider
-            if 'bitcoin' not in self.blockchain_providers and os.getenv('BITCOIN_RPC_URL'):
-                try:
-                    self.blockchain_providers['bitcoin'] = BitcoinProvider()
-                    logger.debug("Bitcoin provider initialized globally")
-                except Exception as e:
-                    logger.error(f"Failed to initialize Bitcoin provider: {e}")
-            
-            # Initialisiere die Sessions der blockchain-spezifischen Provider
-            for provider_name, provider in list(self.blockchain_providers.items()):
-                try:
-                    if hasattr(provider, '__aenter__'):
-                        await provider.__aenter__()
-                except Exception as e:
-                    logger.error(f"Failed to initialize {provider_name}: {e}")
-                    self.blockchain_providers.pop(provider_name, None)
-            
-            # Speichere die Provider global
-            _global_blockchain_providers = self.blockchain_providers.copy()
-            _blockchain_providers_initialized = True
-                        
-        except ImportError as e:
-            logger.error(f"Failed to import blockchain providers: {e}")
-    
-    async def _initialize_price_providers(self):
-        """Initialisiert die Preisdaten-Provider nur einmal global"""
-        global _price_providers_initialized, _global_price_providers
-        
-        # Prüfe, ob die Preis-Provider bereits global initialisiert wurden
-        if _price_providers_initialized:
-            # Verwende die globalen Provider
-            self.price_providers = _global_price_providers
-            logger.debug("Using globally initialized price providers")
-            return
-            
-        logger.debug("Initializing price providers globally...")
-        
-        try:
-            from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
-            from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap_provider import CoinMarketCapProvider
-            from app.core.backend_crypto_tracker.blockchain.aggregators.cryptocompare_provider import CryptoCompareProvider
-            
-            # Initialisiere CoinGecko-Provider
-            if 'coingecko' not in self.price_providers:
-                try:
-                    if os.getenv('COINGECKO_API_KEY'):
-                        self.price_providers['coingecko'] = CoinGeckoProvider()
-                        logger.debug("CoinGecko provider initialized globally")
-                    else:
-                        logger.debug("CoinGecko API key not provided, using limited functionality")
-                        # CoinGecko funktioniert auch ohne API-Key, aber mit Limits
-                        self.price_providers['coingecko'] = CoinGeckoProvider()
-                except Exception as e:
-                    logger.error(f"Failed to initialize CoinGecko provider: {e}")
-            
-            # Initialisiere CoinMarketCap-Provider
-            if 'coinmarketcap' not in self.price_providers and os.getenv('COINMARKETCAP_API_KEY'):
-                try:
-                    self.price_providers['coinmarketcap'] = CoinMarketCapProvider()
-                    logger.debug("CoinMarketCap provider initialized globally")
-                except Exception as e:
-                    logger.error(f"Failed to initialize CoinMarketCap provider: {e}")
-            
-            # Initialisiere CryptoCompare-Provider
-            if 'cryptocompare' not in self.price_providers and os.getenv('CRYPTOCOMPARE_API_KEY'):
-                try:
-                    self.price_providers['cryptocompare'] = CryptoCompareProvider()
-                    logger.debug("CryptoCompare provider initialized globally")
-                except Exception as e:
-                    logger.error(f"Failed to initialize CryptoCompare provider: {e}")
-            
-            # Initialisiere die Sessions der Preisdaten-Provider
-            for provider_name, provider in list(self.price_providers.items()):
-                try:
-                    if hasattr(provider, '__aenter__'):
-                        await provider.__aenter__()
-                except Exception as e:
-                    logger.error(f"Failed to initialize {provider_name}: {e}")
-                    self.price_providers.pop(provider_name, None)
-            
-            # Speichere die Provider global
-            _global_price_providers = self.price_providers.copy()
-            _price_providers_initialized = True
-                        
-        except ImportError as e:
-            logger.error(f"Failed to import price providers: {e}")
     
     @abstractmethod
     async def get_token_price(self, token_address: str, chain: str):
@@ -438,74 +293,6 @@ class BaseAPIProvider(ABC):
             logger.error(f"Timeout error for {self.name}")
             raise APIException(f"Timeout error for {self.name}")
     
-    async def _make_post_request(self, url: str, json_data: Dict[str, Any], headers: Dict[str, str] = None) -> Dict[str, Any]:
-        """Interne Methode für POST-Anfragen mit verbessertem Rate-Limiting und Retry-Logik"""
-        # Warte auf ein Token (Rate-Limiting)
-        await self._wait_for_token()
-        
-        # Mindestabstand zwischen Anfragen
-        current_time = time.time()
-        time_since_last = current_time - self.last_request_time
-        if time_since_last < self.min_request_interval:
-            await asyncio.sleep(self.min_request_interval - time_since_last)
-        self.last_request_time = time.time()
-        
-        try:
-            if not self.session:
-                self.session = aiohttp.ClientSession()
-                
-            async with self.session.post(url, json=json_data, headers=headers) as response:
-                if response.status == 429:
-                    error_text = await response.text()
-                    logger.warning(f"Rate limit exceeded for {self.name}: {error_text}")
-                    
-                    # Retry-Logik für Rate-Limit-Fehler
-                    self.retry_count += 1
-                    if self.retry_count <= self.max_retries:
-                        # Versuche, Retry-After aus den Headern zu lesen
-                        retry_after = int(response.headers.get('Retry-After', 0))
-                        
-                        # Wenn kein Retry-After angegeben ist, verwende exponentielles Backoff
-                        if retry_after <= 0:
-                            retry_after = min(60, 5 * (2 ** (self.retry_count - 1)))
-                        
-                        logger.warning(f"Rate limit exceeded. Retry {self.retry_count}/{self.max_retries} after {retry_after} seconds")
-                        await asyncio.sleep(retry_after)
-                        
-                        # Setze die Tokens zurück, um weitere Rate-Limits zu vermeiden
-                        self.request_tokens = 0
-                        
-                        return await self._make_post_request(url, json_data, headers)
-                    else:
-                        # Max retries erreicht, setze Zähler zurück
-                        self.retry_count = 0
-                        raise RateLimitExceededException(self.name, self.max_tokens, "minute")
-                
-                # Reset retry count bei erfolgreicher Anfrage
-                self.retry_count = 0
-                
-                if response.status >= 400:
-                    error_text = await response.text()
-                    logger.error(f"HTTP error {response.status} for {self.name}: {error_text}")
-                    raise APIException(f"HTTP error {response.status}: {error_text}")
-                
-                try:
-                    return await response.json()
-                except Exception as e:
-                    logger.error(f"Error parsing JSON response from {self.name}: {e}")
-                    raise APIException(f"Error parsing response: {str(e)}")
-                    
-        except aiohttp.ClientError as e:
-            logger.error(f"Network error for {self.name}: {e}")
-            raise APIException(f"Network error: {str(e)}")
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout error for {self.name}")
-            raise APIException(f"Timeout error for {self.name}")
-    
-    def check_availability(self) -> bool:
-        """Prüft, ob der Anbieter verfügbar ist"""
-        return self.is_available
-    
     async def close(self):
         """Schließt alle offenen Ressourcen wie Client-Sessions."""
         if hasattr(self, 'session') and self.session:
@@ -515,28 +302,6 @@ class BaseAPIProvider(ABC):
             # Dann schließe die Session
             await self.session.close()
             logger.debug(f"{self.name} provider client session closed successfully")
-        
-        # Schließe alle blockchain-spezifischen Provider
-        for provider_name, provider in self.blockchain_providers.items():
-            try:
-                if hasattr(provider, '__aexit__'):
-                    await provider.__aexit__(None, None, None)
-                if hasattr(provider, 'close'):
-                    await provider.close()
-                logger.debug(f"{provider_name} provider closed successfully")
-            except Exception as e:
-                logger.error(f"Error closing {provider_name}: {str(e)}")
-        
-        # Schließe alle Preisdaten-Provider
-        for provider_name, provider in self.price_providers.items():
-            try:
-                if hasattr(provider, '__aexit__'):
-                    await provider.__aexit__(None, None, None)
-                if hasattr(provider, 'close'):
-                    await provider.close()
-                logger.debug(f"{provider_name} price provider closed successfully")
-            except Exception as e:
-                logger.error(f"Error closing {provider_name}: {str(e)}")
 
 
 class UnifiedAPIProvider(BaseAPIProvider):
@@ -552,10 +317,97 @@ class UnifiedAPIProvider(BaseAPIProvider):
             base_url="https://api.example.com",  # Platzhalter-URL
             api_key_env="UNIFIED_API_KEY"  # Platzhalter für API-Key
         )
+        self._providers_initialized = False
+    
+    async def __aenter__(self):
+        await super().__aenter__()
+        
+        # Initialisiere Provider nur einmal
+        if not self._providers_initialized:
+            await self._initialize_all_providers()
+            self._providers_initialized = True
+        
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        # Schließe alle Provider
+        for provider_name, provider in self.blockchain_providers.items():
+            if hasattr(provider, '__aexit__'):
+                await provider.__aexit__(None, None, None)
+            if hasattr(provider, 'close'):
+                await provider.close()
+        
+        for provider_name, provider in self.price_providers.items():
+            if hasattr(provider, '__aexit__'):
+                await provider.__aexit__(None, None, None)
+            if hasattr(provider, 'close'):
+                await provider.close()
+        
+        # Schließe die Basis-Session
+        await super().__aexit__(exc_type, exc_val, exc_tb)
+    
+    async def _initialize_all_providers(self):
+        """Initialisiert alle Provider einmalig"""
+        global _blockchain_providers_initialized, _price_providers_initialized
+        global _global_blockchain_providers, _global_price_providers
+        
+        # Verwende globale Provider, wenn bereits initialisiert
+        if _blockchain_providers_initialized:
+            self.blockchain_providers = _global_blockchain_providers
+            logger.debug("Using globally initialized blockchain providers")
+        else:
+            await self._initialize_blockchain_providers()
+            _global_blockchain_providers = self.blockchain_providers
+            _blockchain_providers_initialized = True
+        
+        if _price_providers_initialized:
+            self.price_providers = _global_price_providers
+            logger.debug("Using globally initialized price providers")
+        else:
+            await self._initialize_price_providers()
+            _global_price_providers = self.price_providers
+            _price_providers_initialized = True
+    
+    async def _initialize_blockchain_providers(self):
+        """Initialisiert die blockchain-spezifischen Provider"""
+        logger.debug("Initializing blockchain providers...")
+        
+        try:
+            # Ethereum Provider
+            if os.getenv('ETHERSCAN_API_KEY'):
+                from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
+                self.blockchain_providers['ethereum'] = EthereumProvider(os.getenv('ETHERSCAN_API_KEY'))
+                await self.blockchain_providers['ethereum'].__aenter__()
+                logger.debug("Ethereum provider initialized")
+            
+            # Weitere Provider können hier hinzugefügt werden...
+            
+        except ImportError as e:
+            logger.error(f"Failed to import blockchain providers: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize blockchain providers: {e}")
+    
+    async def _initialize_price_providers(self):
+        """Initialisiert die Preisdaten-Provider"""
+        logger.debug("Initializing price providers...")
+        
+        try:
+            # CoinGecko Provider (funktioniert auch ohne API-Key)
+            from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
+            self.price_providers['coingecko'] = CoinGeckoProvider()
+            await self.price_providers['coingecko'].__aenter__()
+            logger.debug("CoinGecko provider initialized")
+            
+            # Weitere Provider können hier hinzugefügt werden...
+            
+        except ImportError as e:
+            logger.error(f"Failed to import price providers: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize price providers: {e}")
     
     async def get_token_price(self, token_address: str, chain: str):
         """Ruft Token-Preisdaten von einem der Preisdaten-Provider ab"""
-        providers_to_try = ['coingecko', 'coinmarketcap', 'cryptocompare']
+        providers_to_try = ['coingecko']
         
         last_exception = None
         for provider_name in providers_to_try:
@@ -582,7 +434,7 @@ class UnifiedAPIProvider(BaseAPIProvider):
             raise APIException("All price providers failed")
     
     def get_rate_limits(self) -> Dict[str, int]:
-        """Gibt die Rate-Limits zurück (requests_per_minute, requests_per_hour, etc.)"""
+        """Gibt die Rate-Limits zurück"""
         return {
             "requests_per_minute": 30,
             "requests_per_hour": 1000,
@@ -590,12 +442,9 @@ class UnifiedAPIProvider(BaseAPIProvider):
         }
     
     async def get_low_cap_tokens(self, max_market_cap: float = 5_000_000, limit: int = 100) -> List[Any]:
-        """
-        Ruft Low-Cap Tokens von einem der Preisdaten-Provider ab
-        """
-        providers_to_try = ['coingecko', 'coinmarketcap', 'cryptocompare']
+        """Ruft Low-Cap Tokens von einem der Preisdaten-Provider ab"""
+        providers_to_try = ['coingecko']
         
-        last_exception = None
         for provider_name in providers_to_try:
             provider = self.price_providers.get(provider_name)
             if not provider:
@@ -604,7 +453,6 @@ class UnifiedAPIProvider(BaseAPIProvider):
             try:
                 logger.debug(f"Trying to get low-cap tokens from {provider_name}")
                 
-                # Prüfe, ob der Provider eine get_low_cap_tokens-Methode hat
                 if hasattr(provider, 'get_low_cap_tokens'):
                     tokens = await provider.get_low_cap_tokens(max_market_cap, limit)
                     
@@ -615,21 +463,15 @@ class UnifiedAPIProvider(BaseAPIProvider):
                     logger.debug(f"Provider {provider_name} does not support get_low_cap_tokens")
                     
             except Exception as e:
-                last_exception = e
                 logger.warning(f"Error with provider {provider_name}: {str(e)}")
         
-        # Wenn alle Provider fehlschlagen, werfe die letzte Exception
-        if last_exception:
-            raise last_exception
-        else:
-            logger.warning("No providers available for low-cap tokens")
-            return []
+        logger.warning("No providers available for low-cap tokens")
+        return []
 
 
 def get_unified_api_provider() -> UnifiedAPIProvider:
     """
     Gibt eine Singleton-Instanz des UnifiedAPIProvider zurück.
-    Dies stellt sicher, dass die Provider nur einmal initialisiert werden.
     """
     global _unified_api_provider_instance
     
@@ -645,12 +487,11 @@ def get_unified_api_provider() -> UnifiedAPIProvider:
 def reset_providers():
     """
     Setzt die globalen Provider-Instanzen zurück.
-    Nützlich für Tests oder wenn die Provider neu initialisiert werden müssen.
     """
-    global _unified_api_provider_instance, _blockchain_providers_initialized, _price_providers_initialized, _global_blockchain_providers, _global_price_providers
+    global _unified_api_provider_instance, _blockchain_providers_initialized, _price_providers_initialized
+    global _global_blockchain_providers, _global_price_providers
     
     if _unified_api_provider_instance is not None:
-        # Schließe die bestehende Instanz
         try:
             if hasattr(_unified_api_provider_instance, 'close'):
                 import asyncio
@@ -659,7 +500,6 @@ def reset_providers():
         except Exception as e:
             logger.error(f"Error closing existing provider instance: {e}")
     
-    # Setze alle globalen Variablen zurück
     _unified_api_provider_instance = None
     _blockchain_providers_initialized = False
     _price_providers_initialized = False
