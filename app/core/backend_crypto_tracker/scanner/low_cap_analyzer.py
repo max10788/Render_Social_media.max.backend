@@ -42,6 +42,7 @@ from app.core.backend_crypto_tracker.scanner.scoring_engine import (
 )
 
 from app.core.backend_crypto_tracker.utils.cache import AnalysisCache  # Verwende deine vorhandene Cache-Klasse
+from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import get_unified_api_provider  # Importiere den Singleton-Provider
 
 
 class LowCapAnalyzer:
@@ -73,71 +74,79 @@ class LowCapAnalyzer:
         
         self.session = None
         
-        self.logger.info("LowCapAnalyzer initialisiert")
+        # Flag, um zu überprüfen, ob die Provider bereits initialisiert wurden
+        self._initialized = False
+        
+        self.logger.debug("LowCapAnalyzer initialisiert")
 
     async def __aenter__(self):
         """Initialisiert asynchrone Ressourcen"""
-        self.logger.info("Initialisiere asynchrone Ressourcen für LowCapAnalyzer")
-        try:
-            # Erstelle eine gemeinsame Session für HTTP-Anfragen
-            self.session = aiohttp.ClientSession()
-            
-            # Aktualisiere die Konfiguration mit Cache-Einstellungen
-            self.config.enable_cache = self.enable_cache
-            self.config.cache_ttl_seconds = self.cache_ttl
-            
-            # Erstelle Instanzen der Komponenten mit asynchroner Initialisierung
-            self.token_analyzer = TokenAnalyzer(self.config)
-            await self.token_analyzer.__aenter__()
-            
-            self.risk_assessor = AdvancedRiskAssessor()
-            self.scoring_engine = MultiChainScoringEngine()
-            self.wallet_classifier = WalletClassifier()
-            await self.wallet_classifier.__aenter__()
-            
-            self.logger.info("Asynchrone Ressourcen erfolgreich initialisiert")
-            return self
-        except Exception as e:
-            self.logger.error(f"Fehler bei der Initialisierung der Ressourcen: {str(e)}")
-            await self.__aexit__(type(e), e, e.__traceback__)
-            raise CustomAnalysisException(f"Initialisierung fehlgeschlagen: {str(e)}")
+        if not self._initialized:
+            self.logger.debug("Initialisiere asynchrone Ressourcen für LowCapAnalyzer")
+            try:
+                # Erstelle eine gemeinsame Session für HTTP-Anfragen
+                self.session = aiohttp.ClientSession()
+                
+                # Aktualisiere die Konfiguration mit Cache-Einstellungen
+                self.config.enable_cache = self.enable_cache
+                self.config.cache_ttl_seconds = self.cache_ttl
+                
+                # Erstelle Instanzen der Komponenten mit asynchroner Initialisierung
+                self.token_analyzer = TokenAnalyzer(self.config)
+                await self.token_analyzer.__aenter__()
+                
+                self.risk_assessor = AdvancedRiskAssessor()
+                self.scoring_engine = MultiChainScoringEngine()
+                self.wallet_classifier = WalletClassifier()
+                await self.wallet_classifier.__aenter__()
+                
+                self._initialized = True
+                self.logger.debug("Asynchrone Ressourcen erfolgreich initialisiert")
+                return self
+            except Exception as e:
+                self.logger.error(f"Fehler bei der Initialisierung der Ressourcen: {str(e)}")
+                await self.__aexit__(type(e), e, e.__traceback__)
+                raise CustomAnalysisException(f"Initialisierung fehlgeschlagen: {str(e)}")
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Schließt asynchrone Ressourcen"""
-        self.logger.info("Schließe asynchrone Ressourcen für LowCapAnalyzer")
-        
-        # Schließe alle Komponenten in umgekehrter Reihenfolge der Erstellung
-        close_tasks = []
-        
-        # Schließe TokenAnalyzer (wichtig, da dieser die Provider verwaltet)
-        if self.token_analyzer:
-            close_tasks.append(self._safe_close_token_analyzer(self.token_analyzer, exc_type, exc_val, exc_tb))
-        
-        # Schließe Hauptkomponenten
-        if self.wallet_classifier and hasattr(self.wallet_classifier, '__aexit__'):
-            close_tasks.append(self._safe_close_component(
-                self.wallet_classifier, exc_type, exc_val, exc_tb, "wallet_classifier"))
-        
-        # Schließe Session
-        if self.session:
-            close_tasks.append(self._safe_close_session(self.session))
-        
-        # Alle Schließvorgänge parallel ausführen
-        if close_tasks:
-            results = await asyncio.gather(*close_tasks, return_exceptions=True)
+        if self._initialized:
+            self.logger.debug("Schließe asynchrone Ressourcen für LowCapAnalyzer")
             
-            # Logge Fehler beim Schließen
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    component_name = close_tasks[i].__name__ if hasattr(close_tasks[i], '__name__') else "unknown"
-                    self.logger.error(f"Fehler beim Schließen von {component_name}: {str(result)}")
-        
-        # Gib Cache-Statistiken aus, falls Cache aktiviert ist
-        if self.cache:
-            cache_stats = self.cache.get_stats()
-            self.logger.info(f"Cache-Statistiken: {cache_stats}")
-        
-        self.logger.info("Asynchrone Ressourcen erfolgreich geschlossen")
+            # Schließe alle Komponenten in umgekehrter Reihenfolge der Erstellung
+            close_tasks = []
+            
+            # Schließe TokenAnalyzer (wichtig, da dieser die Provider verwaltet)
+            if self.token_analyzer:
+                close_tasks.append(self._safe_close_token_analyzer(self.token_analyzer, exc_type, exc_val, exc_tb))
+            
+            # Schließe Hauptkomponenten
+            if self.wallet_classifier and hasattr(self.wallet_classifier, '__aexit__'):
+                close_tasks.append(self._safe_close_component(
+                    self.wallet_classifier, exc_type, exc_val, exc_tb, "wallet_classifier"))
+            
+            # Schließe Session
+            if self.session:
+                close_tasks.append(self._safe_close_session(self.session))
+            
+            # Alle Schließvorgänge parallel ausführen
+            if close_tasks:
+                results = await asyncio.gather(*close_tasks, return_exceptions=True)
+                
+                # Logge Fehler beim Schließen
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        component_name = close_tasks[i].__name__ if hasattr(close_tasks[i], '__name__') else "unknown"
+                        self.logger.error(f"Fehler beim Schließen von {component_name}: {str(result)}")
+            
+            # Gib Cache-Statistiken aus, falls Cache aktiviert ist
+            if self.cache:
+                cache_stats = self.cache.get_stats()
+                self.logger.debug(f"Cache-Statistiken: {cache_stats}")
+            
+            self._initialized = False
+            self.logger.debug("Asynchrone Ressourcen erfolgreich geschlossen")
 
     async def _safe_close_component(self, component, exc_type, exc_val, exc_tb, component_name):
         """Sicheres Schließen einer Komponente"""
@@ -177,7 +186,7 @@ class LowCapAnalyzer:
 
     async def analyze_custom_token(self, token_address: str, chain: str, use_cache: Optional[bool] = None) -> Dict[str, Any]:
         """Zentrale Analyse-Methode für einen einzelnen Token"""
-        self.logger.info(f"Starte Analyse für Token {token_address} auf Chain {chain}")
+        self.logger.debug(f"Starte Analyse für Token {token_address} auf Chain {chain}")
         
         # Bestimme, ob Cache verwendet werden soll
         should_use_cache = use_cache if use_cache is not None else self.enable_cache
@@ -189,7 +198,7 @@ class LowCapAnalyzer:
         if should_use_cache and self.cache:
             cached_result = await self.cache.get(cache_key)
             if cached_result:
-                self.logger.info(f"Returning cached analysis for {token_address} on {chain}")
+                self.logger.debug(f"Verwende gecachte Analyse für {token_address} auf {chain}")
                 return cached_result
         
         # Validierung der Eingabeparameter
@@ -222,7 +231,7 @@ class LowCapAnalyzer:
             
             # Prüfe, ob Halterdaten vorhanden sind
             if 'wallet_analysis' in result and 'top_holders' in result['wallet_analysis']:
-                self.logger.info(f"Verarbeite {len(result['wallet_analysis']['top_holders'])} Top-Holder für {token_address}")
+                self.logger.debug(f"Verarbeite {len(result['wallet_analysis']['top_holders'])} Top-Holder für {token_address}")
                 
                 # Führe erweiterte Analyse der Halter durch
                 if self.wallet_classifier:
@@ -343,7 +352,7 @@ class LowCapAnalyzer:
             if should_use_cache and self.cache:
                 await self.cache.set(result, self.cache_ttl, cache_key)
                 
-            self.logger.info(f"Analyse für Token {token_address} auf Chain {chain} abgeschlossen")
+            self.logger.debug(f"Analyse für Token {token_address} auf Chain {chain} abgeschlossen")
             return result
         except ValueError as e:
             # Spezielle Behandlung für "Token data could not be retrieved" Fehler
@@ -406,7 +415,7 @@ class LowCapAnalyzer:
         Returns:
             Eine Liste von Dictionaries mit Analyseergebnissen für jeden Token
         """
-        self.logger.info(f"Starte Low-Cap-Token-Scan mit max_tokens={max_tokens}")
+        self.logger.debug(f"Starte Low-Cap-Token-Scan mit max_tokens={max_tokens}")
 
         # Bestimme, ob Cache verwendet werden soll
         should_use_cache = use_cache if use_cache is not None else self.enable_cache
@@ -418,7 +427,7 @@ class LowCapAnalyzer:
         if should_use_cache and self.cache:
             cached_result = await self.cache.get(cache_key)
             if cached_result:
-                self.logger.info(f"Returning cached scan results for max_tokens={max_tokens}")
+                self.logger.debug(f"Verwende gecachte Scan-Ergebnisse für max_tokens={max_tokens}")
                 return cached_result
 
         # Prüfe, ob der TokenAnalyzer initialisiert ist
@@ -436,7 +445,7 @@ class LowCapAnalyzer:
             if should_use_cache and self.cache:
                 await self.cache.set(results, self.cache_ttl, cache_key)
 
-            self.logger.info(f"Low-Cap-Token-Scan abgeschlossen. {len(results)} Tokens erfolgreich analysiert")
+            self.logger.debug(f"Low-Cap-Token-Scan abgeschlossen. {len(results)} Tokens erfolgreich analysiert")
             return results
 
         except Exception as e:
@@ -591,7 +600,6 @@ class LowCapAnalyzer:
                 'error': str(e)
             }
     
-        
     async def _calculate_advanced_score(self, token_data: Dict[str, Any], wallet_analyses: List[WalletAnalysis], chain: str) -> Dict[str, Any]:
         """
         Berechnet einen erweiterten Score mit dem MultiChainScoringEngine.
