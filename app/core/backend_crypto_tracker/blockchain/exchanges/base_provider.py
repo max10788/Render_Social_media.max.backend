@@ -15,6 +15,11 @@ from app.core.backend_crypto_tracker.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Globale Singleton-Instanz für den Provider
+_unified_api_provider_instance = None
+# Globales Flag, um anzuzeigen, ob die Provider bereits initialisiert wurden
+_providers_initialized = False
+
 
 class BaseAPIProvider(ABC):
     """Basisklasse für alle API-Anbieter mit zentralisierter Anfrageverwaltung"""
@@ -42,6 +47,9 @@ class BaseAPIProvider(ABC):
         # Blockchain-spezifische Provider
         self.blockchain_providers = {}
         
+        # Flag, um zu überprüfen, ob die Provider bereits initialisiert wurden
+        self._providers_initialized = False
+        
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
         await self._initialize_blockchain_providers()
@@ -63,7 +71,21 @@ class BaseAPIProvider(ABC):
                 await provider.close()
     
     async def _initialize_blockchain_providers(self):
-        """Initialisiert die blockchain-spezifischen Provider"""
+        """Initialisiert die blockchain-spezifischen Provider nur einmal"""
+        global _providers_initialized
+        
+        # Prüfe, ob die Provider bereits global initialisiert wurden
+        if _providers_initialized:
+            logger.debug("Blockchain providers already initialized globally, skipping...")
+            return
+            
+        # Prüfe, ob die Provider bereits instanzspezifisch initialisiert wurden
+        if self._providers_initialized:
+            logger.debug("Blockchain providers already initialized for this instance, skipping...")
+            return
+            
+        logger.debug("Initializing blockchain providers...")
+        
         # Importiere hier die blockchain-spezifischen Provider, um zirkuläre Importe zu vermeiden
         try:
             from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
@@ -72,33 +94,49 @@ class BaseAPIProvider(ABC):
             from app.core.backend_crypto_tracker.blockchain.blockchain_specific.bitcoin_provider import BitcoinProvider
             
             # Initialisiere Ethereum-Provider
-            if os.getenv('ETHERSCAN_API_KEY'):
-                self.blockchain_providers['ethereum'] = EthereumProvider(os.getenv('ETHERSCAN_API_KEY'))
-                logger.info("Ethereum provider initialized in BaseAPIProvider")
+            if 'ethereum' not in self.blockchain_providers and os.getenv('ETHERSCAN_API_KEY'):
+                try:
+                    self.blockchain_providers['ethereum'] = EthereumProvider(os.getenv('ETHERSCAN_API_KEY'))
+                    logger.debug("Ethereum provider initialized in BaseAPIProvider")
+                except Exception as e:
+                    logger.error(f"Failed to initialize Ethereum provider: {e}")
             
             # Initialisiere Solana-Provider
-            if os.getenv('SOLANA_RPC_URL'):
-                self.blockchain_providers['solana'] = SolanaProvider()
-                logger.info("Solana provider initialized in BaseAPIProvider")
+            if 'solana' not in self.blockchain_providers and os.getenv('SOLANA_RPC_URL'):
+                try:
+                    self.blockchain_providers['solana'] = SolanaProvider()
+                    logger.debug("Solana provider initialized in BaseAPIProvider")
+                except Exception as e:
+                    logger.error(f"Failed to initialize Solana provider: {e}")
             
             # Initialisiere Sui-Provider
-            if os.getenv('SUI_RPC_URL'):
-                self.blockchain_providers['sui'] = SuiProvider()
-                logger.info("Sui provider initialized in BaseAPIProvider")
+            if 'sui' not in self.blockchain_providers and os.getenv('SUI_RPC_URL'):
+                try:
+                    self.blockchain_providers['sui'] = SuiProvider()
+                    logger.debug("Sui provider initialized in BaseAPIProvider")
+                except Exception as e:
+                    logger.error(f"Failed to initialize Sui provider: {e}")
             
             # Initialisiere Bitcoin-Provider
-            if os.getenv('BITCOIN_RPC_URL'):
-                self.blockchain_providers['bitcoin'] = BitcoinProvider()
-                logger.info("Bitcoin provider initialized in BaseAPIProvider")
+            if 'bitcoin' not in self.blockchain_providers and os.getenv('BITCOIN_RPC_URL'):
+                try:
+                    self.blockchain_providers['bitcoin'] = BitcoinProvider()
+                    logger.debug("Bitcoin provider initialized in BaseAPIProvider")
+                except Exception as e:
+                    logger.error(f"Failed to initialize Bitcoin provider: {e}")
             
             # Initialisiere die Sessions der blockchain-spezifischen Provider
-            for provider_name, provider in self.blockchain_providers.items():
-                if hasattr(provider, '__aenter__'):
-                    try:
+            for provider_name, provider in list(self.blockchain_providers.items()):
+                try:
+                    if hasattr(provider, '__aenter__'):
                         await provider.__aenter__()
-                    except Exception as e:
-                        logger.error(f"Failed to initialize {provider_name}: {e}")
-                        self.blockchain_providers.pop(provider_name, None)
+                except Exception as e:
+                    logger.error(f"Failed to initialize {provider_name}: {e}")
+                    self.blockchain_providers.pop(provider_name, None)
+            
+            # Markiere die Provider als initialisiert
+            self._providers_initialized = True
+            _providers_initialized = True
                         
         except ImportError as e:
             logger.error(f"Failed to import blockchain providers: {e}")
@@ -128,13 +166,13 @@ class BaseAPIProvider(ABC):
                 
                 # Prüfe, ob der Provider die get_token_holders-Methode unterstützt
                 if hasattr(provider, 'get_token_holders'):
-                    logger.info(f"Using blockchain-specific provider for {chain} to get token holders")
+                    logger.debug(f"Using blockchain-specific provider for {chain} to get token holders")
                     return await provider.get_token_holders(token_address, chain)
                 else:
-                    logger.warning(f"Blockchain-specific provider for {chain} does not support get_token_holders")
+                    logger.debug(f"Blockchain-specific provider for {chain} does not support get_token_holders")
             
             # Fallback: Verwende die Basisimplementierung
-            logger.info(f"No blockchain-specific provider available for {chain}, using fallback method")
+            logger.debug(f"No blockchain-specific provider available for {chain}, using fallback method")
             return await self._get_token_holders_fallback(token_address, chain)
                 
         except Exception as e:
@@ -146,7 +184,7 @@ class BaseAPIProvider(ABC):
         Fallback-Methode für das Abrufen von Token-Holdern,
         falls kein blockchain-spezifischer Provider verfügbar ist.
         """
-        logger.warning(f"Using fallback method for token holders on {chain}")
+        logger.debug(f"Using fallback method for token holders on {chain}")
         return []
     
     async def get_wallet_transactions(self, wallet_address: str, chain: str, token_address: Optional[str] = None) -> Dict[str, Any]:
@@ -164,13 +202,13 @@ class BaseAPIProvider(ABC):
                 
                 # Prüfe, ob der Provider die get_wallet_transactions-Methode unterstützt
                 if hasattr(provider, 'get_wallet_transactions'):
-                    logger.info(f"Using blockchain-specific provider for {chain} to get wallet transactions")
+                    logger.debug(f"Using blockchain-specific provider for {chain} to get wallet transactions")
                     return await provider.get_wallet_transactions(wallet_address, chain, token_address)
                 else:
-                    logger.warning(f"Blockchain-specific provider for {chain} does not support get_wallet_transactions")
+                    logger.debug(f"Blockchain-specific provider for {chain} does not support get_wallet_transactions")
             
             # Fallback: Verwende die Basisimplementierung
-            logger.info(f"No blockchain-specific provider available for {chain}, using fallback method")
+            logger.debug(f"No blockchain-specific provider available for {chain}, using fallback method")
             return await self._get_wallet_transactions_fallback(wallet_address, chain, token_address)
                 
         except Exception as e:
@@ -187,7 +225,7 @@ class BaseAPIProvider(ABC):
         Fallback-Methode für das Abrufen von Wallet-Transaktionen,
         falls kein blockchain-spezifischer Provider verfügbar ist.
         """
-        logger.warning(f"Using fallback method for wallet transactions on {chain}")
+        logger.debug(f"Using fallback method for wallet transactions on {chain}")
         return {
             'tx_count': 0,
             'first_tx_time': None,
@@ -210,13 +248,13 @@ class BaseAPIProvider(ABC):
                 
                 # Prüfe, ob der Provider die get_contract_info-Methode unterstützt
                 if hasattr(provider, 'get_contract_info'):
-                    logger.info(f"Using blockchain-specific provider for {chain} to get contract info")
+                    logger.debug(f"Using blockchain-specific provider for {chain} to get contract info")
                     return await provider.get_contract_info(contract_address, chain)
                 else:
-                    logger.warning(f"Blockchain-specific provider for {chain} does not support get_contract_info")
+                    logger.debug(f"Blockchain-specific provider for {chain} does not support get_contract_info")
             
             # Fallback: Verwende die Basisimplementierung
-            logger.info(f"No blockchain-specific provider available for {chain}, using fallback method")
+            logger.debug(f"No blockchain-specific provider available for {chain}, using fallback method")
             return await self._get_contract_info_fallback(contract_address, chain)
                 
         except Exception as e:
@@ -228,7 +266,7 @@ class BaseAPIProvider(ABC):
         Fallback-Methode für das Abrufen von Contract-Informationen,
         falls kein blockchain-spezifischer Provider verfügbar ist.
         """
-        logger.warning(f"Using fallback method for contract info on {chain}")
+        logger.debug(f"Using fallback method for contract info on {chain}")
         return {}
     
     async def get_low_cap_tokens(self, max_market_cap: float = 5_000_000, limit: int = 100) -> List[Any]:
@@ -236,7 +274,7 @@ class BaseAPIProvider(ABC):
         Ruft Low-Cap Tokens ab.
         Diese Methode muss von konkreten Implementierungen überschrieben werden.
         """
-        logger.warning("Using fallback method for low_cap_tokens")
+        logger.debug("Using fallback method for low_cap_tokens")
         return []
     
     def _refill_tokens(self):
@@ -258,7 +296,7 @@ class BaseAPIProvider(ABC):
         
         # Berechne, wie lange wir warten müssen, bis ein Token verfügbar ist
         wait_time = (1 - self.request_tokens) / self.refill_rate
-        logger.info(f"Rate limit reached for {self.name}. Waiting {wait_time:.2f} seconds...")
+        logger.debug(f"Rate limit reached for {self.name}. Waiting {wait_time:.2f} seconds...")
         await asyncio.sleep(wait_time)
         
         # Nach dem Warten, verwende ein Token
@@ -404,7 +442,7 @@ class BaseAPIProvider(ABC):
                 await self.session.connector.close()
             # Dann schließe die Session
             await self.session.close()
-            logger.info(f"{self.name} provider client session closed successfully")
+            logger.debug(f"{self.name} provider client session closed successfully")
         
         # Schließe alle blockchain-spezifischen Provider
         for provider_name, provider in self.blockchain_providers.items():
@@ -413,7 +451,7 @@ class BaseAPIProvider(ABC):
                     await provider.__aexit__(None, None, None)
                 if hasattr(provider, 'close'):
                     await provider.close()
-                logger.info(f"{provider_name} provider closed successfully")
+                logger.debug(f"{provider_name} provider closed successfully")
             except Exception as e:
                 logger.error(f"Error closing {provider_name}: {str(e)}")
 
@@ -434,6 +472,9 @@ class UnifiedAPIProvider(BaseAPIProvider):
         
         # Zusätzliche Provider für Preisdaten
         self.price_providers = {}
+        
+        # Flag, um zu überprüfen, ob die Preis-Provider bereits initialisiert wurden
+        self._price_providers_initialized = False
     
     async def __aenter__(self):
         await super().__aenter__()
@@ -441,43 +482,59 @@ class UnifiedAPIProvider(BaseAPIProvider):
         return self
     
     async def _initialize_price_providers(self):
-        """Initialisiert die Preisdaten-Provider"""
+        """Initialisiert die Preisdaten-Provider nur einmal"""
+        # Prüfe, ob die Preis-Provider bereits instanzspezifisch initialisiert wurden
+        if self._price_providers_initialized:
+            logger.debug("Price providers already initialized for this instance, skipping...")
+            return
+            
+        logger.debug("Initializing price providers...")
+        
         try:
             from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
             from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap_provider import CoinMarketCapProvider
             from app.core.backend_crypto_tracker.blockchain.aggregators.cryptocompare_provider import CryptoCompareProvider
             
             # Initialisiere CoinGecko-Provider
-            if os.getenv('COINGECKO_API_KEY'):
-                self.price_providers['coingecko'] = CoinGeckoProvider()
-                logger.info("CoinGecko provider initialized in UnifiedAPIProvider")
-            else:
-                logger.warning("CoinGecko API key not provided, using limited functionality")
-                # CoinGecko funktioniert auch ohne API-Key, aber mit Limits
-                self.price_providers['coingecko'] = CoinGeckoProvider()
+            if 'coingecko' not in self.price_providers:
+                try:
+                    if os.getenv('COINGECKO_API_KEY'):
+                        self.price_providers['coingecko'] = CoinGeckoProvider()
+                        logger.debug("CoinGecko provider initialized in UnifiedAPIProvider")
+                    else:
+                        logger.debug("CoinGecko API key not provided, using limited functionality")
+                        # CoinGecko funktioniert auch ohne API-Key, aber mit Limits
+                        self.price_providers['coingecko'] = CoinGeckoProvider()
+                except Exception as e:
+                    logger.error(f"Failed to initialize CoinGecko provider: {e}")
             
             # Initialisiere CoinMarketCap-Provider
-            if os.getenv('COINMARKETCAP_API_KEY'):
-                self.price_providers['coinmarketcap'] = CoinMarketCapProvider()
-                logger.info("CoinMarketCap provider initialized in UnifiedAPIProvider")
-            else:
-                logger.warning("CoinMarketCap API key not provided, skipping this provider")
+            if 'coinmarketcap' not in self.price_providers and os.getenv('COINMARKETCAP_API_KEY'):
+                try:
+                    self.price_providers['coinmarketcap'] = CoinMarketCapProvider()
+                    logger.debug("CoinMarketCap provider initialized in UnifiedAPIProvider")
+                except Exception as e:
+                    logger.error(f"Failed to initialize CoinMarketCap provider: {e}")
             
             # Initialisiere CryptoCompare-Provider
-            if os.getenv('CRYPTOCOMPARE_API_KEY'):
-                self.price_providers['cryptocompare'] = CryptoCompareProvider()
-                logger.info("CryptoCompare provider initialized in UnifiedAPIProvider")
-            else:
-                logger.warning("CryptoCompare API key not provided, skipping this provider")
+            if 'cryptocompare' not in self.price_providers and os.getenv('CRYPTOCOMPARE_API_KEY'):
+                try:
+                    self.price_providers['cryptocompare'] = CryptoCompareProvider()
+                    logger.debug("CryptoCompare provider initialized in UnifiedAPIProvider")
+                except Exception as e:
+                    logger.error(f"Failed to initialize CryptoCompare provider: {e}")
             
             # Initialisiere die Sessions der Preisdaten-Provider
-            for provider_name, provider in self.price_providers.items():
-                if hasattr(provider, '__aenter__'):
-                    try:
+            for provider_name, provider in list(self.price_providers.items()):
+                try:
+                    if hasattr(provider, '__aenter__'):
                         await provider.__aenter__()
-                    except Exception as e:
-                        logger.error(f"Failed to initialize {provider_name}: {e}")
-                        self.price_providers.pop(provider_name, None)
+                except Exception as e:
+                    logger.error(f"Failed to initialize {provider_name}: {e}")
+                    self.price_providers.pop(provider_name, None)
+            
+            # Markiere die Preis-Provider als initialisiert
+            self._price_providers_initialized = True
                         
         except ImportError as e:
             logger.error(f"Failed to import price providers: {e}")
@@ -493,11 +550,11 @@ class UnifiedAPIProvider(BaseAPIProvider):
                 continue
                 
             try:
-                logger.info(f"Trying to get token price from {provider_name}")
+                logger.debug(f"Trying to get token price from {provider_name}")
                 price_data = await provider.get_token_price(token_address, chain)
                 
                 if price_data:
-                    logger.info(f"Successfully got token price from {provider_name}")
+                    logger.debug(f"Successfully got token price from {provider_name}")
                     return price_data
                     
             except Exception as e:
@@ -531,17 +588,17 @@ class UnifiedAPIProvider(BaseAPIProvider):
                 continue
                 
             try:
-                logger.info(f"Trying to get low-cap tokens from {provider_name}")
+                logger.debug(f"Trying to get low-cap tokens from {provider_name}")
                 
                 # Prüfe, ob der Provider eine get_low_cap_tokens-Methode hat
                 if hasattr(provider, 'get_low_cap_tokens'):
                     tokens = await provider.get_low_cap_tokens(max_market_cap, limit)
                     
                     if tokens:
-                        logger.info(f"Successfully got {len(tokens)} low-cap tokens from {provider_name}")
+                        logger.debug(f"Successfully got {len(tokens)} low-cap tokens from {provider_name}")
                         return tokens
                 else:
-                    logger.warning(f"Provider {provider_name} does not support get_low_cap_tokens")
+                    logger.debug(f"Provider {provider_name} does not support get_low_cap_tokens")
                     
             except Exception as e:
                 last_exception = e
@@ -564,6 +621,22 @@ class UnifiedAPIProvider(BaseAPIProvider):
                     await provider.__aexit__(None, None, None)
                 if hasattr(provider, 'close'):
                     await provider.close()
-                logger.info(f"{provider_name} price provider closed successfully")
+                logger.debug(f"{provider_name} price provider closed successfully")
             except Exception as e:
                 logger.error(f"Error closing {provider_name}: {str(e)}")
+
+
+def get_unified_api_provider() -> UnifiedAPIProvider:
+    """
+    Gibt eine Singleton-Instanz des UnifiedAPIProvider zurück.
+    Dies stellt sicher, dass die Provider nur einmal initialisiert werden.
+    """
+    global _unified_api_provider_instance
+    
+    if _unified_api_provider_instance is None:
+        _unified_api_provider_instance = UnifiedAPIProvider()
+        logger.debug("Created new UnifiedAPIProvider instance")
+    else:
+        logger.debug("Reusing existing UnifiedAPIProvider instance")
+    
+    return _unified_api_provider_instance
