@@ -145,18 +145,12 @@ class TokenDataResolver:
         if not price_data:
             return False
         
-        # Prüfe, ob der Preis sinnvoll ist
+        # Prüfe nur, ob der Preis sinnvoll ist
         if price_data.price <= 0:
             return False
         
-        # Prüfe, ob Name und Symbol vorhanden sind
-        if not hasattr(price_data, 'name') or not price_data.name:
-            return False
-        
-        if not hasattr(price_data, 'symbol') or not price_data.symbol:
-            return False
-        
-        return True
+        # Name und Symbol sind optional - entferne diese Prüfungen
+    return True
     
     def _is_valid_metadata(self, metadata: Dict[str, Any]) -> bool:
         """Prüft, ob die Metadaten gültig sind"""
