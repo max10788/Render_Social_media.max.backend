@@ -81,6 +81,11 @@ class TokenDataResolver:
     async def _try_get_token_metadata(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
         """Versucht, Token-Metadaten zu erhalten"""
         try:
+            # Prüfe, ob api_manager ein providers-Attribut hat
+            if not hasattr(self.api_manager, 'providers'):
+                logger.warning(f"api_manager has no 'providers' attribute")
+                return None
+                
             # Versuche verschiedene Provider
             providers = ['coingecko', 'coinmarketcap']
             
