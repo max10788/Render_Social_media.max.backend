@@ -388,24 +388,31 @@ class UnifiedAPIProvider(BaseAPIProvider):
         
         logger.debug(f"Updated providers attribute with {len(self.providers)} providers")
     
-    async def _initialize_blockchain_providers(self):
-        """Initialisiert die blockchain-spezifischen Provider"""
-        logger.debug("Initializing blockchain providers...")
+async def _initialize_blockchain_providers(self):
+    """Initialisiert die blockchain-spezifischen Provider"""
+    logger.debug("Initializing blockchain providers...")
+    
+    try:
+        # Ethereum Provider
+        if os.getenv('ETHERSCAN_API_KEY'):
+            from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
+            self.blockchain_providers['ethereum'] = EthereumProvider(os.getenv('ETHERSCAN_API_KEY'))
+            await self.blockchain_providers['ethereum'].__aenter__()
+            logger.debug("Ethereum provider initialized")
         
-        try:
-            # Ethereum Provider
-            if os.getenv('ETHERSCAN_API_KEY'):
-                from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
-                self.blockchain_providers['ethereum'] = EthereumProvider(os.getenv('ETHERSCAN_API_KEY'))
-                await self.blockchain_providers['ethereum'].__aenter__()
-                logger.debug("Ethereum provider initialized")
-            
-            # Weitere Provider können hier hinzugefügt werden...
-            
-        except ImportError as e:
-            logger.error(f"Failed to import blockchain providers: {e}")
-        except Exception as e:
-            logger.error(f"Failed to initialize blockchain providers: {e}")
+        # BSC Provider
+        if os.getenv('BSCSCAN_API_KEY'):
+            from app.core.backend_crypto_tracker.blockchain.blockchain_specific.bsc_provider import BSCProvider
+            self.blockchain_providers['bsc'] = BSCProvider(os.getenv('BSCSCAN_API_KEY'))
+            await self.blockchain_providers['bsc'].__aenter__()
+            logger.debug("BSC provider initialized")
+        
+        # Weitere Provider können hier hinzugefügt werden...
+        
+    except ImportError as e:
+        logger.error(f"Failed to import blockchain providers: {e}")
+    except Exception as e:
+        logger.error(f"Failed to initialize blockchain providers: {e}")
     
     async def _initialize_price_providers(self):
         """Initialisiert die Preisdaten-Provider"""
