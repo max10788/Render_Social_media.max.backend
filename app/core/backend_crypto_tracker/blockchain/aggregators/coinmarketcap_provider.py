@@ -171,6 +171,11 @@ class CoinMarketCapProvider(BaseAPIProvider):
         Stattdessen clientseitige Filterung nach Adresse und Chain.
         """
         try:
+            # Validiere Eingabeparameter
+            if not token_address or not chain:
+                logger.warning(f"Invalid parameters: token_address={token_address}, chain={chain}")
+                return None
+            
             # Mapping von Chain-Name zu CoinMarketCap-Platform-ID
             platform_mapping = {
                 'ethereum': '1027',
@@ -181,16 +186,16 @@ class CoinMarketCapProvider(BaseAPIProvider):
             }
             expected_platform_id = platform_mapping.get(chain.lower())
             
+            if expected_platform_id is None:
+                logger.warning(f"Unsupported chain: {chain}")
+                return None
+            
             url = f"{self.base_url}/cryptocurrency/map"
             params = {
                 'listing_status': 'active',
                 'start': '1',
                 'limit': '100'  # Reduziert für kostenlose Version
             }
-            
-            # ENTFERNT: Der platform-Parameter ist für diesen Endpunkt nicht erlaubt!
-            # if platform_id and self.api_key:
-            #     params['platform'] = platform_id
             
             headers = {}
             if self.api_key:
@@ -219,10 +224,13 @@ class CoinMarketCapProvider(BaseAPIProvider):
             # Aber nur, wenn wir einen API-Schlüssel haben (Rate-Limit!)
             if self.api_key:
                 logger.info(f"First search didn't find token, trying with more tokens")
-                params['limit'] = '500'
-                params['start'] = '101'  # Zweite Seite
+                second_params = {
+                    'listing_status': 'active',
+                    'start': '101',  # Zweite Seite
+                    'limit': '500'
+                }
                 
-                data = await self._make_request(url, params, headers)
+                data = await self._make_request(url, second_params, headers)
                 
                 if data and data.get('data'):
                     for token in data['data']:
