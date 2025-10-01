@@ -71,9 +71,27 @@ class TokenDataResolver:
         return None
     
     async def _try_get_price_data(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
-        """Versucht, Preisdaten für den Token zu erhalten"""
+        """Versucht, Preisdaten für den Token von verschiedenen Quellen zu erhalten"""
         try:
-            return await self.api_manager.get_token_price(token_address, chain)
+            # Zuerst CoinMarketCap versuchen (höheres Rate-Limit: 333/Minute vs. 10/Minute)
+            if hasattr(self.api_manager, 'coinmarketcap_provider'):
+                logger.info(f"Trying to get price data from CoinMarketCap for {token_address}")
+                price_data = await self.api_manager.coinmarketcap_provider.get_token_price_by_address(token_address, chain)
+                if price_data and self._is_valid_price_data(price_data):
+                    logger.info(f"Successfully got price data from CoinMarketCap for {token_address}")
+                    return price_data
+            
+            # Dann CoinGecko versuchen (als Fallback)
+            if hasattr(self.api_manager, 'coingecko_provider'):
+                logger.info(f"Trying to get price data from CoinGecko for {token_address}")
+                price_data = await self.api_manager.coingecko_provider.get_token_price(token_address, chain)
+                if price_data and self._is_valid_price_data(price_data):
+                    logger.info(f"Successfully got price data from CoinGecko for {token_address}")
+                    return price_data
+            
+            # Wenn keine der Quellen funktioniert hat, gebe None zurück
+            logger.warning(f"No price data found for {token_address} on {chain}")
+            return None
         except Exception as e:
             logger.warning(f"Error getting price data for {token_address}: {e}")
             return None
