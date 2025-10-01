@@ -30,18 +30,26 @@ class BaseAPIProvider(ABC):
     
     def __init__(self, name: str, base_url: str, api_key: Optional[str] = None, api_key_env: Optional[str] = None):
         self.name = name
-        self.base_url = base_url
+        # KORREKTUR: Entferne Leerzeichen am Ende der URL und normalisiere
+        self.base_url = base_url.strip().rstrip('/')
+        
         # Wenn kein API-Schlüssel übergeben wurde, versuchen, ihn aus der Umgebungsvariable zu lesen
         if api_key is None and api_key_env is not None:
             self.api_key = os.getenv(api_key_env)
         else:
             self.api_key = api_key
+        
+        # KORREKTUR: Explizite Prüfung auf None oder leeren API-Key
+        if self.api_key:
+            self.api_key = self.api_key.strip()
+        
         self.session = None
         self.last_request_time = 0
         self.min_request_interval = 1.0  # Sekunden zwischen Anfragen
         self.is_available = True
         self.retry_count = 0
         self.max_retries = 3
+        
         # Rate-Limiting mit Token-Bucket-Algorithmus
         self.request_tokens = 10  # Start mit 10 Tokens
         self.max_tokens = 10  # Maximale Anzahl von Tokens
@@ -53,6 +61,13 @@ class BaseAPIProvider(ABC):
         
         # Zusätzliche Provider für Preisdaten
         self.price_providers = {}
+        
+        # KORREKTUR: Logging für Initialisierung
+        logger.debug(f"Initialized {self.name} provider with base_url: '{self.base_url}'")
+        if self.api_key:
+            logger.debug(f"API key configured for {self.name}")
+        else:
+            logger.warning(f"No API key configured for {self.name} - some features may be limited")
         
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
