@@ -290,49 +290,49 @@ class CoinMarketCapProvider(BaseAPIProvider):
         return []
     
     async def _get_coin_id_from_address(self, token_address: str, chain: str) -> Optional[str]:
-        """Holt die Coin-ID von einer Contract-Adresse"""
+    """Holt den aktuellen Preis eines Tokens direkt über die Adresse"""
         try:
-            # CoinMarketCap hat keine direkte Methode, um von einer Adresse zur ID zu kommen
-            # Daher müssen wir alle Tokens durchsuchen und die passende Adresse finden
+            # Bestimme die Plattform-ID für CoinMarketCap
+            platform_mapping = {
+                'ethereum': '1027',
+                'bsc': '1839',
+                'polygon': '3890'
+            }
+            platform_id = platform_mapping.get(chain.lower(), '1027')  # Default: Ethereum
             
-            url = f"{self.base_url}/cryptocurrency/map"
+            url = f"{self.base_url}/cryptocurrency/quotes/latest"
             params = {
-                'listing_status': 'active',
-                'start': '1',
-                'limit': '5000'
+                'address': token_address,
+                'convert': 'USD'
             }
             
-            data = await self._make_request(url, params)
+            # Füge Plattform-Parameter hinzu, falls angegeben
+            if platform_id:
+                params['platform'] = platform_id
             
-            if data and data.get('data'):
-                # Bereinige alle Float-Werte in der Antwort
-                data = self._sanitize_float_values(data)
-                
-                for token in data['data']:
-                    # Prüfe, ob die Adresse übereinstimmt
-                    if token.get('platform') and token.get('platform', {}).get('token_address', '').lower() == token_address.lower():
-                        return str(token.get('id'))
-            
-            # Wenn wir in der ersten Suche nichts gefunden haben, versuche es mit mehr Tokens
-            url = f"{self.base_url}/cryptocurrency/map"
-            params = {
-                'listing_status': 'active',
-                'start': '5001',
-                'limit': '5000'
+            headers = {
+                'X-CMC_PRO_API_KEY': self.api_key
             }
             
-            data = await self._make_request(url, params)
+            data = await self._make_request(url, params, headers)
             
             if data and data.get('data'):
-                # Bereinige alle Float-Werte in der Antwort
-                data = self._sanitize_float_values(data)
-                
-                for token in data['data']:
-                    # Prüfe, ob die Adresse übereinstimmt
-                    if token.get('platform') and token.get('platform', {}).get('token_address', '').lower() == token_address.lower():
-                        return str(token.get('id'))
+                # Die Antwort sollte nur ein Token enthalten
+                for token_id, token_data in data['data'].items():
+                    quote = token_data.get('quote', {}).get('USD', {})
+                    
+                    return TokenPriceData(
+                        price=float(quote.get('price', 0)),
+                        market_cap=float(quote.get('market_cap', 0)),
+                        volume_24h=float(quote.get('volume_24h', 0)),
+                        price_change_percentage_24h=float(quote.get('percent_change_24h', 0)),
+                        name=token_data.get('name'),
+                        symbol=token_data.get('symbol'),
+                        source=self.name,
+                        last_updated=datetime.now()
+                    )
         except Exception as e:
-            logger.error(f"Error getting coin ID from address in CoinMarketCap: {e}")
+            logger.error(f"Error fetching token price by address from CoinMarketCap: {e}")
         
         return None
     
