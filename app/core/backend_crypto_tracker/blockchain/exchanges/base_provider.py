@@ -395,31 +395,31 @@ class UnifiedAPIProvider(BaseAPIProvider):
         
         logger.debug(f"Updated providers attribute with {len(self.providers)} providers")
     
-async def _initialize_blockchain_providers(self):
-    """Initialisiert die blockchain-spezifischen Provider"""
-    logger.debug("Initializing blockchain providers...")
-    
-    try:
-        # Ethereum Provider
-        if os.getenv('ETHERSCAN_API_KEY'):
-            from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
-            self.blockchain_providers['ethereum'] = EthereumProvider(os.getenv('ETHERSCAN_API_KEY'))
-            await self.blockchain_providers['ethereum'].__aenter__()
-            logger.debug("Ethereum provider initialized")
+    async def _initialize_blockchain_providers(self):
+        """Initialisiert die blockchain-spezifischen Provider"""
+        logger.debug("Initializing blockchain providers...")
         
-        # BSC Provider
-        if os.getenv('BSCSCAN_API_KEY'):
-            from app.core.backend_crypto_tracker.blockchain.blockchain_specific.bsc_provider import BSCProvider
-            self.blockchain_providers['bsc'] = BSCProvider(os.getenv('BSCSCAN_API_KEY'))
-            await self.blockchain_providers['bsc'].__aenter__()
-            logger.debug("BSC provider initialized")
-        
-        # Weitere Provider können hier hinzugefügt werden...
-        
-    except ImportError as e:
-        logger.error(f"Failed to import blockchain providers: {e}")
-    except Exception as e:
-        logger.error(f"Failed to initialize blockchain providers: {e}")
+        try:
+            # Ethereum Provider
+            if os.getenv('ETHERSCAN_API_KEY'):
+                from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
+                self.blockchain_providers['ethereum'] = EthereumProvider(os.getenv('ETHERSCAN_API_KEY'))
+                await self.blockchain_providers['ethereum'].__aenter__()
+                logger.debug("Ethereum provider initialized")
+            
+            # BSC Provider
+            if os.getenv('BSCSCAN_API_KEY'):
+                from app.core.backend_crypto_tracker.blockchain.blockchain_specific.bsc_provider import BSCProvider
+                self.blockchain_providers['bsc'] = BSCProvider(os.getenv('BSCSCAN_API_KEY'))
+                await self.blockchain_providers['bsc'].__aenter__()
+                logger.debug("BSC provider initialized")
+            
+            # Weitere Provider können hier hinzugefügt werden...
+            
+        except ImportError as e:
+            logger.error(f"Failed to import blockchain providers: {e}")
+        except Exception as e:
+            logger.error(f"Failed to initialize blockchain providers: {e}")
     
     async def _initialize_price_providers(self):
         """Initialisiert die Preisdaten-Provider"""
@@ -546,6 +546,32 @@ async def _initialize_blockchain_providers(self):
         logger.warning("No providers available for low-cap tokens")
         return []
 
+    async def get_token_holders_direct(self, token_address: str, chain: str) -> List[Dict[str, Any]]:
+        """
+        Direkter Zugriff auf Token-Holder-Daten ohne Umwege über den TokenDataResolver
+        """
+        try:
+            # Wähle den richtigen Provider basierend auf der Blockchain
+            chain_lower = chain.lower()
+            
+            # Prüfe, ob ein blockchain-spezifischer Provider für diese Chain verfügbar ist
+            if chain_lower in self.blockchain_providers:
+                provider = self.blockchain_providers[chain_lower]
+                
+                # Prüfe, ob der Provider die get_token_holders-Methode unterstützt
+                if hasattr(provider, 'get_token_holders'):
+                    logger.debug(f"Using blockchain-specific provider for {chain} to get token holders")
+                    return await provider.get_token_holders(token_address, chain)
+                else:
+                    logger.debug(f"Blockchain-specific provider for {chain} does not support get_token_holders")
+            
+            # Fallback: Verwende die Basisimplementierung
+            logger.debug(f"No blockchain-specific provider available for {chain}, using fallback method")
+            return await self._get_token_holders_fallback(token_address, chain)
+                
+        except Exception as e:
+            logger.error(f"Error fetching token holders: {e}")
+            return []
 
 def get_unified_api_provider() -> UnifiedAPIProvider:
     """
