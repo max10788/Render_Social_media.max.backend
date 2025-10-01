@@ -314,10 +314,17 @@ class UnifiedAPIProvider(BaseAPIProvider):
     def __init__(self):
         super().__init__(
             name="UnifiedAPIProvider",
-            base_url="https://api.example.com",  # Platzhalter-URL
-            api_key_env="UNIFIED_API_KEY"  # Platzhalter für API-Key
+            base_url="https://api.example.com".rstrip(),  # Entferne Leerzeichen am Ende
+            api_key_env="UNIFIED_API_KEY"
         )
         self._providers_initialized = False
+        
+        # Prüfe, ob die notwendigen API-Keys vorhanden sind
+        if not os.getenv('ETHERSCAN_API_KEY'):
+            logger.warning("ETHERSCAN_API_KEY not set. Ethereum token holder data may not be available.")
+        
+        if not os.getenv('BSCSCAN_API_KEY'):
+            logger.warning("BSCSCAN_API_KEY not set. BSC token holder data may not be available.")
         
         # WICHTIG: Füge das providers-Attribut hinzu
         self.providers = {}
