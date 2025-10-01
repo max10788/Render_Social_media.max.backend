@@ -290,7 +290,7 @@ class CoinMarketCapProvider(BaseAPIProvider):
         return []
     
     async def _get_coin_id_from_address(self, token_address: str, chain: str) -> Optional[str]:
-    """Holt den aktuellen Preis eines Tokens direkt über die Adresse"""
+        
         try:
             # Bestimme die Plattform-ID für CoinMarketCap
             platform_mapping = {
