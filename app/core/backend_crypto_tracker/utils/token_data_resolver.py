@@ -97,51 +97,60 @@ class TokenDataResolver:
             return None
     
     async def _try_get_token_metadata(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
-        """Versucht, Token-Metadaten zu erhalten"""
+        """Versucht, Token-Metadaten zu erhalten - CoinMarketCap zuerst"""
         try:
             # Prüfe, ob api_manager ein providers-Attribut hat
             if not hasattr(self.api_manager, 'providers'):
                 logger.warning(f"api_manager has no 'providers' attribute")
                 
                 # VERSUCHE ALTERNATIVE METHODEN
-                # Methode 1: Direkter Aufruf von CoinGecko über api_manager
-                if hasattr(self.api_manager, 'get_coingecko_metadata'):
-                    logger.info(f"Trying direct coingecko metadata call")
-                    metadata = await self.api_manager.get_coingecko_metadata(token_address, chain)
-                    if metadata and metadata.get('name') != 'Unknown':
-                        return metadata
-                
-                # Methode 2: Prüfe, ob es eine get_provider-Methode gibt
-                elif hasattr(self.api_manager, 'get_provider'):
-                    logger.info(f"Trying get_provider method")
-                    provider = self.api_manager.get_provider('coingecko')
-                    if provider and hasattr(provider, 'get_token_metadata'):
+                # Methode 1: Direkter CoinMarketCap-Zugriff
+                if hasattr(self.api_manager, 'coinmarketcap_provider'):
+                    logger.info(f"Trying direct coinmarketcap_provider")
+                    provider = self.api_manager.coinmarketcap_provider
+                    if hasattr(provider, 'get_token_metadata'):
                         metadata = await provider.get_token_metadata(token_address, chain)
                         if metadata and metadata.get('name') != 'Unknown':
                             return metadata
                 
-                # Methode 3: Prüfe, ob es separate Provider-Attribute gibt
+                # Methode 2: Direkter CoinGecko-Zugriff
                 elif hasattr(self.api_manager, 'coingecko_provider'):
-                    logger.info(f"Trying direct coingecko_provider attribute")
+                    logger.info(f"Trying direct coingecko_provider")
                     provider = self.api_manager.coingecko_provider
                     if hasattr(provider, 'get_token_metadata'):
                         metadata = await provider.get_token_metadata(token_address, chain)
                         if metadata and metadata.get('name') != 'Unknown':
                             return metadata
                 
-                # Keine alternative Methode gefunden
+                # Methode 3: Spezielle Metadaten-Methoden
+                elif hasattr(self.api_manager, 'get_coinmarketcap_metadata'):
+                    logger.info(f"Trying get_coinmarketcap_metadata method")
+                    metadata = await self.api_manager.get_coinmarketcap_metadata(token_address, chain)
+                    if metadata and metadata.get('name') != 'Unknown':
+                        return metadata
+                
+                elif hasattr(self.api_manager, 'get_coingecko_metadata'):
+                    logger.info(f"Trying get_coingecko_metadata method")
+                    metadata = await self.api_manager.get_coingecko_metadata(token_address, chain)
+                    if metadata and metadata.get('name') != 'Unknown':
+                        return metadata
+                
                 return None
                 
             # Original-Code, falls providers-Attribut existiert
             else:
-                providers = ['coingecko', 'coinmarketcap']
+                # Versuche verschiedene Provider - CoinMarketCap zuerst
+                providers = ['coinmarketcap', 'coingecko']
+                
                 for provider_name in providers:
                     if provider_name in self.api_manager.providers:
                         provider = self.api_manager.providers[provider_name]
+                        
                         if hasattr(provider, 'get_token_metadata'):
                             metadata = await provider.get_token_metadata(token_address, chain)
                             if metadata and metadata.get('name') != 'Unknown':
                                 return metadata
+                
                 return None
                 
         except Exception as e:
