@@ -318,6 +318,9 @@ class UnifiedAPIProvider(BaseAPIProvider):
             api_key_env="UNIFIED_API_KEY"  # Platzhalter für API-Key
         )
         self._providers_initialized = False
+        
+        # WICHTIG: Füge das providers-Attribut hinzu
+        self.providers = {}
     
     async def __aenter__(self):
         await super().__aenter__()
@@ -367,6 +370,23 @@ class UnifiedAPIProvider(BaseAPIProvider):
             await self._initialize_price_providers()
             _global_price_providers = self.price_providers
             _price_providers_initialized = True
+        
+        # WICHTIG: Aktualisiere das providers-Attribut nach der Initialisierung
+        self._update_providers_attribute()
+    
+    def _update_providers_attribute(self):
+        """Aktualisiert das providers-Attribut mit allen verfügbaren Providern"""
+        self.providers = {}
+        
+        # Füge Preis-Provider hinzu
+        for name, provider in self.price_providers.items():
+            self.providers[name] = provider
+        
+        # Füge Blockchain-Provider hinzu
+        for name, provider in self.blockchain_providers.items():
+            self.providers[name] = provider
+        
+        logger.debug(f"Updated providers attribute with {len(self.providers)} providers")
     
     async def _initialize_blockchain_providers(self):
         """Initialisiert die blockchain-spezifischen Provider"""
@@ -398,6 +418,13 @@ class UnifiedAPIProvider(BaseAPIProvider):
             await self.price_providers['coingecko'].__aenter__()
             logger.debug("CoinGecko provider initialized")
             
+            # CoinMarketCap Provider (mit API-Key)
+            if os.getenv('COINMARKETCAP_API_KEY'):
+                from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap_provider import CoinMarketCapProvider
+                self.price_providers['coinmarketcap'] = CoinMarketCapProvider()
+                await self.price_providers['coinmarketcap'].__aenter__()
+                logger.debug("CoinMarketCap provider initialized")
+            
             # Weitere Provider können hier hinzugefügt werden...
             
         except ImportError as e:
@@ -406,8 +433,17 @@ class UnifiedAPIProvider(BaseAPIProvider):
             logger.error(f"Failed to initialize price providers: {e}")
     
     async def get_token_price(self, token_address: str, chain: str):
-        """Ruft Token-Preisdaten von einem der Preisdaten-Provider ab"""
-        providers_to_try = ['coingecko']
+        """Ruft Token-Preisdaten von einem der Preisdaten-Provider ab - CoinMarketCap zuerst"""
+        # Reihenfolge: CoinMarketCap (wenn verfügbar), dann CoinGecko
+        providers_to_try = []
+        
+        # CoinMarketCap zuerst, wenn verfügbar (höheres Rate-Limit)
+        if 'coinmarketcap' in self.price_providers:
+            providers_to_try.append('coinmarketcap')
+        
+        # Dann CoinGecko als Fallback
+        if 'coingecko' in self.price_providers:
+            providers_to_try.append('coingecko')
         
         last_exception = None
         for provider_name in providers_to_try:
@@ -417,7 +453,12 @@ class UnifiedAPIProvider(BaseAPIProvider):
                 
             try:
                 logger.debug(f"Trying to get token price from {provider_name}")
-                price_data = await provider.get_token_price(token_address, chain)
+                
+                # Versuche zuerst die direkte Adressabfrage für CoinMarketCap
+                if provider_name == 'coinmarketcap' and hasattr(provider, 'get_token_price_by_address'):
+                    price_data = await provider.get_token_price_by_address(token_address, chain)
+                else:
+                    price_data = await provider.get_token_price(token_address, chain)
                 
                 if price_data:
                     logger.debug(f"Successfully got token price from {provider_name}")
@@ -432,6 +473,29 @@ class UnifiedAPIProvider(BaseAPIProvider):
             raise last_exception
         else:
             raise APIException("All price providers failed")
+    
+    # Füge diese Methoden hinzu, die der TokenDataResolver erwartet
+    async def get_coinmarketcap_metadata(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
+        """Holt Token-Metadaten von CoinMarketCap"""
+        try:
+            if 'coinmarketcap' in self.price_providers:
+                provider = self.price_providers['coinmarketcap']
+                if hasattr(provider, 'get_token_metadata'):
+                    return await provider.get_token_metadata(token_address, chain)
+        except Exception as e:
+            logger.warning(f"Error getting metadata from CoinMarketCap: {e}")
+        return None
+    
+    async def get_coingecko_metadata(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
+        """Holt Token-Metadaten von CoinGecko"""
+        try:
+            if 'coingecko' in self.price_providers:
+                provider = self.price_providers['coingecko']
+                if hasattr(provider, 'get_token_metadata'):
+                    return await provider.get_token_metadata(token_address, chain)
+        except Exception as e:
+            logger.warning(f"Error getting metadata from CoinGecko: {e}")
+        return None
     
     def get_rate_limits(self) -> Dict[str, int]:
         """Gibt die Rate-Limits zurück"""
