@@ -106,9 +106,8 @@ class CoinMarketCapProvider(BaseAPIProvider):
     
     async def get_token_price_by_address(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
         """
-        ANPASSUNG FÜR KOSTENLOSE VERSION: 
-        Die Sandbox-API unterstützt keine direkten Adressabfragen.
-        Wir müssen die ID über die Map-API finden.
+        Holt den aktuellen Preis eines Tokens über die Adresse.
+        Zuerst wird die Coin-ID über die Map-API gesucht, dann die Preisdaten abgerufen.
         """
         try:
             # Zuerst die Coin-ID von der Adresse holen (über die Map-API)
@@ -168,18 +167,19 @@ class CoinMarketCapProvider(BaseAPIProvider):
     
     async def _get_coin_id_from_address(self, token_address: str, chain: str) -> Optional[str]:
         """
-        ANPASSUNG FÜR KOSTENLOSE VERSION: 
-        Die Map-API in der Sandbox-Version ist eingeschränkt.
-        Wir versuchen es, aber haben einen Fallback.
+        Korrigierte Version: Kein platform-Parameter für /map-Endpunkt.
+        Stattdessen clientseitige Filterung nach Adresse und Chain.
         """
         try:
-            # Bestimme die Plattform-ID für CoinMarketCap
+            # Mapping von Chain-Name zu CoinMarketCap-Platform-ID
             platform_mapping = {
                 'ethereum': '1027',
                 'bsc': '1839',
-                'polygon': '3890'
+                'polygon': '3890',
+                'avalanche': '5805',
+                'solana': '5426'
             }
-            platform_id = platform_mapping.get(chain.lower(), '1027')  # Default: Ethereum
+            expected_platform_id = platform_mapping.get(chain.lower())
             
             url = f"{self.base_url}/cryptocurrency/map"
             params = {
@@ -188,9 +188,9 @@ class CoinMarketCapProvider(BaseAPIProvider):
                 'limit': '100'  # Reduziert für kostenlose Version
             }
             
-            # Füge Plattform-Parameter hinzu, falls unterstützt
-            if platform_id and self.api_key:  # Plattform-Filter nur mit API-Schlüssel
-                params['platform'] = platform_id
+            # ENTFERNT: Der platform-Parameter ist für diesen Endpunkt nicht erlaubt!
+            # if platform_id and self.api_key:
+            #     params['platform'] = platform_id
             
             headers = {}
             if self.api_key:
@@ -202,25 +202,41 @@ class CoinMarketCapProvider(BaseAPIProvider):
                 # Bereinige alle Float-Werte in der Antwort
                 data = self._sanitize_float_values(data)
                 
+                # Clientseitige Filterung nach Adresse und Chain
                 for token in data['data']:
-                    # Prüfe, ob die Adresse übereinstimmt
-                    if (token.get('platform') and 
-                        token.get('platform', {}).get('token_address', '').lower() == token_address.lower()):
-                        return str(token.get('id'))
+                    platform_info = token.get('platform')
+                    if platform_info:
+                        token_addr = platform_info.get('token_address', '').lower()
+                        platform_id = str(platform_info.get('id', ''))
+                        
+                        # Prüfe, ob Adresse und Chain (via platform_id) passen
+                        if (token_addr == token_address.lower() and 
+                            platform_id == expected_platform_id):
+                            logger.info(f"Found token {token.get('name')} with ID {token.get('id')} for address {token_address} on {chain}")
+                            return str(token.get('id'))
             
-            # Fallback: Versuche es ohne Plattform-Filter
-            if platform_id and self.api_key:
-                logger.info(f"Retrying without platform filter for {token_address}")
-                params.pop('platform', None)
+            # Wenn wir in der ersten Suche nichts gefunden haben, versuche es mit mehr Tokens
+            # Aber nur, wenn wir einen API-Schlüssel haben (Rate-Limit!)
+            if self.api_key:
+                logger.info(f"First search didn't find token, trying with more tokens")
+                params['limit'] = '500'
+                params['start'] = '101'  # Zweite Seite
+                
                 data = await self._make_request(url, params, headers)
                 
                 if data and data.get('data'):
                     for token in data['data']:
-                        if (token.get('platform') and 
-                            token.get('platform', {}).get('token_address', '').lower() == token_address.lower()):
-                            return str(token.get('id'))
+                        platform_info = token.get('platform')
+                        if platform_info:
+                            token_addr = platform_info.get('token_address', '').lower()
+                            platform_id = str(platform_info.get('id', ''))
+                            
+                            if (token_addr == token_address.lower() and 
+                                platform_id == expected_platform_id):
+                                logger.info(f"Found token {token.get('name')} with ID {token.get('id')} on second search")
+                                return str(token.get('id'))
             
-            logger.warning(f"Could not find coin ID for address {token_address}")
+            logger.warning(f"Could not find coin ID for address {token_address} on {chain}")
             return None
             
         except Exception as e:
