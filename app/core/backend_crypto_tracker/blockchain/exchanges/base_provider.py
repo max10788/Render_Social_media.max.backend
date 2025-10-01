@@ -329,20 +329,28 @@ class UnifiedAPIProvider(BaseAPIProvider):
     def __init__(self):
         super().__init__(
             name="UnifiedAPIProvider",
-            base_url="https://api.example.com".rstrip(),  # Entferne Leerzeichen am Ende
+            base_url="https://api.example.com",  # Kein Leerzeichen am Ende!
             api_key_env="UNIFIED_API_KEY"
         )
         self._providers_initialized = False
         
-        # Prüfe, ob die notwendigen API-Keys vorhanden sind
-        if not os.getenv('ETHERSCAN_API_KEY'):
-            logger.warning("ETHERSCAN_API_KEY not set. Ethereum token holder data may not be available.")
-        
-        if not os.getenv('BSCSCAN_API_KEY'):
-            logger.warning("BSCSCAN_API_KEY not set. BSC token holder data may not be available.")
-        
         # WICHTIG: Füge das providers-Attribut hinzu
         self.providers = {}
+        
+        # KORREKTUR: Prüfe notwendige API-Keys sofort
+        self._check_required_api_keys()
+        
+    def _check_required_api_keys(self):
+        """Prüft, ob notwendige API-Keys vorhanden sind"""
+        required_keys = {
+            'ETHERSCAN_API_KEY': 'Ethereum token holder data',
+            'BSCSCAN_API_KEY': 'BSC token holder data',
+            'COINMARKETCAP_API_KEY': 'CoinMarketCap price data'
+        }
+        
+        for key, description in required_keys.items():
+            if not os.getenv(key):
+                logger.warning(f"{key} not set. {description} may not be available.")
     
     async def __aenter__(self):
         await super().__aenter__()
