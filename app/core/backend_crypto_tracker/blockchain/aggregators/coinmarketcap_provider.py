@@ -1,5 +1,5 @@
 """
-CoinMarketCap API provider implementation.
+CoinMarketCap API provider implementation - angepasst für kostenlose Version.
 """
 
 import json
@@ -16,20 +16,32 @@ logger = get_logger(__name__)
 
 
 class CoinMarketCapProvider(BaseAPIProvider):
-    """CoinMarketCap API-Anbieter - eine der führenden Krypto-Datenquellen"""
+    """CoinMarketCap API-Anbieter - angepasst für kostenlose Sandbox-Version"""
     
     def __init__(self):
         # Lese API-Schlüssel aus der Umgebungsvariable
         api_key = os.getenv("COINMARKETCAP_API_KEY")
         
-        # Initialisiere die Basisklasse
-        super().__init__("CoinMarketCap", "https://pro-api.coinmarketcap.com/v1", api_key, "COINMARKETCAP_API_KEY")
-        
-        # Setze das Min Request Interval basierend auf dem Plan
+        # ANPASSUNG FÜR KOSTENLOSE VERSION: Sandbox-URL
         if api_key:
-            self.min_request_interval = 0.1  # Pro API: ca. 333 Anfragen/Minute
+            # Für kostenlose Version mit API-Schlüssel: Sandbox-API
+            base_url = "https://sandbox-api.coinmarketcap.com/v1"
+            logger.info("CoinMarketCapProvider: Using Sandbox API URL with API key")
         else:
-            self.min_request_interval = 10.0  # Free API: deutlich weniger Anfragen
+            # Für kostenlose Version ohne API-Schlüssel: Public API (sehr eingeschränkt)
+            base_url = "https://api.coinmarketcap.com/v1"
+            logger.info("CoinMarketCapProvider: Using Public API URL without API key")
+        
+        # Initialisiere die Basisklasse
+        super().__init__("CoinMarketCap", base_url, api_key, "COINMARKETCAP_API_KEY")
+        
+        # ANPASSUNG FÜR KOSTENLOSE VERSION: Strengere Rate-Limits
+        if api_key:
+            # Kostenlose Sandbox mit API-Schlüssel: 333 Anfragen/Tag, ~10/Minute
+            self.min_request_interval = 6.0  # 6 Sekunden zwischen Anfragen (10 pro Minute)
+        else:
+            # Öffentliche API ohne Schlüssel: sehr eingeschränkt
+            self.min_request_interval = 12.0  # 12 Sekunden zwischen Anfragen (5 pro Minute)
     
     def _sanitize_float_values(self, data):
         """
@@ -88,31 +100,49 @@ class CoinMarketCapProvider(BaseAPIProvider):
             
             # Spezielle Behandlung für Rate-Limit-Fehler
             if "429" in str(e) or "rate limit" in str(e).lower():
-                logger.error("Rate limit exceeded. Consider upgrading to a higher plan or reducing request frequency.")
+                logger.error("Rate limit exceeded. For the free version, consider reducing request frequency.")
             
             raise
     
-    async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
-        """Holt den aktuellen Preis eines Tokens"""
+    async def get_token_price_by_address(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
+        """
+        ANPASSUNG FÜR KOSTENLOSE VERSION: 
+        Die Sandbox-API unterstützt keine direkten Adressabfragen.
+        Wir müssen die ID über die Map-API finden.
+        """
         try:
-            # Zuerst die Coin-ID von der Adresse holen
+            # Zuerst die Coin-ID von der Adresse holen (über die Map-API)
             coin_id = await self._get_coin_id_from_address(token_address, chain)
             if not coin_id:
+                logger.warning(f"Could not find coin ID for address {token_address}")
                 return None
             
+            # Dann die Preisdaten über die Listings-API abrufen
+            return await self._get_price_by_id(coin_id)
+            
+        except Exception as e:
+            logger.error(f"Error fetching token price by address from CoinMarketCap: {e}")
+        
+        return None
+    
+    async def _get_price_by_id(self, coin_id: str) -> Optional[TokenPriceData]:
+        """Holt Preisdaten für eine Coin-ID"""
+        try:
+            # ANPASSUNG FÜR KOSTENLOSE VERSION: Wir können nur alle Listings abrufen und filtern
             url = f"{self.base_url}/cryptocurrency/listings/latest"
             params = {
                 'start': '1',
-                'limit': '5000',
+                'limit': '100',  # Reduziert für kostenlose Version
                 'convert': 'USD'
             }
             
-            data = await self._make_request(url, params)
+            headers = {}
+            if self.api_key:
+                headers['X-CMC_PRO_API_KEY'] = self.api_key
+            
+            data = await self._make_request(url, params, headers)
             
             if data and data.get('data'):
-                # Bereinige alle Float-Werte in der Antwort
-                data = self._sanitize_float_values(data)
-                
                 # Suche nach dem Token in der Liste
                 for token in data['data']:
                     if str(token['id']) == str(coin_id):
@@ -123,16 +153,89 @@ class CoinMarketCapProvider(BaseAPIProvider):
                             market_cap=float(quote.get('market_cap', 0)),
                             volume_24h=float(quote.get('volume_24h', 0)),
                             price_change_percentage_24h=float(quote.get('percent_change_24h', 0)),
+                            name=token.get('name'),
+                            symbol=token.get('symbol'),
                             source=self.name,
                             last_updated=datetime.now()
                         )
+            
+            logger.warning(f"Token with ID {coin_id} not found in listings")
+            return None
+            
         except Exception as e:
-            logger.error(f"Error fetching token price from CoinMarketCap: {e}")
-        
-        return None
+            logger.error(f"Error fetching price by ID: {e}")
+            return None
+    
+    async def _get_coin_id_from_address(self, token_address: str, chain: str) -> Optional[str]:
+        """
+        ANPASSUNG FÜR KOSTENLOSE VERSION: 
+        Die Map-API in der Sandbox-Version ist eingeschränkt.
+        Wir versuchen es, aber haben einen Fallback.
+        """
+        try:
+            # Bestimme die Plattform-ID für CoinMarketCap
+            platform_mapping = {
+                'ethereum': '1027',
+                'bsc': '1839',
+                'polygon': '3890'
+            }
+            platform_id = platform_mapping.get(chain.lower(), '1027')  # Default: Ethereum
+            
+            url = f"{self.base_url}/cryptocurrency/map"
+            params = {
+                'listing_status': 'active',
+                'start': '1',
+                'limit': '100'  # Reduziert für kostenlose Version
+            }
+            
+            # Füge Plattform-Parameter hinzu, falls unterstützt
+            if platform_id and self.api_key:  # Plattform-Filter nur mit API-Schlüssel
+                params['platform'] = platform_id
+            
+            headers = {}
+            if self.api_key:
+                headers['X-CMC_PRO_API_KEY'] = self.api_key
+            
+            data = await self._make_request(url, params, headers)
+            
+            if data and data.get('data'):
+                # Bereinige alle Float-Werte in der Antwort
+                data = self._sanitize_float_values(data)
+                
+                for token in data['data']:
+                    # Prüfe, ob die Adresse übereinstimmt
+                    if (token.get('platform') and 
+                        token.get('platform', {}).get('token_address', '').lower() == token_address.lower()):
+                        return str(token.get('id'))
+            
+            # Fallback: Versuche es ohne Plattform-Filter
+            if platform_id and self.api_key:
+                logger.info(f"Retrying without platform filter for {token_address}")
+                params.pop('platform', None)
+                data = await self._make_request(url, params, headers)
+                
+                if data and data.get('data'):
+                    for token in data['data']:
+                        if (token.get('platform') and 
+                            token.get('platform', {}).get('token_address', '').lower() == token_address.lower()):
+                            return str(token.get('id'))
+            
+            logger.warning(f"Could not find coin ID for address {token_address}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error getting coin ID from address in CoinMarketCap: {e}")
+            return None
+    
+    async def get_token_price(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
+        """Holt den aktuellen Preis eines Tokens - verwendet die Adressmethode"""
+        return await self.get_token_price_by_address(token_address, chain)
     
     async def get_token_metadata(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
-        """Holt Token-Metadaten wie Beschreibung, Website, Social Links"""
+        """
+        ANPASSUNG FÜR KOSTENLOSE VERSION: 
+        Die Info-API ist in der Sandbox-Version eingeschränkt.
+        """
         try:
             # Zuerst die Coin-ID von der Adresse holen
             coin_id = await self._get_coin_id_from_address(token_address, chain)
@@ -144,7 +247,11 @@ class CoinMarketCapProvider(BaseAPIProvider):
                 'id': coin_id
             }
             
-            data = await self._make_request(url, params)
+            headers = {}
+            if self.api_key:
+                headers['X-CMC_PRO_API_KEY'] = self.api_key
+            
+            data = await self._make_request(url, params, headers)
             
             if data and data.get('data'):
                 # Bereinige alle Float-Werte in der Antwort
@@ -166,48 +273,21 @@ class CoinMarketCapProvider(BaseAPIProvider):
                     'category': token_data.get('category'),
                     'tags': token_data.get('tags')
                 }
+            
+            logger.warning(f"No metadata found for coin ID {coin_id}")
+            return None
+            
         except Exception as e:
             logger.error(f"Error fetching token metadata from CoinMarketCap: {e}")
-        
-        return None
+            return None
     
     async def get_historical_prices(self, token_address: str, chain: str, days: int = 30) -> Optional[Dict[str, float]]:
-        """Holt historische Preisdaten für einen bestimmten Zeitraum"""
-        try:
-            # Zuerst die Coin-ID von der Adresse holen
-            coin_id = await self._get_coin_id_from_address(token_address, chain)
-            if not coin_id:
-                return None
-            
-            url = f"{self.base_url}/cryptocurrency/quotes/historical"
-            params = {
-                'id': coin_id,
-                'count': days,
-                'convert': 'USD'
-            }
-            
-            data = await self._make_request(url, params)
-            
-            if data and data.get('data'):
-                # Bereinige alle Float-Werte in der Antwort
-                data = self._sanitize_float_values(data)
-                
-                # Konvertiere Zeitstempel in lesbare Daten
-                historical_prices = {}
-                quotes = data['data'].get('quotes', [])
-                
-                for quote in quotes:
-                    timestamp = quote.get('timestamp')
-                    price = quote.get('quote', {}).get('USD', {}).get('price', 0)
-                    
-                    if timestamp:
-                        date = datetime.strptime(timestamp, '%Y-%m-%dT%H:%M:%S.%fZ').strftime('%Y-%m-%d')
-                        historical_prices[date] = float(price)
-                
-                return historical_prices
-        except Exception as e:
-            logger.error(f"Error fetching historical prices from CoinMarketCap: {e}")
-        
+        """
+        ANPASSUNG FÜR KOSTENLOSE VERSION: 
+        Die historische API ist in der Sandbox-Version nicht verfügbar.
+        Gib eine leere Antwort zurück.
+        """
+        logger.warning("Historical price data is not available in the free version of CoinMarketCap")
         return None
     
     async def get_global_market_data(self) -> Optional[Dict[str, Any]]:
@@ -218,7 +298,11 @@ class CoinMarketCapProvider(BaseAPIProvider):
                 'convert': 'USD'
             }
             
-            data = await self._make_request(url, params)
+            headers = {}
+            if self.api_key:
+                headers['X-CMC_PRO_API_KEY'] = self.api_key
+            
+            data = await self._make_request(url, params, headers)
             
             if data and data.get('data'):
                 # Bereinige alle Float-Werte in der Antwort
@@ -245,13 +329,17 @@ class CoinMarketCapProvider(BaseAPIProvider):
             url = f"{self.base_url}/cryptocurrency/listings/latest"
             params = {
                 'start': '1',
-                'limit': '20',
+                'limit': '20',  # Reduziert für kostenlose Version
                 'convert': 'USD',
                 'sort': 'percent_change_24h',
                 'sort_dir': 'desc'
             }
             
-            data = await self._make_request(url, params)
+            headers = {}
+            if self.api_key:
+                headers['X-CMC_PRO_API_KEY'] = self.api_key
+            
+            data = await self._make_request(url, params, headers)
             
             if data and data.get('data'):
                 # Bereinige alle Float-Werte in der Antwort
@@ -277,120 +365,29 @@ class CoinMarketCapProvider(BaseAPIProvider):
         """
         CoinMarketCap bietet keine direkte API für Token-Halter.
         Diese Methode gibt eine leere Liste zurück.
-        
-        Args:
-            token_address: Die Token-Vertragsadresse
-            chain: Die Blockchain (z.B. 'ethereum', 'bsc')
-            limit: Maximale Anzahl an Haltern, die abgerufen werden sollen
-            
-        Returns:
-            Eine leere Liste
         """
         logger.warning("CoinMarketCap does not provide token holder information")
         return []
     
-    async def _get_coin_id_from_address(self, token_address: str, chain: str) -> Optional[str]:
-        
-        try:
-            # Bestimme die Plattform-ID für CoinMarketCap
-            platform_mapping = {
-                'ethereum': '1027',
-                'bsc': '1839',
-                'polygon': '3890'
-            }
-            platform_id = platform_mapping.get(chain.lower(), '1027')  # Default: Ethereum
-            
-            url = f"{self.base_url}/cryptocurrency/quotes/latest"
-            params = {
-                'address': token_address,
-                'convert': 'USD'
-            }
-            
-            # Füge Plattform-Parameter hinzu, falls angegeben
-            if platform_id:
-                params['platform'] = platform_id
-            
-            headers = {
-                'X-CMC_PRO_API_KEY': self.api_key
-            }
-            
-            data = await self._make_request(url, params, headers)
-            
-            if data and data.get('data'):
-                # Die Antwort sollte nur ein Token enthalten
-                for token_id, token_data in data['data'].items():
-                    quote = token_data.get('quote', {}).get('USD', {})
-                    
-                    return TokenPriceData(
-                        price=float(quote.get('price', 0)),
-                        market_cap=float(quote.get('market_cap', 0)),
-                        volume_24h=float(quote.get('volume_24h', 0)),
-                        price_change_percentage_24h=float(quote.get('percent_change_24h', 0)),
-                        name=token_data.get('name'),
-                        symbol=token_data.get('symbol'),
-                        source=self.name,
-                        last_updated=datetime.now()
-                    )
-        except Exception as e:
-            logger.error(f"Error fetching token price by address from CoinMarketCap: {e}")
-        
-        return None
-
-    async def get_token_price_by_address(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
-        """Holt den aktuellen Preis eines Tokens direkt über die Adresse"""
-        try:
-            # Bestimme die Plattform-ID für CoinMarketCap
-            platform_mapping = {
-                'ethereum': '1027',
-                'bsc': '1839',
-                'polygon': '3890'
-            }
-            platform_id = platform_mapping.get(chain.lower(), '1027')  # Default: Ethereum
-            
-            url = f"{self.base_url}/cryptocurrency/quotes/latest"
-            params = {
-                'address': token_address,
-                'convert': 'USD'
-            }
-            
-            # Füge Plattform-Parameter hinzu, falls angegeben
-            if platform_id:
-                params['platform'] = platform_id
-            
-            headers = {
-                'X-CMC_PRO_API_KEY': self.api_key
-            }
-            
-            data = await self._make_request(url, params, headers)
-            
-            if data and data.get('data'):
-                # Die Antwort sollte nur ein Token enthalten
-                for token_id, token_data in data['data'].items():
-                    quote = token_data.get('quote', {}).get('USD', {})
-                    
-                    return TokenPriceData(
-                        price=float(quote.get('price', 0)),
-                        market_cap=float(quote.get('market_cap', 0)),
-                        volume_24h=float(quote.get('volume_24h', 0)),
-                        price_change_percentage_24h=float(quote.get('percent_change_24h', 0)),
-                        name=token_data.get('name'),
-                        symbol=token_data.get('symbol'),
-                        source=self.name,
-                        last_updated=datetime.now()
-                    )
-        except Exception as e:
-            logger.error(f"Error fetching token price by address from CoinMarketCap: {e}")
-        
-        return None
-    
     def get_rate_limits(self) -> Dict[str, int]:
-        # Unterschiedliche Rate-Limits für Free vs Pro API
+        """
+        ANPASSUNG FÜR KOSTENLOSE VERSION: 
+        Strengere Rate-Limits für die kostenlose Version.
+        """
         if self.api_key:
-            # Pro API hat höhere Limits
-            return {"requests_per_minute": 333, "requests_per_hour": 10000}
+            # Kostenlose Sandbox mit API-Schlüssel: 333 Anfragen/Tag, ~10/Minute
+            return {
+                "requests_per_minute": 10, 
+                "requests_per_hour": 60,
+                "requests_per_day": 333
+            }
         else:
-            # Free API hat deutlich niedrigere Limits
-            return {"requests_per_minute": 10, "requests_per_hour": 100}
+            # Öffentliche API ohne Schlüssel: sehr eingeschränkt
+            return {
+                "requests_per_minute": 5,
+                "requests_per_hour": 30,
+                "requests_per_day": 100
+            }
     
     async def close(self):
         """Schließt alle offenen Ressourcen wie Client-Sessions."""
