@@ -1,35 +1,40 @@
-"""
-Rate limiter implementation for controlling API request rates.
-"""
-
+# blockchain/rate_limiters/rate_limiter.py
 import time
-from typing import Dict, List
-
+from typing import Dict, Optional
+from threading import Lock
+from collections import deque
 
 class RateLimiter:
-    """Einfacher Rate-Limiter für API-Anfragen"""
+    """Rate limiter for API calls"""
     
-    def __init__(self):
-        self.request_timestamps: Dict[str, List[float]] = {}
-        self.limits: Dict[str, Dict[str, int]] = {}
+    def __init__(self, calls_per_second: float = 1.0, burst: int = 1):
+        self.calls_per_second = calls_per_second
+        self.burst = burst
+        self.min_interval = 1.0 / calls_per_second
+        self.call_times: deque = deque(maxlen=burst)
+        self.lock = Lock()
     
-    async def acquire(self, service_name: str, max_requests: int, time_window: int) -> bool:
-        """Prüft, ob eine Anfrage gemacht werden kann"""
-        current_time = time.time()
-        
-        if service_name not in self.request_timestamps:
-            self.request_timestamps[service_name] = []
-        
-        # Alte Zeitstempel entfernen
-        window_start = current_time - time_window
-        self.request_timestamps[service_name] = [
-            ts for ts in self.request_timestamps[service_name] if ts > window_start
-        ]
-        
-        # Prüfen, ob das Limit erreicht ist
-        if len(self.request_timestamps[service_name]) >= max_requests:
-            return False
-        
-        # Neue Anfrage hinzufügen
-        self.request_timestamps[service_name].append(current_time)
-        return True
+    def wait_if_needed(self) -> None:
+        """Wait if rate limit would be exceeded"""
+        with self.lock:
+            now = time.time()
+            
+            # Remove old calls outside burst window
+            while self.call_times and now - self.call_times[0] > 1.0:
+                self.call_times.popleft()
+            
+            # Check if we need to wait
+            if len(self.call_times) >= self.burst:
+                sleep_time = self.min_interval - (now - self.call_times[-1])
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                    now = time.time()
+            
+            self.call_times.append(now)
+    
+    def __enter__(self):
+        self.wait_if_needed()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
