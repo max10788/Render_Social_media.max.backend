@@ -1,8 +1,13 @@
+import sys
+import os
+
+# Füge Projektverzeichnis zum Python-Pfad hinzu
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 import requests
-# Korrigierter Import
 from app.core.backend_crypto_tracker.rate_limiters.rate_limiter import RateLimiter
 from ..utils.error_handling import retry_on_failure
 
