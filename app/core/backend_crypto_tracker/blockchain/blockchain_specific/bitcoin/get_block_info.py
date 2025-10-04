@@ -1,10 +1,10 @@
-# blockchain/blockchain_specific/bitcoin/get_block_info.py
 import requests
 from typing import Dict, Any, Optional
 from ...utils.error_handling import handle_api_error
 from ...rate_limiters.rate_limiter import RateLimiter
 
-bitcoin_limiter = RateLimiter(max_calls=10, time_window=60)
+# Korrigierte Initialisierung
+bitcoin_limiter = RateLimiter(calls_per_second=10/60, burst=10)
 
 def get_block_info(
     block_hash: Optional[str] = None,
