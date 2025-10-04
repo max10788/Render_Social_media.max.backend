@@ -1,4 +1,10 @@
-# core/metrics.py
+# ============================================================================
+# wallet_classifier/core/metrics.py
+# ============================================================================
+"""Metric calculation and result management"""
+
+from typing import List, Dict
+
 class MetricResult:
     """Speichert das Ergebnis einer Metrik-Berechnung"""
     
@@ -15,7 +21,7 @@ class MetricCalculator:
     """Basis-Klasse für Metrik-Berechnungen"""
     
     def __init__(self):
-        self.results = []
+        self.results: List[MetricResult] = []
     
     def add_result(self, name: str, value: float, weight: float = 1.0):
         """Fügt ein Metrik-Ergebnis hinzu"""
@@ -33,3 +39,7 @@ class MetricCalculator:
     def get_results_dict(self) -> Dict[str, float]:
         """Gibt alle Ergebnisse als Dictionary zurück"""
         return {r.name: r.value for r in self.results}
+    
+    def clear(self):
+        """Löscht alle Ergebnisse"""
+        self.results = []
