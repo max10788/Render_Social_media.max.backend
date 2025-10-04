@@ -1,9 +1,9 @@
-# blockchain/exchanges/base_provider.py
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 import requests
-from ..rate_limiters import RateLimiter
+# Korrigierter Import
+from app.core.backend_crypto_tracker.rate_limiters.rate_limiter import RateLimiter
 from ..utils.error_handling import retry_on_failure
 
 @dataclass
