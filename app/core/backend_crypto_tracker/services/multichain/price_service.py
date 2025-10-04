@@ -13,20 +13,8 @@ from app.core.backend_crypto_tracker.config.blockchain_api_keys import APIKeys
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 # Importe aktualisiert
 from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data import TokenPriceData
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
 # Import all providers
 from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
-
-from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
-from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap_provider import CoinMarketCapProvider
-from app.core.backend_crypto_tracker.blockchain.aggregators.cryptocompare_provider import CryptoCompareProvider
-
-from app.core.backend_crypto_tracker.blockchain.exchanges.bitget_provider import BitgetProvider
-from app.core.backend_crypto_tracker.blockchain.exchanges.kraken_provider import KrakenProvider
-from app.core.backend_crypto_tracker.blockchain.exchanges.binance_provider import BinanceProvider
-from app.core.backend_crypto_tracker.blockchain.exchanges.coinbase_provider import CoinbaseProvider
 
 from app.core.backend_crypto_tracker.blockchain.onchain.bitquery_provider import BitqueryProvider
 
