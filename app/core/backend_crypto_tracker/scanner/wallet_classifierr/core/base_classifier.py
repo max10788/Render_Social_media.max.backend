@@ -1,4 +1,11 @@
-# core/base_classifier.py
+# ============================================================================
+# wallet_classifier/core/base_classifier.py
+# ============================================================================
+"""Base classifier for all wallet types"""
+
+from typing import List, Dict, Any
+from .metrics import MetricCalculator
+
 class BaseClassifier:
     """Basis-Klassifizierer für alle Wallet-Typen"""
     
@@ -6,18 +13,17 @@ class BaseClassifier:
         self.wallet_type = wallet_type
         self.stage = stage
         self.calculator = MetricCalculator()
-        self.threshold = 0.5  # Standard-Schwellwert für Klassifizierung
+        self.threshold = 0.5
     
     def analyze(self, transactions: List[Dict]) -> Dict[str, Any]:
         """Führt Analyse durch und gibt Ergebnisse zurück"""
-        if self.stage == 1:
+        self.calculator.clear()
+        
+        if self.stage >= 1:
             self.stage1_analysis(transactions)
-        elif self.stage == 2:
-            self.stage1_analysis(transactions)
+        if self.stage >= 2:
             self.stage2_analysis(transactions)
-        elif self.stage == 3:
-            self.stage1_analysis(transactions)
-            self.stage2_analysis(transactions)
+        if self.stage >= 3:
             self.stage3_analysis(transactions)
         
         score = self.calculator.get_weighted_score()
@@ -40,3 +46,4 @@ class BaseClassifier:
     def stage3_analysis(self, transactions: List[Dict]):
         """Stage 3: ML-basierte Analyse (überschreiben in Subklassen)"""
         pass
+
