@@ -1,7 +1,10 @@
-# core/utils.py
+# ============================================================================
+# wallet_classifier/core/utils.py
+# ============================================================================
+"""Utility functions for transaction analysis"""
+
 import numpy as np
 from collections import Counter
-from datetime import datetime
 from typing import List, Dict, Any
 
 class TransactionUtils:
@@ -49,3 +52,14 @@ class TransactionUtils:
             'std': np.std(volumes),
             'total': sum(volumes)
         }
+    
+    @staticmethod
+    def calculate_frequency(transactions: List[Dict]) -> float:
+        """Berechnet Transaktionsfrequenz (Tx pro Tag)"""
+        if not transactions:
+            return 0.0
+        time_span = max(tx.get('timestamp', 0) for tx in transactions) - \
+                   min(tx.get('timestamp', 0) for tx in transactions)
+        if time_span == 0:
+            return 0.0
+        return len(transactions) / (time_span / 86400)
