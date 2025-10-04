@@ -9,10 +9,6 @@ from app.core.backend_crypto_tracker.processor.blockchain_parser import Blockcha
 from app.core.backend_crypto_tracker.processor.database.models.transaction import Transaction
 from app.core.backend_crypto_tracker.processor.database.manager import DatabaseManager
 
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
-
 logger = get_logger(__name__)
 
 class TransactionWorker:
