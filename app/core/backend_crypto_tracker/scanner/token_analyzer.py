@@ -16,21 +16,10 @@ from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, InvalidAddressException, ValidationException, CustomAnalysisException
 from app.core.backend_crypto_tracker.config.scanner_config import scanner_config
 from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data import TokenPriceData
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum_provider import EthereumProvider
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana_provider import SolanaProvider
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui_provider import SuiProvider
 from app.core.backend_crypto_tracker.utils.cache import AnalysisCache
 
 # Import all providers
 from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider, get_unified_api_provider
-from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko_provider import CoinGeckoProvider
-from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap_provider import CoinMarketCapProvider
-from app.core.backend_crypto_tracker.blockchain.aggregators.cryptocompare_provider import CryptoCompareProvider
-from app.core.backend_crypto_tracker.blockchain.exchanges.bitget_provider import BitgetProvider
-from app.core.backend_crypto_tracker.blockchain.exchanges.kraken_provider import KrakenProvider
-from app.core.backend_crypto_tracker.blockchain.exchanges.binance_provider import BinanceProvider
-from app.core.backend_crypto_tracker.blockchain.exchanges.coinbase_provider import CoinbaseProvider
-from app.core.backend_crypto_tracker.blockchain.onchain.bitquery_provider import BitqueryProvider
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 from app.core.backend_crypto_tracker.processor.database.models.wallet import WalletAnalysis, WalletTypeEnum
 from app.core.backend_crypto_tracker.blockchain.onchain.etherscan_provider import EtherscanProvider
