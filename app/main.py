@@ -23,8 +23,9 @@ from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
 from app.core.backend_crypto_tracker.api.routes.contract_routes import router as contracts_router
 from app.core.backend_crypto_tracker.api.routes import token_routes
 from app.core.backend_crypto_tracker.api.routes import transaction_routes
-from app.core.backend_crypto_tracker.api.routes import scanner_routes, wallet_routes
+from app.core.backend_crypto_tracker.api.routes import scanner_routes,
 from app.core.backend_crypto_tracker.api.routes.frontend_routes import router as frontend_router
+from app.core.backend_crypto_tracker.api.routes.wallet_routes import router as wallet_router
 
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
