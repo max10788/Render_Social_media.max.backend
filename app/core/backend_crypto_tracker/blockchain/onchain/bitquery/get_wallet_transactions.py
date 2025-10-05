@@ -17,7 +17,7 @@ def get_wallet_transactions(
     from_date: Optional[datetime] = None,
     to_date: Optional[datetime] = None,
     api_key: Optional[str] = None
-) -> List[WalletTransaction]:
+) -> List[WalletTransactionsRequest]:
     """
     Get wallet transactions from Bitquery.
     
