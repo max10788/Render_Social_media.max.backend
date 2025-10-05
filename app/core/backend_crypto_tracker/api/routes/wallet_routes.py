@@ -3,7 +3,7 @@
 # ============================================================================
 """Flask Routes für Wallet-Analyse-API"""
 
-from flask import Blueprint, request, jsonify
+from flask import Flask, Blueprint, request, jsonify
 from api.controllers.wallet_controller import WalletController
 
 # Erstelle Blueprint
