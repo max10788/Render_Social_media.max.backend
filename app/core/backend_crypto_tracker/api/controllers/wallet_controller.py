@@ -5,7 +5,7 @@
 
 from typing import Dict, Any, Optional
 from datetime import datetime
-from wallet_classifier.analyzer import WalletAnalyzer
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.base_classifier import BaseClassifier
 
 
 class WalletController:
