@@ -13,7 +13,6 @@ from .core.utils import TransactionUtils
 from .trader.classifier import TraderClassifier
 from .hodler.classifier import HodlerClassifier
 from .whale.classifier import WhaleClassifier
-from .miner.classifier import MinerClassifier
 from .mixer.classifier import MixerClassifier
 from .dust_sweeper.classifier import DustSweeperClassifier
 
@@ -26,7 +25,6 @@ __all__ = [
     'TraderClassifier',
     'HodlerClassifier',
     'WhaleClassifier',
-    'MinerClassifier',
     'MixerClassifier',
     'DustSweeperClassifier'
 ]
