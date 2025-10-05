@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from ...utils.error_handling import handle_api_error
 from ...rate_limiters.rate_limiter import RateLimiter
-from app.core.backend_crypto_tracker.api.controllers.transaction_controller import WalletTransactionRequest
+from app.core.backend_crypto_tracker.api.controllers.transaction_controller import WalletTransactionsRequest
 
 # Bitquery rate limiter (10 requests per minute for free tier)
 bitquery_limiter = RateLimiter(max_calls=10, time_window=60)
