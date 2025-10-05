@@ -1,17 +1,18 @@
 # ============================================================================
 # api/routes/wallet_routes.py
 # ============================================================================
-"""Flask Routes für Wallet-Analyse-API"""
+"""FastAPI Routes für Wallet-Analyse-API"""
 
-from flask import Flask, Blueprint, request, jsonify
+from fastapi import APIRouter, Request, HTTPException, status
+from datetime import datetime
 from api.controllers.wallet_controller import WalletController
 
-# Erstelle Blueprint
-wallet_bp = Blueprint('wallet', __name__, url_prefix='/api/v1/wallet')
+# Erstelle Router
+router = APIRouter(prefix="/api/v1/wallet", tags=["wallet"])
 
 
-@wallet_bp.route('/analyze', methods=['POST'])
-def analyze_wallet():
+@router.post("/analyze")
+async def analyze_wallet(request: Request):
     """
     POST /api/v1/wallet/analyze
     
@@ -41,14 +42,17 @@ def analyze_wallet():
     }
     """
     try:
-        data = request.get_json()
+        data = await request.json()
         
         if not data:
-            return jsonify({
-                'success': False,
-                'error': 'Kein JSON-Body bereitgestellt',
-                'error_code': 'INVALID_REQUEST'
-            }), 400
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'success': False,
+                    'error': 'Kein JSON-Body bereitgestellt',
+                    'error_code': 'INVALID_REQUEST'
+                }
+            )
         
         transactions = data.get('transactions', [])
         stage = data.get('stage', 1)
@@ -60,19 +64,29 @@ def analyze_wallet():
             wallet_address=wallet_address
         )
         
-        status_code = 200 if result.get('success') else 400
-        return jsonify(result), status_code
+        if not result.get('success'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result
+            )
         
+        return result
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'error_code': 'SERVER_ERROR'
-        }), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                'success': False,
+                'error': str(e),
+                'error_code': 'SERVER_ERROR'
+            }
+        )
 
 
-@wallet_bp.route('/analyze/top-matches', methods=['POST'])
-def get_top_matches():
+@router.post("/analyze/top-matches")
+async def get_top_matches(request: Request):
     """
     POST /api/v1/wallet/analyze/top-matches
     
@@ -101,14 +115,17 @@ def get_top_matches():
     }
     """
     try:
-        data = request.get_json()
+        data = await request.json()
         
         if not data:
-            return jsonify({
-                'success': False,
-                'error': 'Kein JSON-Body bereitgestellt',
-                'error_code': 'INVALID_REQUEST'
-            }), 400
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'success': False,
+                    'error': 'Kein JSON-Body bereitgestellt',
+                    'error_code': 'INVALID_REQUEST'
+                }
+            )
         
         transactions = data.get('transactions', [])
         stage = data.get('stage', 1)
@@ -120,19 +137,29 @@ def get_top_matches():
             top_n=top_n
         )
         
-        status_code = 200 if result.get('success') else 400
-        return jsonify(result), status_code
+        if not result.get('success'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result
+            )
         
+        return result
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'error_code': 'SERVER_ERROR'
-        }), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                'success': False,
+                'error': str(e),
+                'error_code': 'SERVER_ERROR'
+            }
+        )
 
 
-@wallet_bp.route('/analyze/batch', methods=['POST'])
-def batch_analyze():
+@router.post("/analyze/batch")
+async def batch_analyze(request: Request):
     """
     POST /api/v1/wallet/analyze/batch
     
@@ -174,43 +201,59 @@ def batch_analyze():
     }
     """
     try:
-        data = request.get_json()
+        data = await request.json()
         
         if not data:
-            return jsonify({
-                'success': False,
-                'error': 'Kein JSON-Body bereitgestellt',
-                'error_code': 'INVALID_REQUEST'
-            }), 400
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'success': False,
+                    'error': 'Kein JSON-Body bereitgestellt',
+                    'error_code': 'INVALID_REQUEST'
+                }
+            )
         
         wallets = data.get('wallets', [])
         stage = data.get('stage', 1)
         
         if not wallets:
-            return jsonify({
-                'success': False,
-                'error': 'Keine Wallets bereitgestellt',
-                'error_code': 'NO_WALLETS'
-            }), 400
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'success': False,
+                    'error': 'Keine Wallets bereitgestellt',
+                    'error_code': 'NO_WALLETS'
+                }
+            )
         
         result = WalletController.batch_analyze(
             wallets=wallets,
             stage=stage
         )
         
-        status_code = 200 if result.get('success') else 400
-        return jsonify(result), status_code
+        if not result.get('success'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=result
+            )
         
+        return result
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'error_code': 'SERVER_ERROR'
-        }), 500
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                'success': False,
+                'error': str(e),
+                'error_code': 'SERVER_ERROR'
+            }
+        )
 
 
-@wallet_bp.route('/health', methods=['GET'])
-def health_check():
+@router.get("/health")
+async def health_check():
     """
     GET /api/v1/wallet/health
     
@@ -224,9 +267,9 @@ def health_check():
         "timestamp": "2025-01-15T10:30:00"
     }
     """
-    return jsonify({
+    return {
         'status': 'healthy',
         'service': 'wallet-analyzer',
         'version': '1.0.0',
         'timestamp': datetime.utcnow().isoformat()
-    }), 200
+    }
