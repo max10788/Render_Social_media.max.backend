@@ -7,7 +7,6 @@ from typing import List, Dict, Any
 from .trader.classifier import TraderClassifier
 from .hodler.classifier import HodlerClassifier
 from .whale.classifier import WhaleClassifier
-from .miner.classifier import MinerClassifier
 from .mixer.classifier import MixerClassifier
 from .dust_sweeper.classifier import DustSweeperClassifier
 
@@ -30,7 +29,6 @@ class WalletAnalyzer:
             TraderClassifier(stage),
             HodlerClassifier(stage),
             WhaleClassifier(stage),
-            MinerClassifier(stage),
             MixerClassifier(stage),
             DustSweeperClassifier(stage)
         ]
