@@ -19,7 +19,7 @@ from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data imp
 from app.core.backend_crypto_tracker.utils.cache import AnalysisCache
 
 # Import all providers
-from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseProvider, get_unified_api_provider
+from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseProvider
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 from app.core.backend_crypto_tracker.processor.database.models.wallet import WalletAnalysis, WalletTypeEnum
 from app.core.backend_crypto_tracker.blockchain.onchain.etherscan_provider import EtherscanProvider
