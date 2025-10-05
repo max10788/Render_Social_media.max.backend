@@ -237,6 +237,7 @@ app.include_router(token_routes.router, prefix="/api/v1")
 app.include_router(transaction_routes.router, prefix="/api/v1")
 app.include_router(scanner_routes.router, prefix="/api/v1")
 app.include_router(contracts_router, prefix="/api/v1")
+app.include_router(wallet_routes, prefix="/api/v1")
 app.include_router(frontend_router)
 
 # ------------------------------------------------------------------
