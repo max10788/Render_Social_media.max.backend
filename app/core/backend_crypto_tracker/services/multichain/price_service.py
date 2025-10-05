@@ -14,7 +14,7 @@ from app.core.backend_crypto_tracker.processor.database.models.token import Toke
 # Importe aktualisiert
 from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data import TokenPriceData
 # Import all providers
-from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseAPIProvider
+from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseProvider
 
 from app.core.backend_crypto_tracker.blockchain.onchain.bitquery_provider import BitqueryProvider
 
