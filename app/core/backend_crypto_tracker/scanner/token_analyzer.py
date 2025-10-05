@@ -22,7 +22,6 @@ from app.core.backend_crypto_tracker.utils.cache import AnalysisCache
 from app.core.backend_crypto_tracker.blockchain.exchanges.base_provider import BaseProvider
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 from app.core.backend_crypto_tracker.processor.database.models.wallet import WalletAnalysis, WalletTypeEnum
-from app.core.backend_crypto_tracker.blockchain.onchain.etherscan_provider import EtherscanProvider
 from app.core.backend_crypto_tracker.config.blockchain_api_keys import get_api_keys
 from app.core.backend_crypto_tracker.utils.json_helpers import sanitize_float
 from app.core.backend_crypto_tracker.utils.token_data_resolver import TokenDataResolver
