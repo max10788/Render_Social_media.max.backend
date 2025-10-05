@@ -12,3 +12,4 @@ def compute_stage2_metrics(transactions: List[Dict]) -> Dict[str, float]:
         'balance_growth': calculate_balance_growth(transactions),
         'low_diversity': calculate_low_address_diversity(transactions),
         'accumulation_consistency': calculate_accumulation_consistency(transactions)
+    }
