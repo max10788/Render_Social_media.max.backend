@@ -1,11 +1,58 @@
 # ============================================================================
 # api/routes/wallet_routes.py
 # ============================================================================
-"""FastAPI Routes für Wallet-Analyse-API"""
+"""FastAPI Routes für Wallet-Analyse-API mit ausführlichem Logging"""
 
+import logging
+import time
+import uuid
+from typing import Dict, Any
 from fastapi import APIRouter, Request, HTTPException, status
 from datetime import datetime
 from api.controllers.wallet_controller import WalletController
+
+# Logger konfigurieren
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Console Handler für Entwicklung
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+# Hilfsfunktionen für Logging
+def mask_wallet_address(address: str) -> str:
+    """Maskiert Wallet-Adressen für das Logging"""
+    if not address:
+        return "N/A"
+    return f"{address[:6]}...{address[-4:]}"
+
+def log_request_data(request_id: str, data: Dict[str, Any]) -> None:
+    """Protokolliert Request-Data sicher"""
+    masked_data = {
+        'wallet_address': mask_wallet_address(data.get('wallet_address')),
+        'blockchain': data.get('blockchain', 'N/A'),
+        'transactions_count': len(data.get('transactions', [])),
+        'stage': data.get('stage', 1),
+        'top_n': data.get('top_n', 3),
+        'fetch_limit': data.get('fetch_limit', 100)
+    }
+    logger.info(f"[{request_id}] Request-Daten: {masked_data}")
+
+def log_response_data(request_id: str, response: Dict[str, Any]) -> None:
+    """Protokolliert Response-Data sicher"""
+    if response.get('success'):
+        data = response.get('data', {})
+        logger.info(f"[{request_id}] Erfolgreiche Antwort: "
+                   f"Wallet={mask_wallet_address(data.get('wallet_address'))}, "
+                   f"Blockchain={data.get('blockchain', 'N/A')}, "
+                   f"Transaktionen={data.get('analysis', {}).get('transaction_count', 0)}")
+    else:
+        logger.error(f"[{request_id}] Fehlerhafte Antwort: {response.get('error')}")
 
 # Erstelle Router
 router = APIRouter(prefix="/api/v1/wallet", tags=["wallet"])
@@ -24,27 +71,17 @@ async def analyze_wallet(request: Request):
         "transactions": [...],          // Required
         "stage": 1                      // Optional, default: 1
     }
-    
-    Response:
-    {
-        "success": true,
-        "data": {
-            "wallet_address": "0x123...",
-            "analysis": {
-                "dominant_type": "trader",
-                "confidence": 0.8523,
-                "stage": 1,
-                "transaction_count": 150
-            },
-            "classifications": [...]
-        },
-        "timestamp": "2025-01-15T10:30:00"
-    }
     """
+    request_id = str(uuid.uuid4())
+    start_time = time.time()
+    logger.info(f"[{request_id}] Neue Wallet-Analyse-Anfrage gestartet")
+    
     try:
         data = await request.json()
+        log_request_data(request_id, data)
         
         if not data:
+            logger.warning(f"[{request_id}] Leerer Request-Body")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
@@ -58,23 +95,33 @@ async def analyze_wallet(request: Request):
         stage = data.get('stage', 1)
         wallet_address = data.get('wallet_address')
         
+        logger.info(f"[{request_id}] Starte Wallet-Analyse mit Stage {stage}")
         result = WalletController.analyze_wallet(
             transactions=transactions,
             stage=stage,
             wallet_address=wallet_address
         )
         
+        log_response_data(request_id, result)
+        
         if not result.get('success'):
+            logger.error(f"[{request_id}] Analyse fehlgeschlagen: {result.get('error')}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=result
             )
         
+        duration = time.time() - start_time
+        logger.info(f"[{request_id}] Analyse erfolgreich abgeschlossen in {duration:.2f}s")
         return result
         
-    except HTTPException:
+    except HTTPException as he:
+        duration = time.time() - start_time
+        logger.error(f"[{request_id}] HTTPException nach {duration:.2f}s: {he.detail}")
         raise
     except Exception as e:
+        duration = time.time() - start_time
+        logger.error(f"[{request_id}] Unerwarteter Fehler nach {duration:.2f}s: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
@@ -94,17 +141,24 @@ async def get_top_matches(request: Request):
     
     Request Body:
     {
-        "transactions": [...],  // Optional
-        "wallet_address": "0x123...",  // Optional
-        "blockchain": "ethereum",  // Optional
-        "stage": 1,            // Optional, default: 1
-        "top_n": 3             // Optional, default: 3
+        "transactions": [...],      // Optional
+        "wallet_address": "0x123...", // Optional
+        "blockchain": "ethereum",    // Optional
+        "stage": 1,                 // Optional, default: 1
+        "top_n": 3,                 // Optional, default: 3
+        "fetch_limit": 100          // Optional, default: 100
     }
     """
+    request_id = str(uuid.uuid4())
+    start_time = time.time()
+    logger.info(f"[{request_id}] Neue Top-Matches-Anfrage gestartet")
+    
     try:
         data = await request.json()
+        log_request_data(request_id, data)
         
         if not data:
+            logger.warning(f"[{request_id}] Leerer Request-Body")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
@@ -121,6 +175,7 @@ async def get_top_matches(request: Request):
         top_n = data.get('top_n', 3)
         fetch_limit = data.get('fetch_limit', 100)
         
+        logger.info(f"[{request_id}] Starte Top-Matches-Analyse mit Stage {stage}, Top-N={top_n}")
         result = WalletController.get_top_matches(
             transactions=transactions,
             wallet_address=wallet_address,
@@ -130,17 +185,26 @@ async def get_top_matches(request: Request):
             fetch_limit=fetch_limit
         )
         
+        log_response_data(request_id, result)
+        
         if not result.get('success'):
+            logger.error(f"[{request_id}] Top-Matches-Analyse fehlgeschlagen: {result.get('error')}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=result
             )
         
+        duration = time.time() - start_time
+        logger.info(f"[{request_id}] Top-Matches-Analyse erfolgreich in {duration:.2f}s")
         return result
         
-    except HTTPException:
+    except HTTPException as he:
+        duration = time.time() - start_time
+        logger.error(f"[{request_id}] HTTPException nach {duration:.2f}s: {he.detail}")
         raise
     except Exception as e:
+        duration = time.time() - start_time
+        logger.error(f"[{request_id}] Unerwarteter Fehler nach {duration:.2f}s: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
@@ -172,31 +236,16 @@ async def batch_analyze(request: Request):
         ],
         "stage": 1  // Optional, default: 1
     }
-    
-    Response:
-    {
-        "success": true,
-        "data": {
-            "analyzed_wallets": 2,
-            "stage": 1,
-            "results": [
-                {
-                    "address": "0x123...",
-                    "success": true,
-                    "dominant_type": "trader",
-                    "confidence": 0.85,
-                    "transaction_count": 150
-                },
-                ...
-            ]
-        },
-        "timestamp": "2025-01-15T10:30:00"
-    }
     """
+    request_id = str(uuid.uuid4())
+    start_time = time.time()
+    logger.info(f"[{request_id}] Neue Batch-Analyse-Anfrage gestartet")
+    
     try:
         data = await request.json()
         
         if not data:
+            logger.warning(f"[{request_id}] Leerer Request-Body")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
@@ -209,7 +258,14 @@ async def batch_analyze(request: Request):
         wallets = data.get('wallets', [])
         stage = data.get('stage', 1)
         
+        logger.info(f"[{request_id}] Batch-Analyse mit {len(wallets)} Wallets, Stage {stage}")
+        
+        # Maskierte Wallet-Adressen für Logging
+        masked_wallets = [mask_wallet_address(w.get('address')) for w in wallets]
+        logger.info(f"[{request_id}] Wallet-Adressen: {masked_wallets}")
+        
         if not wallets:
+            logger.warning(f"[{request_id}] Keine Wallets in Request")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
@@ -225,16 +281,23 @@ async def batch_analyze(request: Request):
         )
         
         if not result.get('success'):
+            logger.error(f"[{request_id}] Batch-Analyse fehlgeschlagen: {result.get('error')}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=result
             )
         
+        duration = time.time() - start_time
+        logger.info(f"[{request_id}] Batch-Analyse erfolgreich in {duration:.2f}s")
         return result
         
-    except HTTPException:
+    except HTTPException as he:
+        duration = time.time() - start_time
+        logger.error(f"[{request_id}] HTTPException nach {duration:.2f}s: {he.detail}")
         raise
     except Exception as e:
+        duration = time.time() - start_time
+        logger.error(f"[{request_id}] Unerwarteter Fehler nach {duration:.2f}s: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
@@ -260,9 +323,27 @@ async def health_check():
         "timestamp": "2025-01-15T10:30:00"
     }
     """
-    return {
-        'status': 'healthy',
-        'service': 'wallet-analyzer',
-        'version': '1.0.0',
-        'timestamp': datetime.utcnow().isoformat()
-    }
+    request_id = str(uuid.uuid4())
+    logger.info(f"[{request_id}] Health-Check angefordert")
+    
+    try:
+        response = {
+            'status': 'healthy',
+            'service': 'wallet-analyzer',
+            'version': '1.0.0',
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        logger.info(f"[{request_id}] Health-Check erfolgreich: {response}")
+        return response
+        
+    except Exception as e:
+        logger.error(f"[{request_id}] Health-Check fehlgeschlagen: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                'success': False,
+                'error': str(e),
+                'error_code': 'HEALTH_CHECK_FAILED'
+            }
+        )
