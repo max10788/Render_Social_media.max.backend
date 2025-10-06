@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 import numpy as np
 import pandas as pd
+import logging
 
 # Fix: Import the correct analyzer class
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.analyzer import WalletAnalyzer
@@ -16,6 +17,9 @@ from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_confirmed_signatures_for_address2 import execute_get_confirmed_signatures_for_address2 as get_sol_signatures
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_transaction_details import execute_get_transaction_details as get_sol_transaction
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_transaction_blocks import execute_get_transaction_blocks as get_sui_transactions
+
+# Logger konfigurieren
+logger = logging.getLogger(__name__)
 
 
 def convert_numpy_types(obj):
@@ -39,6 +43,50 @@ def convert_numpy_types(obj):
     elif pd.isna(obj):
         return None
     return obj
+
+
+def convert_timestamps_to_unix(transactions: List[Dict]) -> List[Dict]:
+    """
+    Konvertiert Zeitstempel von ISO-Format zu Unix-Timestamps
+    
+    Args:
+        transactions: Liste von Transaktions-Dictionaries
+        
+    Returns:
+        Transaktionen mit konvertierten Zeitstempeln
+    """
+    converted = []
+    
+    for tx in transactions:
+        tx_copy = tx.copy()
+        
+        # Konvertiere Zeitstempel, falls vorhanden
+        if 'timestamp' in tx_copy:
+            timestamp_str = tx_copy['timestamp']
+            
+            # Wenn es bereits ein numerischer Wert ist, nichts tun
+            if isinstance(timestamp_str, (int, float)):
+                continue
+                
+            try:
+                # Versuche, ISO-Format zu parsen
+                if isinstance(timestamp_str, str):
+                    # Entferne 'Z' für UTC und ersetze durch +00:00
+                    if timestamp_str.endswith('Z'):
+                        timestamp_str = timestamp_str[:-1] + '+00:00'
+                    
+                    # Parse den Zeitstempel
+                    dt = datetime.fromisoformat(timestamp_str)
+                    tx_copy['timestamp'] = int(dt.timestamp())
+                    logger.debug(f"Konvertiert {tx['timestamp']} zu {tx_copy['timestamp']}")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Konnte Zeitstempel nicht konvertieren: {tx['timestamp']}, Fehler: {str(e)}")
+                # Behalte den Originalwert bei Fehlern
+                pass
+        
+        converted.append(tx_copy)
+    
+    return converted
 
 
 class BlockchainDataFetcher:
@@ -176,6 +224,18 @@ class WalletController:
                     'error_code': 'NO_TRANSACTIONS'
                 }
             
+            # Konvertiere Zeitstempel zu Unix-Timestamps
+            try:
+                logger.info(f"Konvertiere Zeitstempel für {len(transactions)} Transaktionen")
+                transactions = convert_timestamps_to_unix(transactions)
+            except Exception as e:
+                logger.error(f"Fehler bei der Zeitstempel-Konvertierung: {str(e)}")
+                return {
+                    'success': False,
+                    'error': f'Fehler bei der Zeitstempel-Konvertierung: {str(e)}',
+                    'error_code': 'TIMESTAMP_CONVERSION_ERROR'
+                }
+            
             # Analysiere Wallet
             analyzer = WalletAnalyzer(stage=stage)
             results = analyzer.analyze_wallet(transactions)
@@ -227,6 +287,7 @@ class WalletController:
             return response
             
         except Exception as e:
+            logger.error(f"Unerwarteter Fehler in analyze_wallet: {str(e)}", exc_info=True)
             return {
                 'success': False,
                 'error': str(e),
@@ -274,6 +335,18 @@ class WalletController:
                     'error_code': 'NO_TRANSACTIONS'
                 }
             
+            # Konvertiere Zeitstempel zu Unix-Timestamps
+            try:
+                logger.info(f"Konvertiere Zeitstempel für {len(transactions)} Transaktionen")
+                transactions = convert_timestamps_to_unix(transactions)
+            except Exception as e:
+                logger.error(f"Fehler bei der Zeitstempel-Konvertierung: {str(e)}")
+                return {
+                    'success': False,
+                    'error': f'Fehler bei der Zeitstempel-Konvertierung: {str(e)}',
+                    'error_code': 'TIMESTAMP_CONVERSION_ERROR'
+                }
+            
             analyzer = WalletAnalyzer(stage=stage)
             top_matches = analyzer.get_top_matches(transactions, top_n=top_n)
             
@@ -302,6 +375,7 @@ class WalletController:
             }
             
         except Exception as e:
+            logger.error(f"Unerwarteter Fehler in get_top_matches: {str(e)}", exc_info=True)
             return {
                 'success': False,
                 'error': str(e),
@@ -363,6 +437,18 @@ class WalletController:
                     })
                     continue
                 
+                # Konvertiere Zeitstempel zu Unix-Timestamps
+                try:
+                    transactions = convert_timestamps_to_unix(transactions)
+                except Exception as e:
+                    results.append({
+                        'address': address,
+                        'blockchain': blockchain,
+                        'success': False,
+                        'error': f'Fehler bei der Zeitstempel-Konvertierung: {str(e)}'
+                    })
+                    continue
+                
                 analysis = analyzer.analyze_wallet(transactions)
                 analysis = convert_numpy_types(analysis)
                 
@@ -386,6 +472,7 @@ class WalletController:
             }
             
         except Exception as e:
+            logger.error(f"Unerwarteter Fehler in batch_analyze: {str(e)}", exc_info=True)
             return {
                 'success': False,
                 'error': str(e),
