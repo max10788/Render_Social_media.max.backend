@@ -94,24 +94,11 @@ async def get_top_matches(request: Request):
     
     Request Body:
     {
-        "transactions": [...],  // Required
+        "transactions": [...],  // Optional
+        "wallet_address": "0x123...",  // Optional
+        "blockchain": "ethereum",  // Optional
         "stage": 1,            // Optional, default: 1
         "top_n": 3             // Optional, default: 3
-    }
-    
-    Response:
-    {
-        "success": true,
-        "data": {
-            "top_matches": [
-                {"rank": 1, "type": "trader", "score": 0.85, "is_match": true},
-                {"rank": 2, "type": "whale", "score": 0.72, "is_match": true},
-                {"rank": 3, "type": "mixer", "score": 0.45, "is_match": false}
-            ],
-            "stage": 1,
-            "transaction_count": 150
-        },
-        "timestamp": "2025-01-15T10:30:00"
     }
     """
     try:
@@ -127,14 +114,20 @@ async def get_top_matches(request: Request):
                 }
             )
         
-        transactions = data.get('transactions', [])
+        transactions = data.get('transactions')
+        wallet_address = data.get('wallet_address')
+        blockchain = data.get('blockchain')
         stage = data.get('stage', 1)
         top_n = data.get('top_n', 3)
+        fetch_limit = data.get('fetch_limit', 100)
         
         result = WalletController.get_top_matches(
             transactions=transactions,
+            wallet_address=wallet_address,
+            blockchain=blockchain,
             stage=stage,
-            top_n=top_n
+            top_n=top_n,
+            fetch_limit=fetch_limit
         )
         
         if not result.get('success'):
