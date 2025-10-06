@@ -6,6 +6,7 @@
 import logging
 import time
 import uuid
+import json
 from typing import Dict, Any
 from fastapi import APIRouter, Request, HTTPException, status
 from datetime import datetime
@@ -77,7 +78,23 @@ async def analyze_wallet(request: Request):
     logger.info(f"[{request_id}] Neue Wallet-Analyse-Anfrage gestartet")
     
     try:
-        data = await request.json()
+        # JSON-Body mit Fehlerbehandlung parsen
+        try:
+            data = await request.json()
+        except json.JSONDecodeError as e:
+            body = await request.body()
+            logger.error(f"[{request_id}] JSONDecodeError: {str(e)}")
+            logger.error(f"[{request_id}] Request-Body: {body.decode('utf-8', errors='replace')[:500]}...")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'success': False,
+                    'error': 'Ungültiges JSON-Format',
+                    'error_code': 'INVALID_JSON',
+                    'details': str(e)
+                }
+            )
+        
         log_request_data(request_id, data)
         
         if not data:
@@ -154,7 +171,23 @@ async def get_top_matches(request: Request):
     logger.info(f"[{request_id}] Neue Top-Matches-Anfrage gestartet")
     
     try:
-        data = await request.json()
+        # JSON-Body mit Fehlerbehandlung parsen
+        try:
+            data = await request.json()
+        except json.JSONDecodeError as e:
+            body = await request.body()
+            logger.error(f"[{request_id}] JSONDecodeError: {str(e)}")
+            logger.error(f"[{request_id}] Request-Body: {body.decode('utf-8', errors='replace')[:500]}...")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'success': False,
+                    'error': 'Ungültiges JSON-Format',
+                    'error_code': 'INVALID_JSON',
+                    'details': str(e)
+                }
+            )
+        
         log_request_data(request_id, data)
         
         if not data:
@@ -242,7 +275,22 @@ async def batch_analyze(request: Request):
     logger.info(f"[{request_id}] Neue Batch-Analyse-Anfrage gestartet")
     
     try:
-        data = await request.json()
+        # JSON-Body mit Fehlerbehandlung parsen
+        try:
+            data = await request.json()
+        except json.JSONDecodeError as e:
+            body = await request.body()
+            logger.error(f"[{request_id}] JSONDecodeError: {str(e)}")
+            logger.error(f"[{request_id}] Request-Body: {body.decode('utf-8', errors='replace')[:500]}...")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    'success': False,
+                    'error': 'Ungültiges JSON-Format',
+                    'error_code': 'INVALID_JSON',
+                    'details': str(e)
+                }
+            )
         
         if not data:
             logger.warning(f"[{request_id}] Leerer Request-Body")
