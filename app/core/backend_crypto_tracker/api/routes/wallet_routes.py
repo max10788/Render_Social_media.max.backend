@@ -7,6 +7,7 @@ import logging
 import time
 import uuid
 import json
+import re
 from typing import Dict, Any
 from fastapi import APIRouter, Request, HTTPException, status
 from datetime import datetime
@@ -55,6 +56,55 @@ def log_response_data(request_id: str, response: Dict[str, Any]) -> None:
     else:
         logger.error(f"[{request_id}] Fehlerhafte Antwort: {response.get('error')}")
 
+def sanitize_json_string(json_str: str) -> str:
+    """
+    Bereinigt JSON-Strings mit unmaskierten Anführungszeichen
+    
+    Args:
+        json_str: Roher JSON-String
+        
+    Returns:
+        Bereinigter JSON-String
+    """
+    try:
+        # Versuche zuerst, normal zu parsen
+        json.loads(json_str)
+        return json_str
+    except json.JSONDecodeError:
+        # Ersetze unmaskierte Anführungszeichen innerhalb von Werten
+        # Muster: "key": "value with "quotes" inside"
+        # Wir wollen nur Anführungszeichen innerhalb von Strings maskieren
+        
+        # Schritt 1: Finde alle String-Literale (zwischen Anführungszeichen)
+        string_pattern = re.compile(r'"(?:[^"\\]|\\.)*"')
+        
+        def replace_quotes_in_string(match):
+            string = match.group(0)
+            # Ersetze alle unmaskierten Anführungszeichen innerhalb des Strings
+            # außer dem ersten und letzten Zeichen
+            if len(string) > 2:
+                inner = string[1:-1]
+                # Ersetze \" durch einen temporären Platzhalter
+                inner = inner.replace('\\"', '__TEMP_QUOTE__')
+                # Ersetze alle verbleibenden " durch \"
+                inner = inner.replace('"', '\\"')
+                # Stelle die maskierten Anführungszeichen wieder her
+                inner = inner.replace('__TEMP_QUOTE__', '\\"')
+                return '"' + inner + '"'
+            return string
+        
+        # Wende die Ersetzung nur auf String-Literale an
+        sanitized = string_pattern.sub(replace_quotes_in_string, json_str)
+        
+        # Versuche erneut zu parsen
+        try:
+            json.loads(sanitized)
+            return sanitized
+        except json.JSONDecodeError as e:
+            logger.warning(f"Konnte JSON nicht bereinigen: {str(e)}")
+            # Gib das Original zurück, wenn die Bereinigung fehlschlägt
+            return json_str
+
 # Erstelle Router
 router = APIRouter(prefix="/api/v1/wallet", tags=["wallet"])
 
@@ -80,18 +130,30 @@ async def analyze_wallet(request: Request):
     try:
         # JSON-Body mit Fehlerbehandlung parsen
         try:
-            data = await request.json()
+            raw_body = await request.body()
+            body_str = raw_body.decode('utf-8', errors='replace')
+            
+            # Versuche zuerst, normal zu parsen
+            try:
+                data = json.loads(body_str)
+            except json.JSONDecodeError:
+                # Versuche, den JSON-String zu bereinigen
+                logger.warning(f"[{request_id}] Ungültiges JSON erkannt, versuche Bereinigung...")
+                sanitized_body = sanitize_json_string(body_str)
+                data = json.loads(sanitized_body)
+                logger.info(f"[{request_id}] JSON erfolgreich bereinigt")
+                
         except json.JSONDecodeError as e:
-            body = await request.body()
             logger.error(f"[{request_id}] JSONDecodeError: {str(e)}")
-            logger.error(f"[{request_id}] Request-Body: {body.decode('utf-8', errors='replace')[:500]}...")
+            logger.error(f"[{request_id}] Request-Body: {body_str[:500]}...")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
                     'success': False,
                     'error': 'Ungültiges JSON-Format',
                     'error_code': 'INVALID_JSON',
-                    'details': str(e)
+                    'details': str(e),
+                    'hint': 'Stellen Sie sicher, dass alle Anführungszeichen in Strings korrekt maskiert sind (\\")'
                 }
             )
         
@@ -173,18 +235,30 @@ async def get_top_matches(request: Request):
     try:
         # JSON-Body mit Fehlerbehandlung parsen
         try:
-            data = await request.json()
+            raw_body = await request.body()
+            body_str = raw_body.decode('utf-8', errors='replace')
+            
+            # Versuche zuerst, normal zu parsen
+            try:
+                data = json.loads(body_str)
+            except json.JSONDecodeError:
+                # Versuche, den JSON-String zu bereinigen
+                logger.warning(f"[{request_id}] Ungültiges JSON erkannt, versuche Bereinigung...")
+                sanitized_body = sanitize_json_string(body_str)
+                data = json.loads(sanitized_body)
+                logger.info(f"[{request_id}] JSON erfolgreich bereinigt")
+                
         except json.JSONDecodeError as e:
-            body = await request.body()
             logger.error(f"[{request_id}] JSONDecodeError: {str(e)}")
-            logger.error(f"[{request_id}] Request-Body: {body.decode('utf-8', errors='replace')[:500]}...")
+            logger.error(f"[{request_id}] Request-Body: {body_str[:500]}...")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
                     'success': False,
                     'error': 'Ungültiges JSON-Format',
                     'error_code': 'INVALID_JSON',
-                    'details': str(e)
+                    'details': str(e),
+                    'hint': 'Stellen Sie sicher, dass alle Anführungszeichen in Strings korrekt maskiert sind (\\")'
                 }
             )
         
@@ -277,18 +351,30 @@ async def batch_analyze(request: Request):
     try:
         # JSON-Body mit Fehlerbehandlung parsen
         try:
-            data = await request.json()
+            raw_body = await request.body()
+            body_str = raw_body.decode('utf-8', errors='replace')
+            
+            # Versuche zuerst, normal zu parsen
+            try:
+                data = json.loads(body_str)
+            except json.JSONDecodeError:
+                # Versuche, den JSON-String zu bereinigen
+                logger.warning(f"[{request_id}] Ungültiges JSON erkannt, versuche Bereinigung...")
+                sanitized_body = sanitize_json_string(body_str)
+                data = json.loads(sanitized_body)
+                logger.info(f"[{request_id}] JSON erfolgreich bereinigt")
+                
         except json.JSONDecodeError as e:
-            body = await request.body()
             logger.error(f"[{request_id}] JSONDecodeError: {str(e)}")
-            logger.error(f"[{request_id}] Request-Body: {body.decode('utf-8', errors='replace')[:500]}...")
+            logger.error(f"[{request_id}] Request-Body: {body_str[:500]}...")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
                     'success': False,
                     'error': 'Ungültiges JSON-Format',
                     'error_code': 'INVALID_JSON',
-                    'details': str(e)
+                    'details': str(e),
+                    'hint': 'Stellen Sie sicher, dass alle Anführungszeichen in Strings korrekt maskiert sind (\\")'
                 }
             )
         
