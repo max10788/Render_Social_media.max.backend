@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 import logging
 
-# Fix: Import the correct analyzer class
-from app.core.backend_crypto_tracker.scanner.wallet_classifierr.analyzer import WalletAnalyzer
+# Import the new analyzer class
+from app.core.backend_crypto_tracker.scanner.wallet_classifier import WalletClassifier, classify_wallet
 
 # Blockchain data fetchers
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_address_transactions import execute_get_address_transactions as get_eth_transactions
@@ -236,14 +236,49 @@ class WalletController:
                     'error_code': 'TIMESTAMP_CONVERSION_ERROR'
                 }
             
-            # Analysiere Wallet
-            analyzer = WalletAnalyzer(stage=stage)
-            results = analyzer.analyze_wallet(transactions)
+            # Analysiere Wallet mit dem neuen Analyzer
+            classifier = WalletClassifier()
+            
+            # Bereite Blockchain-Daten für den neuen Analyzer vor
+            blockchain_data = {
+                'txs': transactions,
+                'balance': 0,  # Wird vom Analyzer nicht direkt verwendet
+                'inputs': [],
+                'outputs': []
+            }
+            
+            # Füge Transaktionsdetails hinzu
+            for tx in transactions:
+                tx_hash = tx.get('hash', tx.get('tx_hash', ''))
+                
+                # Verarbeite Inputs
+                for inp in tx.get('inputs', []):
+                    inp['tx_hash'] = tx_hash
+                    blockchain_data['inputs'].append(inp)
+                
+                # Verarbeite Outputs
+                for out in tx.get('outputs', []):
+                    out['tx_hash'] = tx_hash
+                    blockchain_data['outputs'].append(out)
+            
+            # Führe die Analyse durch
+            results = classifier.classify(
+                address=wallet_address or 'unknown',
+                blockchain_data=blockchain_data,
+                config={'stage': stage}
+            )
             
             # Konvertiere alle numpy-Typen zu nativen Python-Typen
             results = convert_numpy_types(results)
             
             # Formatiere Response
+            dominant_type = results.get('primary_class', 'Unknown')
+            confidence = 0.0
+            
+            # Extrahiere den höchsten Score als Konfidenz
+            if dominant_type != 'Unknown' and dominant_type in results:
+                confidence = results[dominant_type].get('score', 0.0)
+            
             response = {
                 'success': True,
                 'data': {
@@ -251,10 +286,10 @@ class WalletController:
                     'blockchain': blockchain,
                     'data_source': 'blockchain' if wallet_address and blockchain else 'manual',
                     'analysis': {
-                        'dominant_type': results['dominant_type'],
-                        'confidence': round(float(results['confidence']), 4),
-                        'stage': int(results['stage']),
-                        'transaction_count': int(results['transaction_count'])
+                        'dominant_type': dominant_type,
+                        'confidence': round(float(confidence), 4),
+                        'stage': int(stage),
+                        'transaction_count': int(len(transactions))
                     },
                     'classifications': []
                 },
@@ -263,14 +298,17 @@ class WalletController:
             
             # Füge alle Klassifizierungen hinzu (sortiert nach Score)
             for wallet_type, data in sorted(
-                results['all_results'].items(),
-                key=lambda x: float(x[1].get('score', 0)),
+                results.items(),
+                key=lambda x: float(x[1].get('score', 0)) if isinstance(x[1], dict) else 0,
                 reverse=True
             ):
+                if wallet_type == 'primary_class' or not isinstance(data, dict):
+                    continue
+                    
                 classification = {
                     'type': wallet_type,
                     'score': round(float(data.get('score', 0)), 4),
-                    'is_match': bool(data.get('is_match', False)),
+                    'is_match': bool(data.get('is_class', False)),
                     'metrics': {}
                 }
                 
@@ -347,11 +385,59 @@ class WalletController:
                     'error_code': 'TIMESTAMP_CONVERSION_ERROR'
                 }
             
-            analyzer = WalletAnalyzer(stage=stage)
-            top_matches = analyzer.get_top_matches(transactions, top_n=top_n)
+            # Analysiere Wallet mit dem neuen Analyzer
+            classifier = WalletClassifier()
+            
+            # Bereite Blockchain-Daten für den neuen Analyzer vor
+            blockchain_data = {
+                'txs': transactions,
+                'balance': 0,  # Wird vom Analyzer nicht direkt verwendet
+                'inputs': [],
+                'outputs': []
+            }
+            
+            # Füge Transaktionsdetails hinzu
+            for tx in transactions:
+                tx_hash = tx.get('hash', tx.get('tx_hash', ''))
+                
+                # Verarbeite Inputs
+                for inp in tx.get('inputs', []):
+                    inp['tx_hash'] = tx_hash
+                    blockchain_data['inputs'].append(inp)
+                
+                # Verarbeite Outputs
+                for out in tx.get('outputs', []):
+                    out['tx_hash'] = tx_hash
+                    blockchain_data['outputs'].append(out)
+            
+            # Führe die Analyse durch
+            results = classifier.classify(
+                address=wallet_address or 'unknown',
+                blockchain_data=blockchain_data,
+                config={'stage': stage}
+            )
             
             # Konvertiere numpy-Typen
-            top_matches = convert_numpy_types(top_matches)
+            results = convert_numpy_types(results)
+            
+            # Extrahiere die Top-N Ergebnisse
+            top_matches = []
+            for wallet_type, data in sorted(
+                results.items(),
+                key=lambda x: float(x[1].get('score', 0)) if isinstance(x[1], dict) else 0,
+                reverse=True
+            ):
+                if wallet_type == 'primary_class' or not isinstance(data, dict):
+                    continue
+                    
+                top_matches.append({
+                    'wallet_type': wallet_type,
+                    'score': float(data.get('score', 0)),
+                    'is_match': bool(data.get('is_class', False))
+                })
+                
+                if len(top_matches) >= top_n:
+                    break
             
             return {
                 'success': True,
@@ -403,7 +489,7 @@ class WalletController:
             Batch-Analyse-Ergebnisse
         """
         try:
-            analyzer = WalletAnalyzer(stage=stage)
+            classifier = WalletClassifier()
             results = []
             
             for wallet in wallets:
@@ -449,16 +535,52 @@ class WalletController:
                     })
                     continue
                 
-                analysis = analyzer.analyze_wallet(transactions)
+                # Bereite Blockchain-Daten für den neuen Analyzer vor
+                blockchain_data = {
+                    'txs': transactions,
+                    'balance': 0,  # Wird vom Analyzer nicht direkt verwendet
+                    'inputs': [],
+                    'outputs': []
+                }
+                
+                # Füge Transaktionsdetails hinzu
+                for tx in transactions:
+                    tx_hash = tx.get('hash', tx.get('tx_hash', ''))
+                    
+                    # Verarbeite Inputs
+                    for inp in tx.get('inputs', []):
+                        inp['tx_hash'] = tx_hash
+                        blockchain_data['inputs'].append(inp)
+                    
+                    # Verarbeite Outputs
+                    for out in tx.get('outputs', []):
+                        out['tx_hash'] = tx_hash
+                        blockchain_data['outputs'].append(out)
+                
+                # Führe die Analyse durch
+                analysis = classifier.classify(
+                    address=address,
+                    blockchain_data=blockchain_data,
+                    config={'stage': stage}
+                )
+                
+                # Konvertiere numpy-Typen
                 analysis = convert_numpy_types(analysis)
+                
+                dominant_type = analysis.get('primary_class', 'Unknown')
+                confidence = 0.0
+                
+                # Extrahiere den höchsten Score als Konfidenz
+                if dominant_type != 'Unknown' and dominant_type in analysis:
+                    confidence = analysis[dominant_type].get('score', 0.0)
                 
                 results.append({
                     'address': address,
                     'blockchain': blockchain,
                     'success': True,
-                    'dominant_type': analysis['dominant_type'],
-                    'confidence': round(float(analysis['confidence']), 4),
-                    'transaction_count': int(analysis['transaction_count'])
+                    'dominant_type': dominant_type,
+                    'confidence': round(float(confidence), 4),
+                    'transaction_count': int(len(transactions))
                 })
             
             return {
