@@ -1,30 +1,33 @@
-# ============================================================================
-# wallet_classifier/__init__.py
-# ============================================================================
 """
-Wallet Classifier Package
-Mehrstufige Klassifizierung von Blockchain-Wallets
+Wallet Classifier - Rule-based Bitcoin wallet classification system.
+
+This package provides a transparent, reproducible system for classifying
+Bitcoin wallets into five categories:
+- Dust Sweeper
+- Hodler
+- Mixer
+- Trader
+- Whale
 """
 
-from .core.base_classifier import BaseClassifier
-from .core.metrics import MetricCalculator, MetricResult
-from .core.utils import TransactionUtils
+from .analyzer import WalletClassifier, classify_wallet
+from .data_sources import GroundTruthDB
+from .classes import (
+    DustSweeperAnalyzer,
+    HodlerAnalyzer,
+    MixerAnalyzer,
+    TraderAnalyzer,
+    WhaleAnalyzer
+)
 
-from .trader.classifier import TraderClassifier
-from .hodler.classifier import HodlerClassifier
-from .whale.classifier import WhaleClassifier
-from .mixer.classifier import MixerClassifier
-from .dust_sweeper.classifier import DustSweeperClassifier
-
-__version__ = "1.0.0"
+__version__ = '1.0.0'
 __all__ = [
-    'BaseClassifier',
-    'MetricCalculator',
-    'MetricResult',
-    'TransactionUtils',
-    'TraderClassifier',
-    'HodlerClassifier',
-    'WhaleClassifier',
-    'MixerClassifier',
-    'DustSweeperClassifier'
+    'WalletClassifier',
+    'classify_wallet',
+    'GroundTruthDB',
+    'DustSweeperAnalyzer',
+    'HodlerAnalyzer',
+    'MixerAnalyzer',
+    'TraderAnalyzer',
+    'WhaleAnalyzer'
 ]
