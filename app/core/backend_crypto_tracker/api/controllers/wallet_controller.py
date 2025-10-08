@@ -10,7 +10,8 @@ import pandas as pd
 import logging
 
 # Import the new analyzer class
-from app.core.backend_crypto_tracker.scanner.wallet_classifier import WalletClassifier, classify_wallet
+from app.core.backend_crypto_tracker.scanner.wallet_classifier import WalletClassifier
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.analyzer import classify_wallet
 
 # Blockchain data fetchers
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_address_transactions import execute_get_address_transactions as get_eth_transactions
