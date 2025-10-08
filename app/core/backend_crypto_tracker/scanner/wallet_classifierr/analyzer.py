@@ -1,229 +1,186 @@
 # ============================================================================
-# wallet_classifier/analyzer.py
+# analyzer.py
 # ============================================================================
-"""Wallet Analyzer - Hauptklasse für Wallet-Klassifizierung"""
+"""Main interface for wallet classification."""
 
-import logging
-from typing import List, Dict, Any
-from .trader.classifier import TraderClassifier
-from .hodler.classifier import HodlerClassifier
-from .whale.classifier import WhaleClassifier
-from .mixer.classifier import MixerClassifier
-from .dust_sweeper.classifier import DustSweeperClassifier
+from typing import Dict, Any, List, Optional
+from classes import (
+    DustSweeperAnalyzer,
+    HodlerAnalyzer,
+    MixerAnalyzer,
+    TraderAnalyzer,
+    WhaleAnalyzer
+)
+from data_sources import GroundTruthDB
 
-# Logger konfigurieren
-logger = logging.getLogger(__name__)
 
-
-class WalletAnalyzer:
-    """Hauptanalyse-Klasse für Wallet-Klassifizierung"""
+class WalletClassifier:
+    """
+    Main wallet classification system.
+    Orchestrates all analyzers and applies hybrid logic.
+    """
     
-    def __init__(self, stage: int = 1):
+    def __init__(self, context_db: Optional[GroundTruthDB] = None):
         """
-        Initialisiert den WalletAnalyzer
+        Initialize classifier with all analyzers.
         
         Args:
-            stage: Analysetiefe (1=schnell, 2=mittel, 3=detailliert)
+            context_db: Optional database for context information
         """
-        if stage not in [1, 2, 3]:
-            raise ValueError("Stage muss 1, 2 oder 3 sein")
+        self.context_db = context_db or GroundTruthDB()
         
-        self.stage = stage
-        self.classifiers = [
-            TraderClassifier(stage),
-            HodlerClassifier(stage),
-            WhaleClassifier(stage),
-            MixerClassifier(stage),
-            DustSweeperClassifier(stage)
-        ]
-        
-        # Mindestschwellenwerte für Scores (könnten angepasst werden)
-        self.min_score_threshold = 0.1  # Mindestscore für gültige Klassifizierung
-        
-        logger.info(f"WalletAnalyzer initialisiert mit Stage {stage} und {len(self.classifiers)} Klassifizierern")
-    
-    def validate_transactions(self, transactions: List[Dict]) -> bool:
-        """
-        Validiert die Transaktionsdaten
-        
-        Args:
-            transactions: Liste von Transaktions-Dictionaries
-            
-        Returns:
-            True wenn valide, False sonst
-        """
-        if not transactions:
-            logger.warning("Keine Transaktionen zur Validierung")
-            return False
-        
-        required_fields = ['hash', 'value', 'timestamp']
-        optional_fields = ['from', 'to', 'gas_price', 'gas_used', 'block_number', 'status']
-        
-        for i, tx in enumerate(transactions):
-            # Prüfe erforderliche Felder
-            missing_required = [field for field in required_fields if field not in tx]
-            if missing_required:
-                logger.warning(f"Transaktion {i} fehlt erforderliche Felder: {missing_required}")
-                return False
-            
-            # Prüfe Datentypen
-            if not isinstance(tx['value'], (int, float, str)):
-                logger.warning(f"Transaktion {i} hat ungültigen Wert-Typ: {type(tx['value'])}")
-                return False
-            
-            # Prüfe Wertebereich
-            try:
-                value = float(tx['value'])
-                if value < 0:
-                    logger.warning(f"Transaktion {i} hat negativen Wert: {value}")
-                    return False
-            except (ValueError, TypeError):
-                logger.warning(f"Transaktion {i} hat ungültigen Wert: {tx['value']}")
-                return False
-        
-        logger.info(f"Transaktionsvalidierung erfolgreich für {len(transactions)} Transaktionen")
-        return True
-    
-    def analyze_wallet(self, transactions: List[Dict]) -> Dict[str, Any]:
-        """
-        Analysiert Wallet und gibt alle Klassifizierungsergebnisse zurück
-        
-        Args:
-            transactions: Liste von Transaktions-Dictionaries
-            
-        Returns:
-            Dictionary mit Analyseergebnissen
-        """
-        if not transactions:
-            logger.warning("Keine Transaktionen zum Analysieren")
-            return {
-                'dominant_type': 'unknown',
-                'confidence': 0.0,
-                'stage': self.stage,
-                'transaction_count': 0,
-                'all_results': {},
-                'error': 'Keine Transaktionen zum Analysieren'
-            }
-        
-        # Validiere Transaktionen
-        if not self.validate_transactions(transactions):
-            logger.warning("Transaktionsvalidierung fehlgeschlagen")
-            return {
-                'dominant_type': 'unknown',
-                'confidence': 0.0,
-                'stage': self.stage,
-                'transaction_count': len(transactions),
-                'all_results': {},
-                'error': 'Ungültige Transaktionsdaten'
-            }
-        
-        results = {}
-        debug_info = {}
-        
-        for classifier in self.classifiers:
-            try:
-                logger.debug(f"Analysiere mit {classifier.wallet_type}-Klassifizierer")
-                result = classifier.analyze(transactions)
-                
-                # Debug-Informationen sammeln
-                debug_info[classifier.wallet_type] = {
-                    'score': result.get('score', 0),
-                    'is_match': result.get('is_match', False),
-                    'metrics': result.get('metrics', {})
-                }
-                
-                # Normalisiere den Score (falls nötig)
-                score = result.get('score', 0)
-                if score > 1.0:
-                    logger.warning(f"Score > 1.0 für {classifier.wallet_type}: {score}")
-                    score = min(score, 1.0)
-                
-                result['score'] = score
-                
-                results[classifier.wallet_type] = result
-                
-                logger.debug(f"{classifier.wallet_type}-Ergebnis: Score={score:.4f}, Match={result.get('is_match', False)}")
-                
-            except Exception as e:
-                logger.error(f"Fehler bei {classifier.wallet_type}-Klassifizierung: {str(e)}", exc_info=True)
-                results[classifier.wallet_type] = {
-                    'wallet_type': classifier.wallet_type,
-                    'stage': self.stage,
-                    'score': 0.0,
-                    'is_match': False,
-                    'metrics': {},
-                    'error': str(e)
-                }
-        
-        # Logge Debug-Informationen
-        logger.info(f"Analyseergebnisse: {debug_info}")
-        
-        # Bestimme dominanten Wallet-Typ
-        valid_results = {k: v for k, v in results.items() 
-                        if v.get('score', 0) >= self.min_score_threshold}
-        
-        if valid_results:
-            best_match = max(valid_results.items(), key=lambda x: x[1]['score'])
-            dominant_type = best_match[0] if best_match[1]['is_match'] else 'unknown'
-            confidence = best_match[1]['score']
-            logger.info(f"Dominanter Typ: {dominant_type} mit Konfidenz {confidence:.4f}")
-        else:
-            dominant_type = 'unknown'
-            confidence = 0.0
-            logger.warning("Kein gültiger Klassifizierer gefunden")
-        
-        return {
-            'dominant_type': dominant_type,
-            'confidence': confidence,
-            'stage': self.stage,
-            'transaction_count': len(transactions),
-            'all_results': results,
-            'debug_info': debug_info  # Für Debugging-Zwecke
+        self.analyzers = {
+            'Dust Sweeper': DustSweeperAnalyzer(),
+            'Hodler': HodlerAnalyzer(),
+            'Mixer': MixerAnalyzer(),
+            'Trader': TraderAnalyzer(),
+            'Whale': WhaleAnalyzer()
         }
     
-    def get_top_matches(self, transactions: List[Dict], top_n: int = 3) -> List[Dict[str, Any]]:
+    def classify(
+        self,
+        address: str,
+        blockchain_data: Dict[str, Any],
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """
-        Gibt die Top-N wahrscheinlichsten Wallet-Typen zurück
+        Classify a wallet address.
         
         Args:
-            transactions: Liste von Transaktionen
-            top_n: Anzahl der zurückzugebenden Ergebnisse
+            address: The wallet address to classify
+            blockchain_data: Raw blockchain transaction data
+            config: Optional configuration (e.g., BTC price, thresholds)
             
         Returns:
-            Liste der Top-N Matches sortiert nach Score
+            Dictionary with classification results for each class
         """
-        logger.info(f"Suche Top-{top_n} Matches für {len(transactions)} Transaktionen")
+        results = {}
         
-        results = self.analyze_wallet(transactions)
-        
-        sorted_results = sorted(
-            results['all_results'].items(),
-            key=lambda x: x[1].get('score', 0),
-            reverse=True
-        )
-        
-        top_matches = [
-            {
-                'wallet_type': wallet_type,
-                'score': data['score'],
-                'is_match': data['is_match'],
-                'metrics': data.get('metrics', {})
+        # Run all analyzers
+        for class_name, analyzer in self.analyzers.items():
+            score = analyzer.analyze(address, blockchain_data, self.context_db, config)
+            is_member = analyzer.is_class(score)
+            
+            results[class_name] = {
+                'score': score,
+                'is_class': is_member,
+                'threshold': analyzer.THRESHOLD
             }
-            for wallet_type, data in sorted_results[:top_n]
-        ]
         
-        logger.info(f"Top-{top_n} Matches: {[m['wallet_type'] for m in top_matches]}")
-        return top_matches
+        # Apply hybrid logic
+        results = self._apply_hybrid_rules(results, blockchain_data)
+        
+        # Determine primary class
+        results['primary_class'] = self._determine_primary_class(results)
+        
+        return results
     
-    def set_score_threshold(self, threshold: float):
+    def _apply_hybrid_rules(
+        self,
+        results: Dict[str, Any],
+        blockchain_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
-        Setzt den Mindestschwellenwert für Scores
+        Apply hybrid classification rules for overlapping classes.
         
         Args:
-            threshold: Neuer Schwellenwert (0.0 - 1.0)
+            results: Initial classification results
+            blockchain_data: Raw blockchain data
+            
+        Returns:
+            Updated results with hybrid rules applied
         """
-        if 0.0 <= threshold <= 1.0:
-            self.min_score_threshold = threshold
-            logger.info(f"Mindestscore-Schwelle auf {threshold} gesetzt")
-        else:
-            raise ValueError("Schwellenwert muss zwischen 0.0 und 1.0 liegen")
+        # Rule 1: Whale + Trader → Whale dominates if value > $10M
+        if results['Whale']['is_class'] and results['Trader']['is_class']:
+            total_value = blockchain_data.get('balance', 0) * 50000  # Estimate USD
+            if total_value > 10_000_000:
+                results['Trader']['is_class'] = False
+                results['hybrid_note'] = "Whale dominates over Trader (high value)"
+        
+        # Rule 2: Hodler + Trader → Mutual exclusive based on activity
+        if results['Hodler']['is_class'] and results['Trader']['is_class']:
+            if results['Trader']['score'] > results['Hodler']['score']:
+                results['Hodler']['is_class'] = False
+                results['hybrid_note'] = "Trader dominates over Hodler (high activity)"
+            else:
+                results['Trader']['is_class'] = False
+                results['hybrid_note'] = "Hodler dominates over Trader (low activity)"
+        
+        # Rule 3: Mixer detected → Flag as high risk
+        if results['Mixer']['is_class']:
+            results['risk_flag'] = "HIGH - Mixer activity detected"
+        
+        # Rule 4: Dust Sweeper + Low Value → Likely consolidation service
+        if results['Dust Sweeper']['is_class']:
+            total_value = blockchain_data.get('balance', 0) * 50000
+            if total_value < 1000:
+                results['service_type'] = "Dust Consolidation Service"
+        
+        return results
+    
+    def _determine_primary_class(self, results: Dict[str, Any]) -> str:
+        """
+        Determine the primary class from classification results.
+        
+        Args:
+            results: Classification results
+            
+        Returns:
+            Primary class name
+        """
+        # Find all classes where is_class is True
+        active_classes = [
+            (name, data['score'])
+            for name, data in results.items()
+            if isinstance(data, dict) and data.get('is_class', False)
+        ]
+        
+        if not active_classes:
+            return "Unknown"
+        
+        # Return class with highest score
+        return max(active_classes, key=lambda x: x[1])[0]
+    
+    def classify_batch(
+        self,
+        addresses: List[str],
+        blockchain_data_dict: Dict[str, Dict[str, Any]],
+        config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Classify multiple addresses in batch.
+        
+        Args:
+            addresses: List of addresses to classify
+            blockchain_data_dict: Dictionary mapping addresses to their blockchain data
+            config: Optional configuration
+            
+        Returns:
+            Dictionary mapping addresses to classification results
+        """
+        return {
+            address: self.classify(address, blockchain_data_dict.get(address, {}), config)
+            for address in addresses
+        }
+
+
+def classify_wallet(
+    address: str,
+    blockchain_data: Dict[str, Any],
+    context_db: Optional[GroundTruthDB] = None,
+    config: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Convenience function to classify a single wallet.
+    
+    Args:
+        address: Wallet address
+        blockchain_data: Raw blockchain transaction data
+        context_db: Optional context database
+        config: Optional configuration
+        
+    Returns:
+        Classification results
+    """
+    classifier = WalletClassifier(context_db)
+    return classifier.classify(address, blockchain_data, config)
