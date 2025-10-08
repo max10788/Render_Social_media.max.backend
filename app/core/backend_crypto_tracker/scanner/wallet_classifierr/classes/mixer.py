@@ -3,8 +3,8 @@
 # ============================================================================
 """Mixer wallet analyzer."""
 
-from core.base_analyzer import BaseWalletAnalyzer
-from core.metric_definitions import MIXER_METRICS
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.base_analyzer import BaseWalletAnalyzer
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.metric_definitions import MIXER_METRICS
 from typing import Dict, Any
 
 
