@@ -4,7 +4,7 @@
 """Main interface for wallet classification."""
 
 from typing import Dict, Any, List, Optional
-from classes import (
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes import (
     DustSweeperAnalyzer,
     HodlerAnalyzer,
     MixerAnalyzer,
