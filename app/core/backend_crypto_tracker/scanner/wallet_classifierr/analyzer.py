@@ -11,7 +11,7 @@ from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes import (
     TraderAnalyzer,
     WhaleAnalyzer
 )
-from data_sources import GroundTruthDB
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.data_sources.ground_truth import GroundTruthDB
 
 
 class WalletClassifier:
