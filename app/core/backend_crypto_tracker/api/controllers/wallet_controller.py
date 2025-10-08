@@ -10,7 +10,8 @@ import pandas as pd
 import logging
 
 # Import the new analyzer class
-from app.core.backend_crypto_tracker.scanner.wallet_classifier import WalletClassifier
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr import WalletClassifier
+# Korrigierter Importpfad (Tippfehler behoben)
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.analyzer import classify_wallet
 
 # Blockchain data fetchers
@@ -237,10 +238,10 @@ class WalletController:
                     'error_code': 'TIMESTAMP_CONVERSION_ERROR'
                 }
             
-            # Analysiere Wallet mit dem neuen Analyzer
+            # Analysiere Wallet mit dem WalletClassifier
             classifier = WalletClassifier()
             
-            # Bereite Blockchain-Daten für den neuen Analyzer vor
+            # Bereite Blockchain-Daten für den Analyzer vor
             blockchain_data = {
                 'txs': transactions,
                 'balance': 0,  # Wird vom Analyzer nicht direkt verwendet
@@ -386,10 +387,10 @@ class WalletController:
                     'error_code': 'TIMESTAMP_CONVERSION_ERROR'
                 }
             
-            # Analysiere Wallet mit dem neuen Analyzer
+            # Analysiere Wallet mit dem WalletClassifier
             classifier = WalletClassifier()
             
-            # Bereite Blockchain-Daten für den neuen Analyzer vor
+            # Bereite Blockchain-Daten für den Analyzer vor
             blockchain_data = {
                 'txs': transactions,
                 'balance': 0,  # Wird vom Analyzer nicht direkt verwendet
@@ -536,7 +537,7 @@ class WalletController:
                     })
                     continue
                 
-                # Bereite Blockchain-Daten für den neuen Analyzer vor
+                # Bereite Blockchain-Daten für den Analyzer vor
                 blockchain_data = {
                     'txs': transactions,
                     'balance': 0,  # Wird vom Analyzer nicht direkt verwendet
