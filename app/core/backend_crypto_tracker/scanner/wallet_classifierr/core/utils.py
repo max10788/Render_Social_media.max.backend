@@ -1,103 +1,75 @@
-# wallet_classifier/core/utils.py
+# ============================================================================
+# core/utils.py
+# ============================================================================
+"""Utility functions for wallet analysis."""
 
-from typing import Dict, List, Any, Optional
-import json
-import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import List, Dict, Any
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 
-class DataValidator:
-    """Validates and normalizes blockchain data"""
-    
-    @staticmethod
-    def validate_wallet_data(data: Dict[str, Any]) -> bool:
-        """Validate required fields in wallet data"""
-        required_fields = ['address', 'transactions', 'balance']
-        
-        for field in required_fields:
-            if field not in data:
-                logging.error(f"Missing required field: {field}")
-                return False
-        
-        if not isinstance(data['transactions'], list):
-            logging.error("Transactions must be a list")
-            return False
-        
-        return True
-    
-    @staticmethod
-    def normalize_transaction_data(transaction: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize transaction data across different chains"""
-        normalized = {
-            'hash': transaction.get('hash', transaction.get('tx_hash', '')),
-            'timestamp': transaction.get('timestamp', transaction.get('time', 0)),
-            'value': float(transaction.get('value', transaction.get('amount', 0))),
-            'from': transaction.get('from', transaction.get('sender', '')),
-            'to': transaction.get('to', transaction.get('recipient', '')),
-            'fee': float(transaction.get('fee', transaction.get('gas_price', 0))),
-            'type': 'send' if transaction.get('from') else 'receive'
-        }
-        
-        # Handle UTXO-based chains
-        if 'inputs' in transaction:
-            normalized['inputs'] = transaction['inputs']
-            normalized['input_count'] = len(transaction['inputs'])
-        
-        if 'outputs' in transaction:
-            normalized['outputs'] = transaction['outputs']
-            normalized['output_count'] = len(transaction['outputs'])
-        
-        return normalized
+def convert_to_usd(value_btc: float, btc_price: float = 50000) -> float:
+    """Convert BTC value to USD."""
+    return value_btc * btc_price
 
-class HybridResolver:
-    """Resolves conflicts when wallet shows multiple class characteristics"""
+
+def calculate_time_difference(timestamp1: int, timestamp2: int, unit: str = 'days') -> float:
+    """Calculate time difference between two timestamps."""
+    diff_seconds = abs(timestamp2 - timestamp1)
     
-    PRIORITY_ORDER = [
-        'MIXER',  # Privacy concern takes precedence
-        'WHALE',  # Large holdings are significant
-        'TRADER', # Active trading behavior
-        'DUST_SWEEPER',  # Consolidation patterns
-        'HODLER'  # Default passive behavior
-    ]
+    if unit == 'days':
+        return diff_seconds / 86400
+    elif unit == 'hours':
+        return diff_seconds / 3600
+    elif unit == 'minutes':
+        return diff_seconds / 60
+    return diff_seconds
+
+
+def normalize_score(value: float, min_val: float = 0, max_val: float = 1) -> float:
+    """Normalize a value to [0, 1] range."""
+    if max_val == min_val:
+        return 0.5
+    normalized = (value - min_val) / (max_val - min_val)
+    return max(0, min(1, normalized))
+
+
+def calculate_entropy(values: List[float]) -> float:
+    """Calculate entropy of a value distribution."""
+    if not values:
+        return 0
     
-    @staticmethod
-    def resolve_classifications(scores: List[Dict[str, Any]]) -> str:
-        """
-        Resolve multiple classifications based on priority and confidence
-        
-        Args:
-            scores: List of classification results with confidence scores
-            
-        Returns:
-            Final classification string
-        """
-        if not scores:
-            return 'UNKNOWN'
-        
-        # Filter scores above threshold
-        valid_scores = [s for s in scores if s['confidence'] > 0.5]
-        
-        if not valid_scores:
-            return 'UNKNOWN'
-        
-        # Special case resolutions
-        classes = [s['class'] for s in valid_scores]
-        
-        # Trader-Whale: Check balance
-        if 'TRADER' in classes and 'WHALE' in classes:
-            whale_score = next(s for s in valid_scores if s['class'] == 'WHALE')
-            if whale_score.get('balance', 0) > 10_000_000:  # $10M threshold
-                return 'WHALE'
-            return 'TRADER'
-        
-        # Mixer always takes precedence due to privacy implications
-        if 'MIXER' in classes:
-            return 'MIXER'
-        
-        # Return highest confidence otherwise
-        return max(valid_scores, key=lambda x: x['confidence'])['class']
+    import math
+    from collections import Counter
+    
+    # Discretize values into bins
+    bins = 10
+    min_val, max_val = min(values), max(values)
+    if min_val == max_val:
+        return 0
+    
+    bin_size = (max_val - min_val) / bins
+    binned = [int((v - min_val) / bin_size) if v != max_val else bins - 1 for v in values]
+    
+    counts = Counter(binned)
+    total = len(values)
+    entropy = -sum((count / total) * math.log2(count / total) for count in counts.values())
+    
+    return entropy
+
+
+def calculate_gini_coefficient(values: List[float]) -> float:
+    """Calculate Gini coefficient for inequality measurement."""
+    if not values or len(values) < 2:
+        return 0
+    
+    sorted_values = sorted(values)
+    n = len(sorted_values)
+    cumsum = sum((i + 1) * val for i, val in enumerate(sorted_values))
+    
+    return (2 * cumsum) / (n * sum(sorted_values)) - (n + 1) / n
+
+
+def is_round_amount(value: float, tolerance: float = 0.01) -> bool:
+    """Check if value is a round number (e.g., 0.1, 1.0, 10.0)."""
+    powers = [0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000]
+    return any(abs(value - p) / p < tolerance for p in powers if p > 0)
