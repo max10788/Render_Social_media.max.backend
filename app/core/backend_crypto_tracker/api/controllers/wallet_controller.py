@@ -186,27 +186,24 @@ class BlockchainDataFetcher:
 class WalletController:
     """Controller für Wallet-Analyse-Operationen"""
     
+    def __init__(self, eth_provider=None, sol_provider=None, sui_provider=None):
+        self.data_fetcher = BlockchainDataFetcher(
+            eth_provider=eth_provider,
+            sol_provider=sol_provider,
+            sui_provider=sui_provider
+        )
+    
     @staticmethod
     def analyze_wallet(
         transactions: Optional[list] = None,
         wallet_address: Optional[str] = None,
         blockchain: Optional[str] = None,
         stage: int = 1,
-        fetch_limit: int = 100
+        fetch_limit: int = 100,
+        eth_provider=None,
+        sol_provider=None,
+        sui_provider=None
     ) -> Dict[str, Any]:
-        """
-        Analysiert eine Wallet basierend auf Transaktionen
-        
-        Args:
-            transactions: Liste von Transaktionen (optional wenn wallet_address + blockchain)
-            wallet_address: Wallet-Adresse (für automatisches Abrufen)
-            blockchain: Blockchain-Name (für automatisches Abrufen)
-            stage: Analysetiefe (1-3)
-            fetch_limit: Maximale Anzahl abzurufender Transaktionen
-            
-        Returns:
-            Analyse-Ergebnis als Dictionary
-        """
         try:
             # Validierung
             if stage not in [1, 2, 3]:
@@ -216,7 +213,6 @@ class WalletController:
                     'error_code': 'INVALID_STAGE'
                 }
             
-            # Entscheide ob Transaktionen abgerufen oder verwendet werden müssen
             if transactions is None:
                 if not wallet_address or not blockchain:
                     return {
@@ -227,7 +223,12 @@ class WalletController:
                 
                 # Hole Transaktionen von der Blockchain
                 try:
-                    transactions = BlockchainDataFetcher.fetch_transactions(
+                    data_fetcher = BlockchainDataFetcher(
+                        eth_provider=eth_provider,
+                        sol_provider=sol_provider,
+                        sui_provider=sui_provider
+                    )
+                    transactions = data_fetcher.fetch_transactions(
                         address=wallet_address,
                         blockchain=blockchain,
                         limit=fetch_limit
