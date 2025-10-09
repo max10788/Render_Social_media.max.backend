@@ -161,7 +161,9 @@ async def analyze_wallet(request: Request):
         fetch_limit = data.get('fetch_limit', 100)
         
         logger.info(f"[{request_id}] Starte Wallet-Analyse mit Stage {stage}")
-        result = WalletController.analyze_wallet(
+        
+        # ✅ KORREKTUR: await hinzugefügt
+        result = await WalletController.analyze_wallet(
             transactions=transactions,
             wallet_address=wallet_address,
             blockchain=blockchain,
@@ -269,7 +271,8 @@ async def get_top_matches(request: Request):
         
         logger.info(f"[{request_id}] Starte Top-Matches-Analyse mit Stage {stage}, Top-N={top_n}")
         
-        result = WalletController.get_top_matches(
+        # ✅ KORREKTUR: await hinzugefügt (Zeile 281)
+        result = await WalletController.get_top_matches(
             transactions=transactions,
             wallet_address=wallet_address,
             blockchain=blockchain,
@@ -394,7 +397,8 @@ async def batch_analyze(request: Request):
                 }
             )
         
-        result = WalletController.batch_analyze(
+        # ✅ KORREKTUR: await hinzugefügt
+        result = await WalletController.batch_analyze(
             wallets=wallets,
             stage=stage,
             fetch_limit=fetch_limit
