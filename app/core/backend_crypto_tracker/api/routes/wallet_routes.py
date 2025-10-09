@@ -283,13 +283,40 @@ async def get_top_matches(request: Request):
         fetch_limit = data.get('fetch_limit', 100)
         
         logger.info(f"[{request_id}] Starte Top-Matches-Analyse mit Stage {stage}, Top-N={top_n}")
+        
+        # Provider aus der Anwendung holen
+        try:
+            from app.core.backend_crypto_tracker.blockchain.ethereum_provider import get_ethereum_provider
+            from app.core.backend_crypto_tracker.blockchain.solana_provider import get_solana_provider
+            from app.core.backend_crypto_tracker.blockchain.sui_provider import get_sui_provider
+            
+            eth_provider = get_ethereum_provider()
+            sol_provider = get_solana_provider()
+            sui_provider = get_sui_provider()
+            
+            logger.info(f"[{request_id}] Blockchain-Provider erfolgreich geladen")
+        except Exception as e:
+            logger.error(f"[{request_id}] Fehler beim Laden der Blockchain-Provider: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    'success': False,
+                    'error': f'Fehler beim Laden der Blockchain-Provider: {str(e)}',
+                    'error_code': 'PROVIDER_LOAD_ERROR'
+                }
+            )
+        
+        # Wallet-Analyse mit Providern durchführen
         result = WalletController.get_top_matches(
             transactions=transactions,
             wallet_address=wallet_address,
             blockchain=blockchain,
             stage=stage,
             top_n=top_n,
-            fetch_limit=fetch_limit
+            fetch_limit=fetch_limit,
+            eth_provider=eth_provider,
+            sol_provider=sol_provider,
+            sui_provider=sui_provider
         )
         
         log_response_data(request_id, result)
