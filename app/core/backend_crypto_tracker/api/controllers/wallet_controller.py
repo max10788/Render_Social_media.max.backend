@@ -98,7 +98,25 @@ class BlockchainDataFetcher:
     def fetch_ethereum_transactions(address: str, limit: int = 100) -> List[Dict]:
         """Holt Ethereum-Transaktionen für eine Adresse"""
         try:
-            transactions = get_eth_transactions(address, limit=limit)
+            # Hier müssen wir den Provider aus der Anwendung holen
+            # Dies ist nur ein Beispiel - Sie müssen den tatsächlichen Provider aus Ihrer Anwendung übergeben
+            from app.core.backend_crypto_tracker.blockchain.ethereum_provider import get_ethereum_provider
+            provider = get_ethereum_provider()
+            
+            # Rufe die asynchrone Funktion auf
+            import asyncio
+            transactions = asyncio.run(execute_get_address_transactions(
+                provider=provider,
+                address=address,
+                start_block=0,
+                end_block=99999999,
+                sort='desc'  # Neueste Transaktionen zuerst, damit wir die Limit-Anzahl leichter extrahieren können
+            ))
+            
+            # Begrenze die Anzahl der Transaktionen
+            if transactions and len(transactions) > limit:
+                transactions = transactions[:limit]
+                
             return transactions if transactions else []
         except Exception as e:
             raise Exception(f"Fehler beim Abrufen von Ethereum-Transaktionen: {str(e)}")
