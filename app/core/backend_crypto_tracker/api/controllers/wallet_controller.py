@@ -94,23 +94,25 @@ def convert_timestamps_to_unix(transactions: List[Dict]) -> List[Dict]:
 class BlockchainDataFetcher:
     """Holt Transaktionsdaten von verschiedenen Blockchains"""
     
-    @staticmethod
-    def fetch_ethereum_transactions(address: str, limit: int = 100) -> List[Dict]:
+    def __init__(self, eth_provider=None, sol_provider=None, sui_provider=None):
+        self.eth_provider = eth_provider
+        self.sol_provider = sol_provider
+        self.sui_provider = sui_provider
+    
+    def fetch_ethereum_transactions(self, address: str, limit: int = 100) -> List[Dict]:
         """Holt Ethereum-Transaktionen für eine Adresse"""
         try:
-            # Hier müssen wir den Provider aus der Anwendung holen
-            # Dies ist nur ein Beispiel - Sie müssen den tatsächlichen Provider aus Ihrer Anwendung übergeben
-            from app.core.backend_crypto_tracker.blockchain.ethereum_provider import get_ethereum_provider
-            provider = get_ethereum_provider()
+            if not self.eth_provider:
+                raise Exception("Ethereum-Provider nicht konfiguriert")
             
             # Rufe die asynchrone Funktion auf
             import asyncio
             transactions = asyncio.run(execute_get_address_transactions(
-                provider=provider,
+                provider=self.eth_provider,
                 address=address,
                 start_block=0,
                 end_block=99999999,
-                sort='desc'  # Neueste Transaktionen zuerst, damit wir die Limit-Anzahl leichter extrahieren können
+                sort='desc'  # Neueste Transaktionen zuerst
             ))
             
             # Begrenze die Anzahl der Transaktionen
