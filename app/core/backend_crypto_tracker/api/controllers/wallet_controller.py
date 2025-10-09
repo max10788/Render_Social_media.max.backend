@@ -8,7 +8,6 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import logging
-import asyncio
 
 # Import the new analyzer class
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr import WalletClassifier
@@ -220,7 +219,7 @@ class WalletController:
     """Controller für Wallet-Analyse-Operationen"""
     
     @staticmethod
-    def analyze_wallet(
+    async def analyze_wallet(
         transactions: Optional[list] = None,
         wallet_address: Optional[str] = None,
         blockchain: Optional[str] = None,
@@ -259,6 +258,12 @@ class WalletController:
                     }
                 
                 try:
+                    logger.info(f"Hole Transaktionen für {wallet_address} von {blockchain}")
+                    transactions = await BlockchainDataFetcher.fetch_transactions(
+                        address=wallet_address,
+                        blockchain=blockchain,
+                        limit=fetch_limit
+                    )
                     logger.info(f"Erfolgreich {len(transactions)} Transaktionen abgerufen")
                 except Exception as e:
                     logger.error(f"Fehler beim Abrufen von Transaktionen: {str(e)}")
@@ -385,7 +390,7 @@ class WalletController:
             }
     
     @staticmethod
-    def get_top_matches(
+    async def get_top_matches(
         transactions: Optional[list] = None,
         wallet_address: Optional[str] = None,
         blockchain: Optional[str] = None,
@@ -419,12 +424,11 @@ class WalletController:
                 
                 try:
                     logger.info(f"Hole Transaktionen für {wallet_address} von {blockchain}")
-                    transactions = asyncio.run(
-                        BlockchainDataFetcher.fetch_transactions(
-                            address=wallet_address,
-                            blockchain=blockchain,
-                            limit=fetch_limit
-                        )
+                    # ✅ KORREKTUR: await statt asyncio.run()
+                    transactions = await BlockchainDataFetcher.fetch_transactions(
+                        address=wallet_address,
+                        blockchain=blockchain,
+                        limit=fetch_limit
                     )
                     logger.info(f"Erfolgreich {len(transactions)} Transaktionen abgerufen")
                 except Exception as e:
@@ -539,7 +543,7 @@ class WalletController:
             }
     
     @staticmethod
-    def batch_analyze(
+    async def batch_analyze(
         wallets: list,
         stage: int = 1,
         fetch_limit: int = 100
@@ -570,13 +574,11 @@ class WalletController:
                 if transactions is None and blockchain:
                     try:
                         logger.info(f"Hole Transaktionen für {address} von {blockchain}")
-                        # Rufe async-Funktion auf
-                        transactions = asyncio.run(
-                            BlockchainDataFetcher.fetch_transactions(
-                                address=address,
-                                blockchain=blockchain,
-                                limit=fetch_limit
-                            )
+                        # ✅ KORREKTUR: await statt asyncio.run()
+                        transactions = await BlockchainDataFetcher.fetch_transactions(
+                            address=address,
+                            blockchain=blockchain,
+                            limit=fetch_limit
                         )
                         logger.info(f"Erfolgreich {len(transactions)} Transaktionen abgerufen")
                     except Exception as e:
