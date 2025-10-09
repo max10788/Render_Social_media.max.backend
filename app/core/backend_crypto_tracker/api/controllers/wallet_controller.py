@@ -570,6 +570,7 @@ class WalletController:
                 if transactions is None and blockchain:
                     try:
                         logger.info(f"Hole Transaktionen für {address} von {blockchain}")
+                        # Rufe async-Funktion auf
                         transactions = asyncio.run(
                             BlockchainDataFetcher.fetch_transactions(
                                 address=address,
@@ -673,13 +674,4 @@ class WalletController:
                 'error': str(e),
                 'error_code': 'BATCH_ANALYSIS_ERROR',
                 'timestamp': datetime.utcnow().isoformat()
-            }f"Hole Transaktionen für {wallet_address} von {blockchain}")
-                    # Rufe async-Funktion auf
-                    transactions = asyncio.run(
-                        BlockchainDataFetcher.fetch_transactions(
-                            address=wallet_address,
-                            blockchain=blockchain,
-                            limit=fetch_limit
-                        )
-                    )
-                    logger.info(
+            }
