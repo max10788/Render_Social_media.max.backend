@@ -67,11 +67,9 @@ def sanitize_json_string(json_str: str) -> str:
         Bereinigter JSON-String
     """
     try:
-        # Versuche zuerst, normal zu parsen
         json.loads(json_str)
         return json_str
     except json.JSONDecodeError:
-        # Ersetze unmaskierte Anführungszeichen innerhalb von Werten
         string_pattern = re.compile(r'"(?:[^"\\]|\\.)*"')
         
         def replace_quotes_in_string(match):
@@ -107,7 +105,8 @@ async def analyze_wallet(request: Request):
     Request Body:
     {
         "wallet_address": "0x123...",  // Optional
-        "transactions": [...],          // Required
+        "transactions": [...],          // Required (oder wallet_address + blockchain)
+        "blockchain": "ethereum",       // Optional (für Auto-Fetch)
         "stage": 1                      // Optional, default: 1
     }
     """
@@ -116,7 +115,6 @@ async def analyze_wallet(request: Request):
     logger.info(f"[{request_id}] Neue Wallet-Analyse-Anfrage gestartet")
     
     try:
-        # JSON-Body mit Fehlerbehandlung parsen
         try:
             raw_body = await request.body()
             body_str = raw_body.decode('utf-8', errors='replace')
@@ -156,15 +154,19 @@ async def analyze_wallet(request: Request):
                 }
             )
         
-        transactions = data.get('transactions', [])
+        transactions = data.get('transactions')
         stage = data.get('stage', 1)
         wallet_address = data.get('wallet_address')
+        blockchain = data.get('blockchain')
+        fetch_limit = data.get('fetch_limit', 100)
         
         logger.info(f"[{request_id}] Starte Wallet-Analyse mit Stage {stage}")
         result = WalletController.analyze_wallet(
             transactions=transactions,
+            wallet_address=wallet_address,
+            blockchain=blockchain,
             stage=stage,
-            wallet_address=wallet_address
+            fetch_limit=fetch_limit
         )
         
         log_response_data(request_id, result)
@@ -219,7 +221,6 @@ async def get_top_matches(request: Request):
     logger.info(f"[{request_id}] Neue Top-Matches-Anfrage gestartet")
     
     try:
-        # JSON-Body mit Fehlerbehandlung parsen
         try:
             raw_body = await request.body()
             body_str = raw_body.decode('utf-8', errors='replace')
@@ -268,10 +269,6 @@ async def get_top_matches(request: Request):
         
         logger.info(f"[{request_id}] Starte Top-Matches-Analyse mit Stage {stage}, Top-N={top_n}")
         
-        # Provider-Imports wurden entfernt - sie werden jetzt im Controller verwaltet
-        # Der Controller wird die Provider bei Bedarf selbst instanziieren
-        
-        # Wallet-Analyse durchführen
         result = WalletController.get_top_matches(
             transactions=transactions,
             wallet_address=wallet_address,
@@ -323,14 +320,16 @@ async def batch_analyze(request: Request):
         "wallets": [
             {
                 "address": "0x123...",
-                "transactions": [...]
+                "transactions": [...],
+                "blockchain": "ethereum"  // Optional für Auto-Fetch
             },
             {
                 "address": "0x456...",
                 "transactions": [...]
             }
         ],
-        "stage": 1  // Optional, default: 1
+        "stage": 1,  // Optional, default: 1
+        "fetch_limit": 100  // Optional, default: 100
     }
     """
     request_id = str(uuid.uuid4())
@@ -338,7 +337,6 @@ async def batch_analyze(request: Request):
     logger.info(f"[{request_id}] Neue Batch-Analyse-Anfrage gestartet")
     
     try:
-        # JSON-Body mit Fehlerbehandlung parsen
         try:
             raw_body = await request.body()
             body_str = raw_body.decode('utf-8', errors='replace')
@@ -378,10 +376,10 @@ async def batch_analyze(request: Request):
         
         wallets = data.get('wallets', [])
         stage = data.get('stage', 1)
+        fetch_limit = data.get('fetch_limit', 100)
         
         logger.info(f"[{request_id}] Batch-Analyse mit {len(wallets)} Wallets, Stage {stage}")
         
-        # Maskierte Wallet-Adressen für Logging
         masked_wallets = [mask_wallet_address(w.get('address')) for w in wallets]
         logger.info(f"[{request_id}] Wallet-Adressen: {masked_wallets}")
         
@@ -398,7 +396,8 @@ async def batch_analyze(request: Request):
         
         result = WalletController.batch_analyze(
             wallets=wallets,
-            stage=stage
+            stage=stage,
+            fetch_limit=fetch_limit
         )
         
         if not result.get('success'):
@@ -435,14 +434,6 @@ async def health_check():
     GET /api/v1/wallet/health
     
     Health-Check für den Wallet-Analyse-Service
-    
-    Response:
-    {
-        "status": "healthy",
-        "service": "wallet-analyzer",
-        "version": "1.0.0",
-        "timestamp": "2025-01-15T10:30:00"
-    }
     """
     request_id = str(uuid.uuid4())
     logger.info(f"[{request_id}] Health-Check angefordert")
