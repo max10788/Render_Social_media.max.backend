@@ -72,37 +72,25 @@ def sanitize_json_string(json_str: str) -> str:
         return json_str
     except json.JSONDecodeError:
         # Ersetze unmaskierte Anführungszeichen innerhalb von Werten
-        # Muster: "key": "value with "quotes" inside"
-        # Wir wollen nur Anführungszeichen innerhalb von Strings maskieren
-        
-        # Schritt 1: Finde alle String-Literale (zwischen Anführungszeichen)
         string_pattern = re.compile(r'"(?:[^"\\]|\\.)*"')
         
         def replace_quotes_in_string(match):
             string = match.group(0)
-            # Ersetze alle unmaskierten Anführungszeichen innerhalb des Strings
-            # außer dem ersten und letzten Zeichen
             if len(string) > 2:
                 inner = string[1:-1]
-                # Ersetze \" durch einen temporären Platzhalter
                 inner = inner.replace('\\"', '__TEMP_QUOTE__')
-                # Ersetze alle verbleibenden " durch \"
                 inner = inner.replace('"', '\\"')
-                # Stelle die maskierten Anführungszeichen wieder her
                 inner = inner.replace('__TEMP_QUOTE__', '\\"')
                 return '"' + inner + '"'
             return string
         
-        # Wende die Ersetzung nur auf String-Literale an
         sanitized = string_pattern.sub(replace_quotes_in_string, json_str)
         
-        # Versuche erneut zu parsen
         try:
             json.loads(sanitized)
             return sanitized
         except json.JSONDecodeError as e:
             logger.warning(f"Konnte JSON nicht bereinigen: {str(e)}")
-            # Gib das Original zurück, wenn die Bereinigung fehlschlägt
             return json_str
 
 # Erstelle Router
@@ -133,11 +121,9 @@ async def analyze_wallet(request: Request):
             raw_body = await request.body()
             body_str = raw_body.decode('utf-8', errors='replace')
             
-            # Versuche zuerst, normal zu parsen
             try:
                 data = json.loads(body_str)
             except json.JSONDecodeError:
-                # Versuche, den JSON-String zu bereinigen
                 logger.warning(f"[{request_id}] Ungültiges JSON erkannt, versuche Bereinigung...")
                 sanitized_body = sanitize_json_string(body_str)
                 data = json.loads(sanitized_body)
@@ -238,11 +224,9 @@ async def get_top_matches(request: Request):
             raw_body = await request.body()
             body_str = raw_body.decode('utf-8', errors='replace')
             
-            # Versuche zuerst, normal zu parsen
             try:
                 data = json.loads(body_str)
             except json.JSONDecodeError:
-                # Versuche, den JSON-String zu bereinigen
                 logger.warning(f"[{request_id}] Ungültiges JSON erkannt, versuche Bereinigung...")
                 sanitized_body = sanitize_json_string(body_str)
                 data = json.loads(sanitized_body)
@@ -284,39 +268,17 @@ async def get_top_matches(request: Request):
         
         logger.info(f"[{request_id}] Starte Top-Matches-Analyse mit Stage {stage}, Top-N={top_n}")
         
-        # Provider aus der Anwendung holen
-        try:
-            from app.core.backend_crypto_tracker.blockchain.ethereum_provider import get_ethereum_provider
-            from app.core.backend_crypto_tracker.blockchain.solana_provider import get_solana_provider
-            from app.core.backend_crypto_tracker.blockchain.sui_provider import get_sui_provider
-            
-            eth_provider = get_ethereum_provider()
-            sol_provider = get_solana_provider()
-            sui_provider = get_sui_provider()
-            
-            logger.info(f"[{request_id}] Blockchain-Provider erfolgreich geladen")
-        except Exception as e:
-            logger.error(f"[{request_id}] Fehler beim Laden der Blockchain-Provider: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail={
-                    'success': False,
-                    'error': f'Fehler beim Laden der Blockchain-Provider: {str(e)}',
-                    'error_code': 'PROVIDER_LOAD_ERROR'
-                }
-            )
+        # Provider-Imports wurden entfernt - sie werden jetzt im Controller verwaltet
+        # Der Controller wird die Provider bei Bedarf selbst instanziieren
         
-        # Wallet-Analyse mit Providern durchführen
+        # Wallet-Analyse durchführen
         result = WalletController.get_top_matches(
             transactions=transactions,
             wallet_address=wallet_address,
             blockchain=blockchain,
             stage=stage,
             top_n=top_n,
-            fetch_limit=fetch_limit,
-            eth_provider=eth_provider,
-            sol_provider=sol_provider,
-            sui_provider=sui_provider
+            fetch_limit=fetch_limit
         )
         
         log_response_data(request_id, result)
@@ -381,11 +343,9 @@ async def batch_analyze(request: Request):
             raw_body = await request.body()
             body_str = raw_body.decode('utf-8', errors='replace')
             
-            # Versuche zuerst, normal zu parsen
             try:
                 data = json.loads(body_str)
             except json.JSONDecodeError:
-                # Versuche, den JSON-String zu bereinigen
                 logger.warning(f"[{request_id}] Ungültiges JSON erkannt, versuche Bereinigung...")
                 sanitized_body = sanitize_json_string(body_str)
                 data = json.loads(sanitized_body)
