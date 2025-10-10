@@ -17,6 +17,8 @@ from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_tran
 
 logger = logging.getLogger(__name__)
 
+# ✅ ETHERSCAN KONFIGURATION
+ETHERSCAN_BASE_URL = "https://api.etherscan.io/api"
 
 def convert_numpy_types(obj):
     """Konvertiert numpy/pandas-Typen rekursiv in native Python-Typen"""
@@ -77,7 +79,7 @@ def convert_timestamps_to_unix(transactions: List[Dict]) -> List[Dict]:
 
 
 class BlockchainDataFetcher:
-    """Holt Transaktionsdaten von verschiedenen Blockchains - OHNE Provider"""
+    """Holt Transaktionsdaten von verschiedenen Blockchains"""
     
     @staticmethod
     async def fetch_ethereum_transactions(address: str, limit: int = 100) -> List[Dict]:
@@ -92,32 +94,43 @@ class BlockchainDataFetcher:
             Liste von Transaktionen
         """
         try:
-            # API-Key aus Umgebungsvariablen holen
+            # ✅ API-Key aus Umgebungsvariablen holen
             api_key = os.getenv('ETHERSCAN_API_KEY') or os.getenv('ETHEREUM_API_KEY')
             
             if not api_key:
                 raise Exception(
-                    "Kein Etherscan API-Key gefunden. "
-                    "Bitte setzen Sie ETHERSCAN_API_KEY oder ETHEREUM_API_KEY in Ihrer .env Datei"
+                    "❌ Kein Etherscan API-Key gefunden. "
+                    "Bitte setzen Sie ETHERSCAN_API_KEY in Ihrer .env Datei"
                 )
             
-            logger.info(f"Rufe Ethereum-Transaktionen für {address} ab...")
+            logger.info(f"🔍 Rufe Ethereum-Transaktionen für {address} ab...")
+            logger.info(f"   API-Key vorhanden: {api_key[:8]}...{api_key[-4:]}")
+            logger.info(f"   Base URL: {ETHERSCAN_BASE_URL}")
             
-            # ✅ Direkte Funktion ohne Provider
+            # ✅ Direkte Funktion mit expliziter base_url
             transactions = await get_eth_transactions(
                 address=address,
                 api_key=api_key,
                 start_block=0,
                 end_block=99999999,
-                sort='desc'
+                sort='desc',
+                base_url=ETHERSCAN_BASE_URL  # ✅ Explizit gesetzt
             )
             
+            # ✅ Behandle None-Fall
             if transactions is None:
-                raise Exception("API-Aufruf fehlgeschlagen - keine Daten zurückgegeben")
+                logger.error("❌ API-Aufruf fehlgeschlagen - None zurückgegeben")
+                raise Exception("Etherscan API-Aufruf fehlgeschlagen")
+            
+            # ✅ Leere Liste ist OK (keine Transaktionen)
+            if len(transactions) == 0:
+                logger.info("ℹ️  Keine Transaktionen gefunden (neue Wallet?)")
+                return []
             
             # Begrenze die Anzahl der Transaktionen
             if len(transactions) > limit:
                 transactions = transactions[:limit]
+                logger.info(f"📊 Limitiert auf {limit} von {len(transactions)} Transaktionen")
             
             # Konvertiere datetime-Objekte zu Unix-Timestamps
             for tx in transactions:
@@ -128,7 +141,7 @@ class BlockchainDataFetcher:
             return transactions
             
         except Exception as e:
-            logger.error(f"❌ Fehler beim Abrufen von Ethereum-Transaktionen: {str(e)}")
+            logger.error(f"❌ Fehler beim Abrufen von Ethereum-Transaktionen: {str(e)}", exc_info=True)
             raise Exception(f"Ethereum-API-Fehler: {str(e)}")
     
     @staticmethod
@@ -238,11 +251,25 @@ class WalletController:
                         'error_code': 'FETCH_ERROR'
                     }
             
+            # ✅ WICHTIG: Leere Transaktionsliste ist kein Fehler mehr
             if not transactions:
+                logger.info("ℹ️  Keine Transaktionen - wahrscheinlich neue Wallet")
                 return {
-                    'success': False,
-                    'error': 'Keine Transaktionen verfügbar',
-                    'error_code': 'NO_TRANSACTIONS'
+                    'success': True,
+                    'data': {
+                        'wallet_address': wallet_address,
+                        'blockchain': blockchain,
+                        'data_source': 'blockchain' if wallet_address and blockchain else 'manual',
+                        'analysis': {
+                            'dominant_type': 'New Wallet',
+                            'confidence': 1.0,
+                            'stage': int(stage),
+                            'transaction_count': 0
+                        },
+                        'classifications': [],
+                        'message': 'Keine Transaktionen gefunden - dies ist eine neue oder inaktive Wallet'
+                    },
+                    'timestamp': datetime.utcnow().isoformat()
                 }
             
             try:
@@ -338,7 +365,9 @@ class WalletController:
             return {
                 'success': False,
                 'error': str(e),
-                'error_code': 'ANALYSIS_ERROR',
+                'error_code': 'BATCH_ANALYSIS_ERROR',
+                'timestamp': datetime.utcnow().isoformat()
+            }'ANALYSIS_ERROR',
                 'timestamp': datetime.utcnow().isoformat()
             }
     
@@ -377,11 +406,28 @@ class WalletController:
                         'error_code': 'FETCH_ERROR'
                     }
             
+            # ✅ Leere Transaktionsliste ist OK
             if not transactions:
+                logger.info("ℹ️  Keine Transaktionen - neue Wallet")
                 return {
-                    'success': False,
-                    'error': 'Keine Transaktionen verfügbar',
-                    'error_code': 'NO_TRANSACTIONS'
+                    'success': True,
+                    'data': {
+                        'wallet_address': wallet_address,
+                        'blockchain': blockchain,
+                        'data_source': 'blockchain' if wallet_address and blockchain else 'manual',
+                        'top_matches': [
+                            {
+                                'rank': 1,
+                                'type': 'New Wallet',
+                                'score': 1.0,
+                                'is_match': True
+                            }
+                        ],
+                        'stage': int(stage),
+                        'transaction_count': 0,
+                        'message': 'Keine Transaktionen gefunden - neue oder inaktive Wallet'
+                    },
+                    'timestamp': datetime.utcnow().isoformat()
                 }
             
             try:
@@ -505,12 +551,16 @@ class WalletController:
                         })
                         continue
                 
+                # ✅ Leere Transaktionen sind OK
                 if not transactions:
                     results.append({
                         'address': address,
                         'blockchain': blockchain,
-                        'success': False,
-                        'error': 'Keine Transaktionen verfügbar'
+                        'success': True,
+                        'dominant_type': 'New Wallet',
+                        'confidence': 1.0,
+                        'transaction_count': 0,
+                        'message': 'Keine Transaktionen'
                     })
                     continue
                 
@@ -581,6 +631,4 @@ class WalletController:
             return {
                 'success': False,
                 'error': str(e),
-                'error_code': 'BATCH_ANALYSIS_ERROR',
-                'timestamp': datetime.utcnow().isoformat()
-            }
+                'error_code':
