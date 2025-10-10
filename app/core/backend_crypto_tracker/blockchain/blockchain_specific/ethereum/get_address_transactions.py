@@ -1,5 +1,4 @@
 # app/core/backend_crypto_tracker/blockchain/blockchain_specific/ethereum/get_address_transactions.py
-
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import aiohttp
@@ -40,24 +39,36 @@ async def execute_get_address_transactions(
             'apikey': api_key
         }
         
+        logger.info(f"🔍 Etherscan API Request: {base_url}")
+        logger.info(f"   Address: {address}")
+        logger.info(f"   Blocks: {start_block} bis {end_block}")
+        
         async with aiohttp.ClientSession() as session:
             async with session.get(base_url, params=params) as response:
                 if response.status != 200:
-                    logger.error(f"HTTP Error {response.status}: {await response.text()}")
+                    logger.error(f"❌ HTTP Error {response.status}: {await response.text()}")
                     return None
                 
                 data = await response.json()
+                
+                # ✅ Bessere Fehlerbehandlung
+                if not data:
+                    logger.error("❌ Keine Daten von Etherscan API erhalten")
+                    return None
+                
+                logger.info(f"📥 Etherscan Response Status: {data.get('status')}, Message: {data.get('message')}")
         
-        if data and data.get('status') == '1' and data.get('result'):
+        # ✅ Prüfe auf erfolgreiche API-Antwort
+        if data.get('status') == '1' and data.get('result'):
             transactions = []
             for tx in data['result']:
                 transactions.append({
-                    'hash': tx.get('hash'),  # ✅ Geändert von 'tx_hash' zu 'hash'
+                    'hash': tx.get('hash'),
                     'tx_hash': tx.get('hash'),
                     'block_number': int(tx.get('blockNumber', 0)),
                     'timestamp': datetime.fromtimestamp(int(tx.get('timeStamp', 0))),
-                    'from': tx.get('from'),  # ✅ Hinzugefügt
-                    'to': tx.get('to'),  # ✅ Hinzugefügt
+                    'from': tx.get('from'),
+                    'to': tx.get('to'),
                     'from_address': tx.get('from'),
                     'to_address': tx.get('to'),
                     'value': int(tx.get('value', 0)) / 10**18,
@@ -69,17 +80,31 @@ async def execute_get_address_transactions(
                     'transaction_index': int(tx.get('transactionIndex', 0)),
                     'confirmations': int(tx.get('confirmations', 0)),
                     'is_error': tx.get('isError', '0') == '1',
-                    # Füge leere inputs/outputs hinzu für Kompatibilität
                     'inputs': [],
                     'outputs': []
                 })
             
-            logger.info(f"Erfolgreich {len(transactions)} Transaktionen für {address} abgerufen")
+            logger.info(f"✅ {len(transactions)} Transaktionen für {address} abgerufen")
             return transactions
+        
+        # ✅ Detaillierte Fehlerausgabe
+        elif data.get('status') == '0':
+            message = data.get('message', 'Unknown error')
+            result = data.get('result', '')
+            
+            # Leere Adresse ist OK (keine Transaktionen)
+            if 'No transactions found' in str(result) or message == 'No transactions found':
+                logger.info(f"ℹ️  Keine Transaktionen für {address} gefunden (neue Adresse?)")
+                return []
+            
+            # Andere Fehler
+            logger.error(f"❌ Etherscan API Error: {message} - {result}")
+            return None
+        
         else:
-            logger.warning(f"Keine Transaktionen gefunden oder API-Fehler: {data.get('message')}")
+            logger.warning(f"⚠️  Unerwartete API-Antwort: {data}")
             return []
             
     except Exception as e:
-        logger.error(f"Error fetching Ethereum address transactions: {e}")
+        logger.error(f"❌ Exception beim Abrufen von Ethereum-Transaktionen: {e}", exc_info=True)
         return None
