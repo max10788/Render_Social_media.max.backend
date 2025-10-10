@@ -1,15 +1,12 @@
-# ============================================================================
 # api/controllers/wallet_controller.py
-# ============================================================================
-"""Controller für Wallet-Analyse-Endpunkte - Direkte Blockchain-Integration"""
 
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import numpy as np
 import pandas as pd
 import logging
+import os
 
-# Import the new analyzer class
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr import WalletClassifier
 
 # Blockchain data fetchers - Direkte Imports
@@ -18,7 +15,6 @@ from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_c
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_transaction_details import execute_get_transaction_details as get_sol_transaction
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_transaction_blocks import execute_get_transaction_blocks as get_sui_transactions
 
-# Logger konfigurieren
 logger = logging.getLogger(__name__)
 
 
@@ -46,50 +42,34 @@ def convert_numpy_types(obj):
 
 
 def convert_timestamps_to_unix(transactions: List[Dict]) -> List[Dict]:
-    """
-    Konvertiert Zeitstempel von ISO-Format zu Unix-Timestamps
-    
-    Args:
-        transactions: Liste von Transaktions-Dictionaries
-        
-    Returns:
-        Transaktionen mit konvertierten Zeitstempeln
-    """
+    """Konvertiert Zeitstempel von ISO-Format zu Unix-Timestamps"""
     converted = []
     
     for tx in transactions:
         tx_copy = tx.copy()
         
-        # Konvertiere Zeitstempel, falls vorhanden
         if 'timestamp' in tx_copy:
             timestamp_value = tx_copy['timestamp']
             
-            # Wenn es bereits ein numerischer Wert ist, nichts tun
             if isinstance(timestamp_value, (int, float)):
                 converted.append(tx_copy)
                 continue
             
-            # Wenn es ein datetime-Objekt ist
             if isinstance(timestamp_value, datetime):
                 tx_copy['timestamp'] = int(timestamp_value.timestamp())
                 converted.append(tx_copy)
                 continue
                 
             try:
-                # Versuche, ISO-Format zu parsen
                 if isinstance(timestamp_value, str):
-                    # Entferne 'Z' für UTC und ersetze durch +00:00
                     if timestamp_value.endswith('Z'):
                         timestamp_value = timestamp_value[:-1] + '+00:00'
                     
-                    # Parse den Zeitstempel
                     dt = datetime.fromisoformat(timestamp_value)
                     tx_copy['timestamp'] = int(dt.timestamp())
                     logger.debug(f"Konvertiert {tx['timestamp']} zu {tx_copy['timestamp']}")
             except (ValueError, TypeError) as e:
                 logger.warning(f"Konnte Zeitstempel nicht konvertieren: {tx['timestamp']}, Fehler: {str(e)}")
-                # Behalte den Originalwert bei Fehlern
-                pass
         
         converted.append(tx_copy)
     
@@ -97,70 +77,68 @@ def convert_timestamps_to_unix(transactions: List[Dict]) -> List[Dict]:
 
 
 class BlockchainDataFetcher:
-    """Holt Transaktionsdaten von verschiedenen Blockchains - OHNE Provider-Abhängigkeit"""
+    """Holt Transaktionsdaten von verschiedenen Blockchains - OHNE Provider"""
     
     @staticmethod
     async def fetch_ethereum_transactions(address: str, limit: int = 100) -> List[Dict]:
         """
-        Holt Ethereum-Transaktionen für eine Adresse
+        Holt Ethereum-Transaktionen für eine Adresse direkt von Etherscan
         
-        WICHTIG: Diese Funktion benötigt einen konfigurierten Ethereum-Provider.
-        Falls nicht verfügbar, wird eine Exception geworfen.
+        Args:
+            address: Ethereum-Adresse
+            limit: Maximale Anzahl von Transaktionen
+            
+        Returns:
+            Liste von Transaktionen
         """
         try:
-            # Versuche, den Provider aus der Anwendung zu holen
-            try:
-                from app.core.backend_crypto_tracker.blockchain.ethereum_provider import get_ethereum_provider
-                provider = get_ethereum_provider()
-            except ImportError:
-                logger.warning("Ethereum-Provider nicht verfügbar - erstelle Mock-Provider")
-                # Erstelle einen einfachen Mock-Provider falls nicht vorhanden
-                # HINWEIS: Dies sollte durch echte Provider-Konfiguration ersetzt werden
-                class MockProvider:
-                    def __init__(self):
-                        self.api_key = None
-                        self.base_url = "https://api.etherscan.io/api"
-                    
-                    async def _make_request(self, url, params):
-                        raise Exception("Ethereum-Provider nicht konfiguriert. Bitte konfigurieren Sie einen API-Key.")
-                
-                provider = MockProvider()
+            # API-Key aus Umgebungsvariablen holen
+            api_key = os.getenv('ETHERSCAN_API_KEY') or os.getenv('ETHEREUM_API_KEY')
             
-            # Rufe die Funktion auf
+            if not api_key:
+                raise Exception(
+                    "Kein Etherscan API-Key gefunden. "
+                    "Bitte setzen Sie ETHERSCAN_API_KEY oder ETHEREUM_API_KEY in Ihrer .env Datei"
+                )
+            
+            logger.info(f"Rufe Ethereum-Transaktionen für {address} ab...")
+            
+            # ✅ Direkte Funktion ohne Provider
             transactions = await get_eth_transactions(
-                provider=provider,
                 address=address,
+                api_key=api_key,
                 start_block=0,
                 end_block=99999999,
-                sort='desc'  # Neueste Transaktionen zuerst
+                sort='desc'
             )
             
+            if transactions is None:
+                raise Exception("API-Aufruf fehlgeschlagen - keine Daten zurückgegeben")
+            
             # Begrenze die Anzahl der Transaktionen
-            if transactions and len(transactions) > limit:
+            if len(transactions) > limit:
                 transactions = transactions[:limit]
             
             # Konvertiere datetime-Objekte zu Unix-Timestamps
-            if transactions:
-                for tx in transactions:
-                    if 'timestamp' in tx and isinstance(tx['timestamp'], datetime):
-                        tx['timestamp'] = int(tx['timestamp'].timestamp())
-                
-            return transactions if transactions else []
+            for tx in transactions:
+                if 'timestamp' in tx and isinstance(tx['timestamp'], datetime):
+                    tx['timestamp'] = int(tx['timestamp'].timestamp())
+            
+            logger.info(f"✅ {len(transactions)} Ethereum-Transaktionen erfolgreich abgerufen")
+            return transactions
             
         except Exception as e:
-            logger.error(f"Fehler beim Abrufen von Ethereum-Transaktionen: {str(e)}")
-            raise Exception(f"Fehler beim Abrufen von Ethereum-Transaktionen: {str(e)}")
+            logger.error(f"❌ Fehler beim Abrufen von Ethereum-Transaktionen: {str(e)}")
+            raise Exception(f"Ethereum-API-Fehler: {str(e)}")
     
     @staticmethod
     def fetch_solana_transactions_sync(address: str, limit: int = 100) -> List[Dict]:
-        """Holt Solana-Transaktionen für eine Adresse (synchron)"""
+        """Holt Solana-Transaktionen für eine Adresse"""
         try:
-            # Hole Signaturen
             signatures = get_sol_signatures(address, limit=limit)
             if not signatures:
                 return []
             
-            # Hole Details für jede Signatur
             transactions = []
             for sig_info in signatures:
                 signature = sig_info.get('signature')
@@ -172,17 +150,17 @@ class BlockchainDataFetcher:
             return transactions
         except Exception as e:
             logger.error(f"Fehler beim Abrufen von Solana-Transaktionen: {str(e)}")
-            raise Exception(f"Fehler beim Abrufen von Solana-Transaktionen: {str(e)}")
+            raise Exception(f"Solana-API-Fehler: {str(e)}")
     
     @staticmethod
     def fetch_sui_transactions_sync(address: str, limit: int = 100) -> List[Dict]:
-        """Holt Sui-Transaktionen für eine Adresse (synchron)"""
+        """Holt Sui-Transaktionen für eine Adresse"""
         try:
             transactions = get_sui_transactions(address, limit=limit)
             return transactions if transactions else []
         except Exception as e:
             logger.error(f"Fehler beim Abrufen von Sui-Transaktionen: {str(e)}")
-            raise Exception(f"Fehler beim Abrufen von Sui-Transaktionen: {str(e)}")
+            raise Exception(f"Sui-API-Fehler: {str(e)}")
     
     @staticmethod
     async def fetch_transactions(
@@ -203,16 +181,17 @@ class BlockchainDataFetcher:
         """
         blockchain = blockchain.lower()
         
-        if blockchain == 'ethereum' or blockchain == 'eth':
+        if blockchain in ['ethereum', 'eth']:
             return await BlockchainDataFetcher.fetch_ethereum_transactions(address, limit)
-        elif blockchain == 'solana' or blockchain == 'sol':
-            # Solana-Funktionen sind synchron
+        elif blockchain in ['solana', 'sol']:
             return BlockchainDataFetcher.fetch_solana_transactions_sync(address, limit)
         elif blockchain == 'sui':
-            # Sui-Funktionen sind synchron
             return BlockchainDataFetcher.fetch_sui_transactions_sync(address, limit)
         else:
-            raise ValueError(f"Unbekannte Blockchain: {blockchain}. Unterstützte Blockchains: ethereum, solana, sui")
+            raise ValueError(
+                f"Unbekannte Blockchain: {blockchain}. "
+                f"Unterstützte Blockchains: ethereum, solana, sui"
+            )
 
 
 class WalletController:
@@ -226,21 +205,8 @@ class WalletController:
         stage: int = 1,
         fetch_limit: int = 100
     ) -> Dict[str, Any]:
-        """
-        Analysiert eine Wallet
-        
-        Args:
-            transactions: Liste von Transaktionen (optional)
-            wallet_address: Wallet-Adresse (optional, für Auto-Fetch)
-            blockchain: Blockchain-Name (optional, für Auto-Fetch)
-            stage: Analysetiefe (1-3)
-            fetch_limit: Maximale Anzahl abzurufender Transaktionen
-            
-        Returns:
-            Analyse-Ergebnis
-        """
+        """Analysiert eine Wallet"""
         try:
-            # Validierung
             if stage not in [1, 2, 3]:
                 return {
                     'success': False,
@@ -248,7 +214,6 @@ class WalletController:
                     'error_code': 'INVALID_STAGE'
                 }
             
-            # Hole Transaktionen falls nötig
             if transactions is None:
                 if not wallet_address or not blockchain:
                     return {
@@ -280,7 +245,6 @@ class WalletController:
                     'error_code': 'NO_TRANSACTIONS'
                 }
             
-            # Konvertiere Zeitstempel zu Unix-Timestamps
             try:
                 logger.info(f"Konvertiere Zeitstempel für {len(transactions)} Transaktionen")
                 transactions = convert_timestamps_to_unix(transactions)
@@ -292,10 +256,8 @@ class WalletController:
                     'error_code': 'TIMESTAMP_CONVERSION_ERROR'
                 }
             
-            # Analysiere Wallet mit dem WalletClassifier
             classifier = WalletClassifier()
             
-            # Bereite Blockchain-Daten für den Analyzer vor
             blockchain_data = {
                 'txs': transactions,
                 'balance': 0,
@@ -303,35 +265,28 @@ class WalletController:
                 'outputs': []
             }
             
-            # Füge Transaktionsdetails hinzu
             for tx in transactions:
                 tx_hash = tx.get('hash', tx.get('tx_hash', ''))
                 
-                # Verarbeite Inputs
                 for inp in tx.get('inputs', []):
                     inp['tx_hash'] = tx_hash
                     blockchain_data['inputs'].append(inp)
                 
-                # Verarbeite Outputs
                 for out in tx.get('outputs', []):
                     out['tx_hash'] = tx_hash
                     blockchain_data['outputs'].append(out)
             
-            # Führe die Analyse durch
             results = classifier.classify(
                 address=wallet_address or 'unknown',
                 blockchain_data=blockchain_data,
                 config={'stage': stage}
             )
             
-            # Konvertiere alle numpy-Typen zu nativen Python-Typen
             results = convert_numpy_types(results)
             
-            # Formatiere Response
             dominant_type = results.get('primary_class', 'Unknown')
             confidence = 0.0
             
-            # Extrahiere den höchsten Score als Konfidenz
             if dominant_type != 'Unknown' and dominant_type in results:
                 confidence = results[dominant_type].get('score', 0.0)
             
@@ -352,7 +307,6 @@ class WalletController:
                 'timestamp': datetime.utcnow().isoformat()
             }
             
-            # Füge alle Klassifizierungen hinzu (sortiert nach Score)
             for wallet_type, data in sorted(
                 results.items(),
                 key=lambda x: float(x[1].get('score', 0)) if isinstance(x[1], dict) else 0,
@@ -368,7 +322,6 @@ class WalletController:
                     'metrics': {}
                 }
                 
-                # Konvertiere Metriken sicher
                 metrics = data.get('metrics', {})
                 if metrics:
                     classification['metrics'] = {
@@ -398,22 +351,8 @@ class WalletController:
         top_n: int = 3,
         fetch_limit: int = 100
     ) -> Dict[str, Any]:
-        """
-        Gibt die Top-N wahrscheinlichsten Wallet-Typen zurück
-        
-        Args:
-            transactions: Liste von Transaktionen (optional)
-            wallet_address: Wallet-Adresse (optional, für Auto-Fetch)
-            blockchain: Blockchain-Name (optional, für Auto-Fetch)
-            stage: Analysetiefe (1-3)
-            top_n: Anzahl der Top-Matches
-            fetch_limit: Maximale Anzahl abzurufender Transaktionen
-            
-        Returns:
-            Top-N Wallet-Typen
-        """
+        """Gibt die Top-N wahrscheinlichsten Wallet-Typen zurück"""
         try:
-            # Hole Transaktionen falls nötig
             if transactions is None:
                 if not wallet_address or not blockchain:
                     return {
@@ -424,7 +363,6 @@ class WalletController:
                 
                 try:
                     logger.info(f"Hole Transaktionen für {wallet_address} von {blockchain}")
-                    # ✅ KORREKTUR: await statt asyncio.run()
                     transactions = await BlockchainDataFetcher.fetch_transactions(
                         address=wallet_address,
                         blockchain=blockchain,
@@ -446,7 +384,6 @@ class WalletController:
                     'error_code': 'NO_TRANSACTIONS'
                 }
             
-            # Konvertiere Zeitstempel zu Unix-Timestamps
             try:
                 logger.info(f"Konvertiere Zeitstempel für {len(transactions)} Transaktionen")
                 transactions = convert_timestamps_to_unix(transactions)
@@ -458,10 +395,8 @@ class WalletController:
                     'error_code': 'TIMESTAMP_CONVERSION_ERROR'
                 }
             
-            # Analysiere Wallet mit dem WalletClassifier
             classifier = WalletClassifier()
             
-            # Bereite Blockchain-Daten für den Analyzer vor
             blockchain_data = {
                 'txs': transactions,
                 'balance': 0,
@@ -469,31 +404,25 @@ class WalletController:
                 'outputs': []
             }
             
-            # Füge Transaktionsdetails hinzu
             for tx in transactions:
                 tx_hash = tx.get('hash', tx.get('tx_hash', ''))
                 
-                # Verarbeite Inputs
                 for inp in tx.get('inputs', []):
                     inp['tx_hash'] = tx_hash
                     blockchain_data['inputs'].append(inp)
                 
-                # Verarbeite Outputs
                 for out in tx.get('outputs', []):
                     out['tx_hash'] = tx_hash
                     blockchain_data['outputs'].append(out)
             
-            # Führe die Analyse durch
             results = classifier.classify(
                 address=wallet_address or 'unknown',
                 blockchain_data=blockchain_data,
                 config={'stage': stage}
             )
             
-            # Konvertiere numpy-Typen
             results = convert_numpy_types(results)
             
-            # Extrahiere die Top-N Ergebnisse
             top_matches = []
             for wallet_type, data in sorted(
                 results.items(),
@@ -548,19 +477,7 @@ class WalletController:
         stage: int = 1,
         fetch_limit: int = 100
     ) -> Dict[str, Any]:
-        """
-        Analysiert mehrere Wallets gleichzeitig
-        
-        Args:
-            wallets: Liste von Wallet-Objekten mit:
-                - Entweder: 'address' + 'blockchain' (für automatisches Abrufen)
-                - Oder: 'address' + 'transactions' (manuelle Daten)
-            stage: Analysetiefe (1-3)
-            fetch_limit: Maximale Anzahl abzurufender Transaktionen pro Wallet
-            
-        Returns:
-            Batch-Analyse-Ergebnisse
-        """
+        """Analysiert mehrere Wallets gleichzeitig"""
         try:
             classifier = WalletClassifier()
             results = []
@@ -570,11 +487,9 @@ class WalletController:
                 transactions = wallet.get('transactions')
                 blockchain = wallet.get('blockchain')
                 
-                # Hole Transaktionen falls nötig
                 if transactions is None and blockchain:
                     try:
                         logger.info(f"Hole Transaktionen für {address} von {blockchain}")
-                        # ✅ KORREKTUR: await statt asyncio.run()
                         transactions = await BlockchainDataFetcher.fetch_transactions(
                             address=address,
                             blockchain=blockchain,
@@ -599,7 +514,6 @@ class WalletController:
                     })
                     continue
                 
-                # Konvertiere Zeitstempel zu Unix-Timestamps
                 try:
                     transactions = convert_timestamps_to_unix(transactions)
                 except Exception as e:
@@ -611,7 +525,6 @@ class WalletController:
                     })
                     continue
                 
-                # Bereite Blockchain-Daten für den Analyzer vor
                 blockchain_data = {
                     'txs': transactions,
                     'balance': 0,
@@ -619,34 +532,28 @@ class WalletController:
                     'outputs': []
                 }
                 
-                # Füge Transaktionsdetails hinzu
                 for tx in transactions:
                     tx_hash = tx.get('hash', tx.get('tx_hash', ''))
                     
-                    # Verarbeite Inputs
                     for inp in tx.get('inputs', []):
                         inp['tx_hash'] = tx_hash
                         blockchain_data['inputs'].append(inp)
                     
-                    # Verarbeite Outputs
                     for out in tx.get('outputs', []):
                         out['tx_hash'] = tx_hash
                         blockchain_data['outputs'].append(out)
                 
-                # Führe die Analyse durch
                 analysis = classifier.classify(
                     address=address,
                     blockchain_data=blockchain_data,
                     config={'stage': stage}
                 )
                 
-                # Konvertiere numpy-Typen
                 analysis = convert_numpy_types(analysis)
                 
                 dominant_type = analysis.get('primary_class', 'Unknown')
                 confidence = 0.0
                 
-                # Extrahiere den höchsten Score als Konfidenz
                 if dominant_type != 'Unknown' and dominant_type in analysis:
                     confidence = analysis[dominant_type].get('score', 0.0)
                 
