@@ -523,7 +523,25 @@ class WalletController:
         stage: int = 1,
         fetch_limit: int = 100
     ) -> Dict[str, Any]:
-        """Analysiert mehrere Wallets gleichzeitig"""
+        """
+        Analysiert mehrere Wallets gleichzeitig
+        
+        Args:
+            wallets: Liste von Wallet-Dictionaries mit folgender Struktur:
+                    [
+                        {
+                            'address': 'wallet_address',
+                            'transactions': [...],  # Optional
+                            'blockchain': 'ethereum'  # Optional (für Auto-Fetch)
+                        },
+                        ...
+                    ]
+            stage: Analyse-Stage (1-3)
+            fetch_limit: Maximale Anzahl von Transaktionen pro Wallet
+        
+        Returns:
+            Dictionary mit Batch-Analyse-Ergebnissen
+        """
         try:
             classifier = WalletClassifier()
             results = []
@@ -533,6 +551,7 @@ class WalletController:
                 transactions = wallet.get('transactions')
                 blockchain = wallet.get('blockchain')
                 
+                # Hole Transaktionen wenn nicht vorhanden
                 if transactions is None and blockchain:
                     try:
                         logger.info(f"Hole Transaktionen für {address} von {blockchain}")
@@ -543,6 +562,7 @@ class WalletController:
                         )
                         logger.info(f"Erfolgreich {len(transactions)} Transaktionen abgerufen")
                     except Exception as e:
+                        logger.error(f"Fehler beim Abrufen für {address}: {str(e)}")
                         results.append({
                             'address': address,
                             'blockchain': blockchain,
@@ -551,8 +571,9 @@ class WalletController:
                         })
                         continue
                 
-                # ✅ Leere Transaktionen sind OK
+                # ✅ Leere Transaktionen sind OK - neue/inaktive Wallet
                 if not transactions:
+                    logger.info(f"Keine Transaktionen für {address} - neue Wallet")
                     results.append({
                         'address': address,
                         'blockchain': blockchain,
@@ -560,13 +581,15 @@ class WalletController:
                         'dominant_type': 'New Wallet',
                         'confidence': 1.0,
                         'transaction_count': 0,
-                        'message': 'Keine Transaktionen'
+                        'message': 'Keine Transaktionen gefunden'
                     })
                     continue
                 
+                # Konvertiere Zeitstempel
                 try:
                     transactions = convert_timestamps_to_unix(transactions)
                 except Exception as e:
+                    logger.error(f"Zeitstempel-Konvertierung fehlgeschlagen für {address}: {str(e)}")
                     results.append({
                         'address': address,
                         'blockchain': blockchain,
@@ -575,6 +598,7 @@ class WalletController:
                     })
                     continue
                 
+                # Bereite Blockchain-Daten vor
                 blockchain_data = {
                     'txs': transactions,
                     'balance': 0,
@@ -582,6 +606,7 @@ class WalletController:
                     'outputs': []
                 }
                 
+                # Extrahiere Inputs und Outputs
                 for tx in transactions:
                     tx_hash = tx.get('hash', tx.get('tx_hash', ''))
                     
@@ -593,33 +618,53 @@ class WalletController:
                         out['tx_hash'] = tx_hash
                         blockchain_data['outputs'].append(out)
                 
-                analysis = classifier.classify(
-                    address=address,
-                    blockchain_data=blockchain_data,
-                    config={'stage': stage}
-                )
-                
-                analysis = convert_numpy_types(analysis)
-                
-                dominant_type = analysis.get('primary_class', 'Unknown')
-                confidence = 0.0
-                
-                if dominant_type != 'Unknown' and dominant_type in analysis:
-                    confidence = analysis[dominant_type].get('score', 0.0)
-                
-                results.append({
-                    'address': address,
-                    'blockchain': blockchain,
-                    'success': True,
-                    'dominant_type': dominant_type,
-                    'confidence': round(float(confidence), 4),
-                    'transaction_count': int(len(transactions))
-                })
+                # Führe Klassifizierung durch
+                try:
+                    analysis = classifier.classify(
+                        address=address,
+                        blockchain_data=blockchain_data,
+                        config={'stage': stage}
+                    )
+                    
+                    # Konvertiere numpy/pandas-Typen
+                    analysis = convert_numpy_types(analysis)
+                    
+                    # Extrahiere dominanten Typ und Konfidenz
+                    dominant_type = analysis.get('primary_class', 'Unknown')
+                    confidence = 0.0
+                    
+                    if dominant_type != 'Unknown' and dominant_type in analysis:
+                        confidence = analysis[dominant_type].get('score', 0.0)
+                    
+                    # Füge erfolgreiches Ergebnis hinzu
+                    results.append({
+                        'address': address,
+                        'blockchain': blockchain,
+                        'success': True,
+                        'dominant_type': dominant_type,
+                        'confidence': round(float(confidence), 4),
+                        'transaction_count': int(len(transactions))
+                    })
+                    
+                    logger.info(f"✅ Wallet {address} analysiert: {dominant_type} ({confidence:.4f})")
+                    
+                except Exception as e:
+                    logger.error(f"Klassifizierung fehlgeschlagen für {address}: {str(e)}", exc_info=True)
+                    results.append({
+                        'address': address,
+                        'blockchain': blockchain,
+                        'success': False,
+                        'error': f'Fehler bei der Klassifizierung: {str(e)}'
+                    })
+                    continue
             
+            # Erstelle finale Response
             return {
                 'success': True,
                 'data': {
                     'analyzed_wallets': int(len(results)),
+                    'successful_analyses': int(sum(1 for r in results if r.get('success'))),
+                    'failed_analyses': int(sum(1 for r in results if not r.get('success'))),
                     'stage': int(stage),
                     'results': results
                 },
@@ -631,4 +676,6 @@ class WalletController:
             return {
                 'success': False,
                 'error': str(e),
-                'error_code':
+                'error_code': 'BATCH_ANALYSIS_ERROR',
+                'timestamp': datetime.utcnow().isoformat()
+            }
