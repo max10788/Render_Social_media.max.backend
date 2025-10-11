@@ -145,25 +145,40 @@ class BlockchainDataFetcher:
             raise Exception(f"Ethereum-API-Fehler: {str(e)}")
     
     @staticmethod
-    def fetch_solana_transactions_sync(address: str, limit: int = 100) -> List[Dict]:
-        """Holt Solana-Transaktionen für eine Adresse"""
-        try:
-            signatures = get_sol_signatures(address, limit=limit)
-            if not signatures:
-                return []
-            
-            transactions = []
-            for sig_info in signatures:
-                signature = sig_info.get('signature')
-                if signature:
-                    tx_detail = get_sol_transaction(signature)
-                    if tx_detail:
-                        transactions.append(tx_detail)
-            
-            return transactions
-        except Exception as e:
-            logger.error(f"Fehler beim Abrufen von Solana-Transaktionen: {str(e)}")
-            raise Exception(f"Solana-API-Fehler: {str(e)}")
+        def fetch_solana_transactions_sync(address: str, limit: int = 100) -> List[Dict]:
+            """Holt Solana-Transaktionen für eine Adresse"""
+            try:
+                # ✅ WICHTIG: address als benannter Parameter übergeben
+                signatures = get_sol_signatures(
+                    address=address,  # ← Hier war der Fehler
+                    limit=limit
+                )
+                
+                if not signatures:
+                    logger.info(f"ℹ️  Keine Signaturen für Solana-Adresse {address} gefunden")
+                    return []
+                
+                transactions = []
+                for sig_info in signatures:
+                    signature = sig_info.get('signature')
+                    if signature:
+                        try:
+                            # ✅ signature als benannter Parameter übergeben
+                            tx_detail = get_sol_transaction(
+                                signature=signature  # ← Auch hier sicherstellen
+                            )
+                            if tx_detail:
+                                transactions.append(tx_detail)
+                        except Exception as e:
+                            logger.warning(f"Fehler beim Abrufen von Transaktionsdetails für {signature}: {str(e)}")
+                            continue
+                
+                logger.info(f"✅ {len(transactions)} Solana-Transaktionen abgerufen")
+                return transactions
+                
+            except Exception as e:
+                logger.error(f"Fehler beim Abrufen von Solana-Transaktionen: {str(e)}", exc_info=True)
+                raise Exception(f"Solana-API-Fehler: {str(e)}")
     
     @staticmethod
     def fetch_sui_transactions_sync(address: str, limit: int = 100) -> List[Dict]:
