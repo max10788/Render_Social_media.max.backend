@@ -7,6 +7,9 @@ import pandas as pd
 import logging
 import os
 
+# Füge diese Imports am Anfang von wallet_controller.py hinzu:
+from solana.rpc.api import Client as SolanaClient
+
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr import WalletClassifier
 
 # Blockchain data fetchers - Direkte Imports
