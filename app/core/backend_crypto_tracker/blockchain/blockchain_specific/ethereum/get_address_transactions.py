@@ -12,7 +12,8 @@ async def execute_get_address_transactions(
     start_block: int = 0,
     end_block: int = 99999999,
     sort: str = 'asc',
-    base_url: str = "https://api.etherscan.io/api"
+    base_url: str = "https://api.etherscan.io/api",
+    chainid: int = 1
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Holt Transaktionen für eine Ethereum-Adresse von Etherscan API V2
@@ -24,6 +25,7 @@ async def execute_get_address_transactions(
         end_block: Endblock
         sort: Sortierung ('asc' oder 'desc')
         base_url: Etherscan API URL (wird auf V2 angepasst)
+        chainid: Blockchain Chain ID (default: 1 = Ethereum Mainnet)
     
     Returns:
         Liste von Transaktionen oder None bei Fehler
@@ -33,6 +35,7 @@ async def execute_get_address_transactions(
         v2_base_url = "https://api.etherscan.io/v2/api"
         
         params = {
+            'chainid': chainid,
             'module': 'account',
             'action': 'txlist',
             'address': address,
