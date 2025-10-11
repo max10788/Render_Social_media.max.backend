@@ -265,163 +265,173 @@ class WalletController:
     """Controller für Wallet-Analyse-Operationen"""
     
     @staticmethod
-    async def analyze_wallet(
-        transactions: Optional[list] = None,
-        wallet_address: Optional[str] = None,
-        blockchain: Optional[str] = None,
-        stage: int = 1,
-        fetch_limit: int = 100
-    ) -> Dict[str, Any]:
-        """Analysiert eine Wallet"""
-        try:
-            if stage not in [1, 2, 3]:
-                return {
-                    'success': False,
-                    'error': 'Stage muss zwischen 1 und 3 liegen',
-                    'error_code': 'INVALID_STAGE'
-                }
-            
-            if transactions is None:
-                if not wallet_address or not blockchain:
+        async def analyze_wallet(
+            transactions: Optional[list] = None,
+            wallet_address: Optional[str] = None,
+            blockchain: Optional[str] = None,
+            stage: int = 1,
+            fetch_limit: int = 100
+        ) -> Dict[str, Any]:
+            """Analysiert eine Wallet mit Blockchain-spezifischer Logik"""
+            try:
+                if stage not in [1, 2, 3]:
                     return {
                         'success': False,
-                        'error': 'Entweder Transaktionen oder (wallet_address + blockchain) müssen angegeben werden',
-                        'error_code': 'MISSING_DATA'
+                        'error': 'Stage muss zwischen 1 und 3 liegen',
+                        'error_code': 'INVALID_STAGE'
+                    }
+                
+                if transactions is None:
+                    if not wallet_address or not blockchain:
+                        return {
+                            'success': False,
+                            'error': 'Entweder Transaktionen oder (wallet_address + blockchain) müssen angegeben werden',
+                            'error_code': 'MISSING_DATA'
+                        }
+                    
+                    try:
+                        logger.info(f"Hole Transaktionen für {wallet_address} von {blockchain}")
+                        transactions = await BlockchainDataFetcher.fetch_transactions(
+                            address=wallet_address,
+                            blockchain=blockchain,
+                            limit=fetch_limit
+                        )
+                        logger.info(f"Erfolgreich {len(transactions)} Transaktionen abgerufen")
+                    except Exception as e:
+                        logger.error(f"Fehler beim Abrufen von Transaktionen: {str(e)}")
+                        return {
+                            'success': False,
+                            'error': f'Fehler beim Abrufen von Transaktionen: {str(e)}',
+                            'error_code': 'FETCH_ERROR'
+                        }
+                
+                # Leere Transaktionsliste ist OK - neue Wallet
+                if not transactions:
+                    logger.info("ℹ️  Keine Transaktionen - wahrscheinlich neue Wallet")
+                    return {
+                        'success': True,
+                        'data': {
+                            'wallet_address': wallet_address,
+                            'blockchain': blockchain,
+                            'data_source': 'blockchain' if wallet_address and blockchain else 'manual',
+                            'analysis': {
+                                'dominant_type': 'New Wallet',
+                                'confidence': 1.0,
+                                'stage': int(stage),
+                                'transaction_count': 0
+                            },
+                            'classifications': [],
+                            'message': 'Keine Transaktionen gefunden - dies ist eine neue oder inaktive Wallet'
+                        },
+                        'timestamp': datetime.utcnow().isoformat()
                     }
                 
                 try:
-                    logger.info(f"Hole Transaktionen für {wallet_address} von {blockchain}")
-                    transactions = await BlockchainDataFetcher.fetch_transactions(
-                        address=wallet_address,
-                        blockchain=blockchain,
-                        limit=fetch_limit
-                    )
-                    logger.info(f"Erfolgreich {len(transactions)} Transaktionen abgerufen")
+                    logger.info(f"Konvertiere Zeitstempel für {len(transactions)} Transaktionen")
+                    transactions = convert_timestamps_to_unix(transactions)
                 except Exception as e:
-                    logger.error(f"Fehler beim Abrufen von Transaktionen: {str(e)}")
+                    logger.error(f"Fehler bei der Zeitstempel-Konvertierung: {str(e)}")
                     return {
                         'success': False,
-                        'error': f'Fehler beim Abrufen von Transaktionen: {str(e)}',
-                        'error_code': 'FETCH_ERROR'
+                        'error': f'Fehler bei der Zeitstempel-Konvertierung: {str(e)}',
+                        'error_code': 'TIMESTAMP_CONVERSION_ERROR'
                     }
-            
-            # ✅ WICHTIG: Leere Transaktionsliste ist kein Fehler mehr
-            if not transactions:
-                logger.info("ℹ️  Keine Transaktionen - wahrscheinlich neue Wallet")
-                return {
+                
+                # Erstelle Blockchain-Daten mit richtiger Struktur
+                blockchain_data = {
+                    'txs': transactions,
+                    'balance': 0,  # Wird von Stage1 berechnet
+                    'address': wallet_address
+                }
+                
+                # UTXO-basierte Blockchains brauchen inputs/outputs
+                utxo_blockchains = ['bitcoin', 'btc', 'litecoin', 'ltc', 'dogecoin', 'doge']
+                if blockchain.lower() in utxo_blockchains:
+                    blockchain_data['inputs'] = []
+                    blockchain_data['outputs'] = []
+                    
+                    for tx in transactions:
+                        tx_hash = tx.get('hash', tx.get('tx_hash', ''))
+                        
+                        for inp in tx.get('inputs', []):
+                            inp['tx_hash'] = tx_hash
+                            blockchain_data['inputs'].append(inp)
+                        
+                        for out in tx.get('outputs', []):
+                            out['tx_hash'] = tx_hash
+                            blockchain_data['outputs'].append(out)
+                
+                logger.info(f"Klassifiziere Wallet {wallet_address} auf {blockchain}...")
+                
+                classifier = WalletClassifier()
+                
+                # Übergebe blockchain Parameter für richtige Stage1 Logik
+                results = classifier.classify(
+                    address=wallet_address or 'unknown',
+                    blockchain_data=blockchain_data,
+                    config={'stage': stage},
+                    blockchain=blockchain  # WICHTIG: blockchain mitgeben
+                )
+                
+                results = convert_numpy_types(results)
+                
+                dominant_type = results.get('primary_class', 'Unknown')
+                confidence = 0.0
+                
+                if dominant_type != 'Unknown' and dominant_type in results:
+                    confidence = float(results[dominant_type].get('score', 0.0))
+                
+                logger.info(f"Klassifizierung abgeschlossen: {dominant_type} ({confidence:.4f})")
+                
+                response = {
                     'success': True,
                     'data': {
                         'wallet_address': wallet_address,
                         'blockchain': blockchain,
                         'data_source': 'blockchain' if wallet_address and blockchain else 'manual',
                         'analysis': {
-                            'dominant_type': 'New Wallet',
-                            'confidence': 1.0,
+                            'dominant_type': dominant_type,
+                            'confidence': round(confidence, 4),
                             'stage': int(stage),
-                            'transaction_count': 0
+                            'transaction_count': int(len(transactions))
                         },
-                        'classifications': [],
-                        'message': 'Keine Transaktionen gefunden - dies ist eine neue oder inaktive Wallet'
+                        'classifications': []
                     },
                     'timestamp': datetime.utcnow().isoformat()
                 }
-            
-            try:
-                logger.info(f"Konvertiere Zeitstempel für {len(transactions)} Transaktionen")
-                transactions = convert_timestamps_to_unix(transactions)
+                
+                # Sortiere und füge alle Klassifizierungen hinzu
+                for wallet_type, data in sorted(
+                    results.items(),
+                    key=lambda x: float(x[1].get('score', 0)) if isinstance(x[1], dict) else 0,
+                    reverse=True
+                ):
+                    # Überspringe Meta-Felder
+                    if wallet_type in ['primary_class', 'blockchain', 'address', 'hybrid_note', 'risk_flag', 'service_type']:
+                        continue
+                    
+                    if not isinstance(data, dict):
+                        continue
+                    
+                    classification = {
+                        'type': wallet_type,
+                        'score': round(float(data.get('score', 0)), 4),
+                        'is_match': bool(data.get('is_class', False)),
+                        'threshold': round(float(data.get('threshold', 0.5)), 4)
+                    }
+                    
+                    response['data']['classifications'].append(classification)
+                
+                return response
+                
             except Exception as e:
-                logger.error(f"Fehler bei der Zeitstempel-Konvertierung: {str(e)}")
+                logger.error(f"Unerwarteter Fehler in analyze_wallet: {str(e)}", exc_info=True)
                 return {
                     'success': False,
-                    'error': f'Fehler bei der Zeitstempel-Konvertierung: {str(e)}',
-                    'error_code': 'TIMESTAMP_CONVERSION_ERROR'
+                    'error': str(e),
+                    'error_code': 'ANALYSIS_ERROR',
+                    'timestamp': datetime.utcnow().isoformat()
                 }
-            
-            classifier = WalletClassifier()
-            
-            blockchain_data = {
-                'txs': transactions,
-                'balance': 0,
-                'inputs': [],
-                'outputs': []
-            }
-            
-            for tx in transactions:
-                tx_hash = tx.get('hash', tx.get('tx_hash', ''))
-                
-                for inp in tx.get('inputs', []):
-                    inp['tx_hash'] = tx_hash
-                    blockchain_data['inputs'].append(inp)
-                
-                for out in tx.get('outputs', []):
-                    out['tx_hash'] = tx_hash
-                    blockchain_data['outputs'].append(out)
-            
-            results = classifier.classify(
-                address=wallet_address or 'unknown',
-                blockchain_data=blockchain_data,
-                config={'stage': stage}
-            )
-            
-            results = convert_numpy_types(results)
-            
-            dominant_type = results.get('primary_class', 'Unknown')
-            confidence = 0.0
-            
-            if dominant_type != 'Unknown' and dominant_type in results:
-                confidence = results[dominant_type].get('score', 0.0)
-            
-            response = {
-                'success': True,
-                'data': {
-                    'wallet_address': wallet_address,
-                    'blockchain': blockchain,
-                    'data_source': 'blockchain' if wallet_address and blockchain else 'manual',
-                    'analysis': {
-                        'dominant_type': dominant_type,
-                        'confidence': round(float(confidence), 4),
-                        'stage': int(stage),
-                        'transaction_count': int(len(transactions))
-                    },
-                    'classifications': []
-                },
-                'timestamp': datetime.utcnow().isoformat()
-            }
-            
-            for wallet_type, data in sorted(
-                results.items(),
-                key=lambda x: float(x[1].get('score', 0)) if isinstance(x[1], dict) else 0,
-                reverse=True
-            ):
-                if wallet_type == 'primary_class' or not isinstance(data, dict):
-                    continue
-                    
-                classification = {
-                    'type': wallet_type,
-                    'score': round(float(data.get('score', 0)), 4),
-                    'is_match': bool(data.get('is_class', False)),
-                    'metrics': {}
-                }
-                
-                metrics = data.get('metrics', {})
-                if metrics:
-                    classification['metrics'] = {
-                        k: round(float(v), 4) if isinstance(v, (int, float, np.number)) else v
-                        for k, v in metrics.items()
-                    }
-                
-                response['data']['classifications'].append(classification)
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"Unerwarteter Fehler in analyze_wallet: {str(e)}", exc_info=True)
-            return {
-                'success': False,
-                'error': str(e),
-                'error_code': 'ANALYSIS_ERROR',
-                'timestamp': datetime.utcnow().isoformat()
-            }
     
     @staticmethod
     async def get_top_matches(
