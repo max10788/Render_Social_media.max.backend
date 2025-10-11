@@ -145,12 +145,39 @@ class BlockchainDataFetcher:
             raise Exception(f"Ethereum-API-Fehler: {str(e)}")
     
     @staticmethod
-    def fetch_solana_transactions_sync(address: str, limit: int = 100) -> List[Dict]:
-        """Holt Solana-Transaktionen für eine Adresse"""
+    async def get_solana_provider():
+        """Erstellt einen Solana RPC Provider"""
         try:
-            # ✅ WICHTIG: address als benannter Parameter übergeben
-            signatures = get_sol_signatures(
-                address=address,  # ← Hier war der Fehler
+            solana_rpc_url = os.getenv('SOLANA_RPC_URL')
+            
+            if not solana_rpc_url:
+                raise Exception(
+                    "Kein Solana RPC URL gefunden. "
+                    "Bitte setzen Sie SOLANA_RPC_URL in Ihrer .env Datei"
+                )
+            
+            logger.info(f"Verbinde mit Solana RPC: {solana_rpc_url[:50]}...")
+            provider = SolanaClient(solana_rpc_url)
+            return provider
+            
+        except Exception as e:
+            logger.error(f"Fehler beim Erstellen des Solana Providers: {str(e)}")
+            raise Exception(f"Solana Provider-Fehler: {str(e)}")
+    
+    @staticmethod
+    async def fetch_solana_transactions_sync(address: str, limit: int = 100) -> List[Dict]:
+        """Holt Solana-Transaktionen für eine Adresse"""
+        provider = None
+        try:
+            # Initialisiere Solana Provider
+            provider = await BlockchainDataFetcher.get_solana_provider()
+            
+            logger.info(f"Rufe Solana-Signaturen für {address} ab (limit={limit})...")
+            
+            # Hole Signaturen - provider MUSS als erstes Argument kommen
+            signatures = await get_sol_signatures(
+                provider=provider,
+                address=address,
                 limit=limit
             )
             
@@ -158,24 +185,33 @@ class BlockchainDataFetcher:
                 logger.info(f"ℹ️  Keine Signaturen für Solana-Adresse {address} gefunden")
                 return []
             
+            logger.info(f"✅ Gefunden {len(signatures)} Signaturen für {address}")
+            
+            # Hole Details zu jeder Signatur
             transactions = []
-            for sig_info in signatures:
+            for idx, sig_info in enumerate(signatures):
                 signature = sig_info.get('signature')
                 if signature:
                     try:
-                        # ✅ signature als benannter Parameter übergeben
-                        tx_detail = get_sol_transaction(
-                            signature=signature  # ← Auch hier sicherstellen
+                        # Hole Transaktionsdetails - provider MUSS auch hier als erstes Argument kommen
+                        tx_detail = await get_sol_transaction(
+                            provider=provider,
+                            signature=signature
                         )
                         if tx_detail:
                             transactions.append(tx_detail)
+                        
+                        # Log Progress
+                        if (idx + 1) % 10 == 0:
+                            logger.debug(f"⏳ Verarbeitet {idx + 1}/{len(signatures)} Signaturen...")
+                            
                     except Exception as e:
-                        logger.warning(f"Fehler beim Abrufen von Transaktionsdetails für {signature}: {str(e)}")
+                        logger.warning(f"⚠️  Fehler bei Signatur {signature}: {str(e)}")
                         continue
             
-            logger.info(f"✅ {len(transactions)} Solana-Transaktionen abgerufen")
+            logger.info(f"✅ {len(transactions)} Solana-Transaktionen erfolgreich abgerufen")
             return transactions
-    
+            
         except Exception as e:
             logger.error(f"Fehler beim Abrufen von Solana-Transaktionen: {str(e)}", exc_info=True)
             raise Exception(f"Solana-API-Fehler: {str(e)}")
