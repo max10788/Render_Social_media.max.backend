@@ -1,5 +1,3 @@
-# api/controllers/wallet_controller.py
-
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import numpy as np
@@ -7,12 +5,10 @@ import pandas as pd
 import logging
 import os
 
-# Füge diese Imports am Anfang von wallet_controller.py hinzu:
 from solana.rpc.api import Client as SolanaClient
 
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr import WalletClassifier
 
-# Blockchain data fetchers - Direkte Imports
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_address_transactions import execute_get_address_transactions as get_eth_transactions
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_confirmed_signatures_for_address2 import execute_get_confirmed_signatures_for_address2 as get_sol_signatures
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_transaction_details import execute_get_transaction_details as get_sol_transaction
@@ -22,6 +18,8 @@ logger = logging.getLogger(__name__)
 
 # ✅ ETHERSCAN KONFIGURATION
 ETHERSCAN_BASE_URL = "https://api.etherscan.io/api"
+DEFAULT_TX_LIMIT = 25  # ✅ Standardlimit auf 25 gesetzt
+
 
 def convert_numpy_types(obj):
     """Konvertiert numpy/pandas-Typen rekursiv in native Python-Typen"""
@@ -81,11 +79,63 @@ def convert_timestamps_to_unix(transactions: List[Dict]) -> List[Dict]:
     return converted
 
 
+def normalize_blockchain_data(transactions: List[Dict], blockchain: str) -> Dict[str, Any]:
+    """
+    ✅ WICHTIG: Normalisiert Blockchain-Daten in die erwartete Struktur
+    für die WalletClassifier-Stage1-Verarbeitung
+    """
+    blockchain_lower = blockchain.lower() if blockchain else ''
+    
+    utxo_blockchains = ['bitcoin', 'btc', 'litecoin', 'ltc', 'dogecoin', 'doge']
+    is_utxo = blockchain_lower in utxo_blockchains
+    
+    blockchain_data = {
+        'txs': transactions,
+        'balance': 0,
+        'address': '',
+        'inputs': [],
+        'outputs': [],
+        'outputs_per_tx': {},  # ✅ KRITISCH: Stage1 benötigt dies
+        'inputs_per_tx': {}    # ✅ KRITISCH: Stage1 benötigt dies
+    }
+    
+    # Verarbeite Transaktionen
+    for tx in transactions:
+        tx_hash = tx.get('hash', tx.get('tx_hash', tx.get('signature', '')))
+        
+        # Initialisiere Zähler für diese TX
+        blockchain_data['outputs_per_tx'][tx_hash] = 0
+        blockchain_data['inputs_per_tx'][tx_hash] = 0
+        
+        # Verarbeite Inputs (nur UTXO)
+        if is_utxo:
+            inputs = tx.get('inputs', [])
+            for inp in inputs:
+                inp_copy = inp.copy()
+                inp_copy['tx_hash'] = tx_hash
+                blockchain_data['inputs'].append(inp_copy)
+                blockchain_data['inputs_per_tx'][tx_hash] += 1
+        
+        # Verarbeite Outputs
+        outputs = tx.get('outputs', [])
+        if outputs:
+            for out in outputs:
+                out_copy = out.copy()
+                out_copy['tx_hash'] = tx_hash
+                blockchain_data['outputs'].append(out_copy)
+                blockchain_data['outputs_per_tx'][tx_hash] += 1
+        else:
+            # Fallback: Wenn keine outputs, zähle mindestens 1
+            blockchain_data['outputs_per_tx'][tx_hash] = max(1, blockchain_data['outputs_per_tx'][tx_hash])
+    
+    return blockchain_data
+
+
 class BlockchainDataFetcher:
     """Holt Transaktionsdaten von verschiedenen Blockchains"""
     
     @staticmethod
-    async def fetch_ethereum_transactions(address: str, limit: int = 100) -> List[Dict]:
+    async def fetch_ethereum_transactions(address: str, limit: int = DEFAULT_TX_LIMIT) -> List[Dict]:
         """
         Holt Ethereum-Transaktionen für eine Adresse direkt von Etherscan
         
@@ -106,7 +156,7 @@ class BlockchainDataFetcher:
                     "Bitte setzen Sie ETHERSCAN_API_KEY in Ihrer .env Datei"
                 )
             
-            logger.info(f"🔍 Rufe Ethereum-Transaktionen für {address} ab...")
+            logger.info(f"🔍 Rufe Ethereum-Transaktionen für {address} ab (limit={limit})...")
             logger.info(f"   API-Key vorhanden: {api_key[:8]}...{api_key[-4:]}")
             logger.info(f"   Base URL: {ETHERSCAN_BASE_URL}")
             
@@ -123,14 +173,14 @@ class BlockchainDataFetcher:
             # ✅ Behandle None-Fall
             if transactions is None:
                 logger.error("❌ API-Aufruf fehlgeschlagen - None zurückgegeben")
-                raise Exception("Etherscan API-Aufruf fehlgeschlagen")
+                return []
             
             # ✅ Leere Liste ist OK (keine Transaktionen)
             if len(transactions) == 0:
                 logger.info("ℹ️  Keine Transaktionen gefunden (neue Wallet?)")
                 return []
             
-            # Begrenze die Anzahl der Transaktionen
+            # Begrenze die Anzahl der Transaktionen auf 25
             if len(transactions) > limit:
                 transactions = transactions[:limit]
                 logger.info(f"📊 Limitiert auf {limit} von {len(transactions)} Transaktionen")
@@ -168,7 +218,7 @@ class BlockchainDataFetcher:
             raise Exception(f"Solana Provider-Fehler: {str(e)}")
     
     @staticmethod
-    async def fetch_solana_transactions_sync(address: str, limit: int = 100) -> List[Dict]:
+    async def fetch_solana_transactions_sync(address: str, limit: int = DEFAULT_TX_LIMIT) -> List[Dict]:
         """Holt Solana-Transaktionen für eine Adresse"""
         provider = None
         try:
@@ -177,7 +227,7 @@ class BlockchainDataFetcher:
             
             logger.info(f"Rufe Solana-Signaturen für {address} ab (limit={limit})...")
             
-            # Hole Signaturen - provider MUSS als erstes Argument kommen
+            # ✅ Nutze await für async Funktion
             signatures = await get_sol_signatures(
                 provider=provider,
                 address=address,
@@ -196,7 +246,7 @@ class BlockchainDataFetcher:
                 signature = sig_info.get('signature')
                 if signature:
                     try:
-                        # Hole Transaktionsdetails - provider MUSS auch hier als erstes Argument kommen
+                        # ✅ Nutze await für async Funktion
                         tx_detail = await get_sol_transaction(
                             provider=provider,
                             signature=signature
@@ -220,7 +270,7 @@ class BlockchainDataFetcher:
             raise Exception(f"Solana-API-Fehler: {str(e)}")
         
     @staticmethod
-    def fetch_sui_transactions_sync(address: str, limit: int = 100) -> List[Dict]:
+    def fetch_sui_transactions_sync(address: str, limit: int = DEFAULT_TX_LIMIT) -> List[Dict]:
         """Holt Sui-Transaktionen für eine Adresse"""
         try:
             transactions = get_sui_transactions(address, limit=limit)
@@ -233,7 +283,7 @@ class BlockchainDataFetcher:
     async def fetch_transactions(
         address: str,
         blockchain: str,
-        limit: int = 100
+        limit: int = DEFAULT_TX_LIMIT
     ) -> List[Dict]:
         """
         Universelle Methode zum Abrufen von Transaktionen
@@ -251,7 +301,7 @@ class BlockchainDataFetcher:
         if blockchain in ['ethereum', 'eth']:
             return await BlockchainDataFetcher.fetch_ethereum_transactions(address, limit)
         elif blockchain in ['solana', 'sol']:
-            return BlockchainDataFetcher.fetch_solana_transactions_sync(address, limit)
+            return await BlockchainDataFetcher.fetch_solana_transactions_sync(address, limit)
         elif blockchain == 'sui':
             return BlockchainDataFetcher.fetch_sui_transactions_sync(address, limit)
         else:
@@ -270,7 +320,7 @@ class WalletController:
         wallet_address: Optional[str] = None,
         blockchain: Optional[str] = None,
         stage: int = 1,
-        fetch_limit: int = 100
+        fetch_limit: int = DEFAULT_TX_LIMIT
     ) -> Dict[str, Any]:
         """Analysiert eine Wallet mit Blockchain-spezifischer Logik"""
         try:
@@ -337,29 +387,9 @@ class WalletController:
                     'error_code': 'TIMESTAMP_CONVERSION_ERROR'
                 }
             
-            # Erstelle Blockchain-Daten mit richtiger Struktur
-            blockchain_data = {
-                'txs': transactions,
-                'balance': 0,  # Wird von Stage1 berechnet
-                'address': wallet_address
-            }
-            
-            # UTXO-basierte Blockchains brauchen inputs/outputs
-            utxo_blockchains = ['bitcoin', 'btc', 'litecoin', 'ltc', 'dogecoin', 'doge']
-            if blockchain.lower() in utxo_blockchains:
-                blockchain_data['inputs'] = []
-                blockchain_data['outputs'] = []
-                
-                for tx in transactions:
-                    tx_hash = tx.get('hash', tx.get('tx_hash', ''))
-                    
-                    for inp in tx.get('inputs', []):
-                        inp['tx_hash'] = tx_hash
-                        blockchain_data['inputs'].append(inp)
-                    
-                    for out in tx.get('outputs', []):
-                        out['tx_hash'] = tx_hash
-                        blockchain_data['outputs'].append(out)
+            # ✅ Normalisiere Blockchain-Daten mit korrekter Struktur
+            blockchain_data = normalize_blockchain_data(transactions, blockchain)
+            blockchain_data['address'] = wallet_address
             
             logger.info(f"Klassifiziere Wallet {wallet_address} auf {blockchain}...")
             
@@ -429,6 +459,10 @@ class WalletController:
             return {
                 'success': False,
                 'error': str(e),
+                'error_code': 'BATCH_ANALYSIS_ERROR',
+                'timestamp': datetime.utcnow().isoformat()
+            }': False,
+                'error': str(e),
                 'error_code': 'ANALYSIS_ERROR',
                 'timestamp': datetime.utcnow().isoformat()
             }
@@ -440,7 +474,7 @@ class WalletController:
         blockchain: Optional[str] = None,
         stage: int = 1,
         top_n: int = 3,
-        fetch_limit: int = 100
+        fetch_limit: int = DEFAULT_TX_LIMIT
     ) -> Dict[str, Any]:
         """Gibt die Top-N wahrscheinlichsten Wallet-Typen zurück"""
         try:
@@ -503,30 +537,17 @@ class WalletController:
                     'error_code': 'TIMESTAMP_CONVERSION_ERROR'
                 }
             
+            # ✅ Normalisiere Blockchain-Daten
+            blockchain_data = normalize_blockchain_data(transactions, blockchain)
+            blockchain_data['address'] = wallet_address
+            
             classifier = WalletClassifier()
-            
-            blockchain_data = {
-                'txs': transactions,
-                'balance': 0,
-                'inputs': [],
-                'outputs': []
-            }
-            
-            for tx in transactions:
-                tx_hash = tx.get('hash', tx.get('tx_hash', ''))
-                
-                for inp in tx.get('inputs', []):
-                    inp['tx_hash'] = tx_hash
-                    blockchain_data['inputs'].append(inp)
-                
-                for out in tx.get('outputs', []):
-                    out['tx_hash'] = tx_hash
-                    blockchain_data['outputs'].append(out)
             
             results = classifier.classify(
                 address=wallet_address or 'unknown',
                 blockchain_data=blockchain_data,
-                config={'stage': stage}
+                config={'stage': stage},
+                blockchain=blockchain
             )
             
             results = convert_numpy_types(results)
@@ -537,7 +558,7 @@ class WalletController:
                 key=lambda x: float(x[1].get('score', 0)) if isinstance(x[1], dict) else 0,
                 reverse=True
             ):
-                if wallet_type == 'primary_class' or not isinstance(data, dict):
+                if wallet_type in ['primary_class', 'blockchain', 'address', 'hybrid_note', 'risk_flag', 'service_type'] or not isinstance(data, dict):
                     continue
                     
                 top_matches.append({
@@ -583,7 +604,7 @@ class WalletController:
     async def batch_analyze(
         wallets: list,
         stage: int = 1,
-        fetch_limit: int = 100
+        fetch_limit: int = DEFAULT_TX_LIMIT
     ) -> Dict[str, Any]:
         """
         Analysiert mehrere Wallets gleichzeitig
@@ -660,32 +681,17 @@ class WalletController:
                     })
                     continue
                 
-                # Bereite Blockchain-Daten vor
-                blockchain_data = {
-                    'txs': transactions,
-                    'balance': 0,
-                    'inputs': [],
-                    'outputs': []
-                }
-                
-                # Extrahiere Inputs und Outputs
-                for tx in transactions:
-                    tx_hash = tx.get('hash', tx.get('tx_hash', ''))
-                    
-                    for inp in tx.get('inputs', []):
-                        inp['tx_hash'] = tx_hash
-                        blockchain_data['inputs'].append(inp)
-                    
-                    for out in tx.get('outputs', []):
-                        out['tx_hash'] = tx_hash
-                        blockchain_data['outputs'].append(out)
+                # ✅ Nutze normalize_blockchain_data
+                blockchain_data = normalize_blockchain_data(transactions, blockchain)
+                blockchain_data['address'] = address
                 
                 # Führe Klassifizierung durch
                 try:
                     analysis = classifier.classify(
                         address=address,
                         blockchain_data=blockchain_data,
-                        config={'stage': stage}
+                        config={'stage': stage},
+                        blockchain=blockchain
                     )
                     
                     # Konvertiere numpy/pandas-Typen
@@ -736,8 +742,4 @@ class WalletController:
         except Exception as e:
             logger.error(f"Unerwarteter Fehler in batch_analyze: {str(e)}", exc_info=True)
             return {
-                'success': False,
-                'error': str(e),
-                'error_code': 'BATCH_ANALYSIS_ERROR',
-                'timestamp': datetime.utcnow().isoformat()
-            }
+                'success
