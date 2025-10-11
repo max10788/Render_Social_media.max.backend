@@ -365,9 +365,7 @@ class WalletController:
             return {
                 'success': False,
                 'error': str(e),
-                'error_code': 'BATCH_ANALYSIS_ERROR',
-                'timestamp': datetime.utcnow().isoformat()
-            }'ANALYSIS_ERROR',
+                'error_code': 'ANALYSIS_ERROR',
                 'timestamp': datetime.utcnow().isoformat()
             }
     
