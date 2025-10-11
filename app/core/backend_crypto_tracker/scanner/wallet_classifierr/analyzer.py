@@ -1,7 +1,7 @@
 # ============================================================================
-# analyzer.py
+# analyzer.py (UPDATED)
 # ============================================================================
-"""Main interface for wallet classification."""
+"""Main interface for wallet classification with blockchain support."""
 
 from typing import Dict, Any, List, Optional
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes import (
@@ -12,11 +12,13 @@ from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes import (
     WhaleAnalyzer
 )
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.data_sources.ground_truth import GroundTruthDB
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.stages_blockchain import Stage1_RawMetrics
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.stages import Stage2_DerivedMetrics, Stage3_ContextAnalysis
 
 
 class WalletClassifier:
     """
-    Main wallet classification system.
+    Main wallet classification system with blockchain support.
     Orchestrates all analyzers and applies hybrid logic.
     """
     
@@ -41,20 +43,37 @@ class WalletClassifier:
         self,
         address: str,
         blockchain_data: Dict[str, Any],
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        blockchain: str = 'ethereum'
     ) -> Dict[str, Any]:
         """
-        Classify a wallet address.
+        Classify a wallet address with blockchain-specific logic.
         
         Args:
             address: The wallet address to classify
             blockchain_data: Raw blockchain transaction data
             config: Optional configuration (e.g., BTC price, thresholds)
+            blockchain: Blockchain name ('ethereum', 'bitcoin', 'solana', etc.)
             
         Returns:
             Dictionary with classification results for each class
         """
+        # Add address to blockchain_data for Stage 1 processing
+        blockchain_data['address'] = address
+        
         results = {}
+        
+        # Stage 1: Raw metrics (blockchain-specific)
+        raw_metrics = Stage1_RawMetrics.execute(blockchain_data, config, blockchain)
+        
+        # Stage 2: Derived metrics
+        derived_metrics = Stage2_DerivedMetrics().execute(raw_metrics, config)
+        
+        # Stage 3: Context
+        context_metrics = Stage3_ContextAnalysis().execute(derived_metrics, address, self.context_db)
+        
+        # Combine all metrics
+        all_metrics = {**raw_metrics, **derived_metrics, **context_metrics}
         
         # Run all analyzers
         for class_name, analyzer in self.analyzers.items():
@@ -64,7 +83,8 @@ class WalletClassifier:
             results[class_name] = {
                 'score': score,
                 'is_class': is_member,
-                'threshold': analyzer.THRESHOLD
+                'threshold': analyzer.THRESHOLD,
+                'metrics': all_metrics
             }
         
         # Apply hybrid logic
@@ -73,6 +93,10 @@ class WalletClassifier:
         # Determine primary class
         results['primary_class'] = self._determine_primary_class(results)
         
+        # Add metadata
+        results['blockchain'] = blockchain
+        results['address'] = address
+        
         return results
     
     def _apply_hybrid_rules(
@@ -80,19 +104,11 @@ class WalletClassifier:
         results: Dict[str, Any],
         blockchain_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Apply hybrid classification rules for overlapping classes.
+        """Apply hybrid classification rules for overlapping classes."""
         
-        Args:
-            results: Initial classification results
-            blockchain_data: Raw blockchain data
-            
-        Returns:
-            Updated results with hybrid rules applied
-        """
         # Rule 1: Whale + Trader → Whale dominates if value > $10M
         if results['Whale']['is_class'] and results['Trader']['is_class']:
-            total_value = blockchain_data.get('balance', 0) * 50000  # Estimate USD
+            total_value = blockchain_data.get('balance', 0) * 50000
             if total_value > 10_000_000:
                 results['Trader']['is_class'] = False
                 results['hybrid_note'] = "Whale dominates over Trader (high value)"
@@ -119,16 +135,7 @@ class WalletClassifier:
         return results
     
     def _determine_primary_class(self, results: Dict[str, Any]) -> str:
-        """
-        Determine the primary class from classification results.
-        
-        Args:
-            results: Classification results
-            
-        Returns:
-            Primary class name
-        """
-        # Find all classes where is_class is True
+        """Determine the primary class from classification results."""
         active_classes = [
             (name, data['score'])
             for name, data in results.items()
@@ -138,28 +145,23 @@ class WalletClassifier:
         if not active_classes:
             return "Unknown"
         
-        # Return class with highest score
         return max(active_classes, key=lambda x: x[1])[0]
     
     def classify_batch(
         self,
         addresses: List[str],
         blockchain_data_dict: Dict[str, Dict[str, Any]],
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        blockchain: str = 'ethereum'
     ) -> Dict[str, Dict[str, Any]]:
-        """
-        Classify multiple addresses in batch.
-        
-        Args:
-            addresses: List of addresses to classify
-            blockchain_data_dict: Dictionary mapping addresses to their blockchain data
-            config: Optional configuration
-            
-        Returns:
-            Dictionary mapping addresses to classification results
-        """
+        """Classify multiple addresses in batch."""
         return {
-            address: self.classify(address, blockchain_data_dict.get(address, {}), config)
+            address: self.classify(
+                address,
+                blockchain_data_dict.get(address, {}),
+                config,
+                blockchain
+            )
             for address in addresses
         }
 
@@ -168,19 +170,9 @@ def classify_wallet(
     address: str,
     blockchain_data: Dict[str, Any],
     context_db: Optional[GroundTruthDB] = None,
-    config: Optional[Dict[str, Any]] = None
+    config: Optional[Dict[str, Any]] = None,
+    blockchain: str = 'ethereum'
 ) -> Dict[str, Any]:
-    """
-    Convenience function to classify a single wallet.
-    
-    Args:
-        address: Wallet address
-        blockchain_data: Raw blockchain transaction data
-        context_db: Optional context database
-        config: Optional configuration
-        
-    Returns:
-        Classification results
-    """
+    """Convenience function to classify a single wallet."""
     classifier = WalletClassifier(context_db)
-    return classifier.classify(address, blockchain_data, config)
+    return classifier.classify(address, blockchain_data, config, blockchain)
