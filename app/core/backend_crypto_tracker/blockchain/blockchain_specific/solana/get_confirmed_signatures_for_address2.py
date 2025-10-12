@@ -1,6 +1,5 @@
 from typing import Any, Dict, Optional, List
 from app.core.backend_crypto_tracker.utils.logger import get_logger
-from solana.publickey import PublicKey
 
 logger = get_logger(__name__)
 
@@ -30,8 +29,15 @@ async def execute_get_confirmed_signatures_for_address2(
         
         logger.info(f"Rufe Solana Signaturen für {address} ab (limit={limit})")
         
-        # ✅ Konvertiere String zu PublicKey
+        # ✅ Konvertiere String zu PublicKey mit try/except
         try:
+            # Versuche mit solders (neuere Version)
+            try:
+                from solders.publickey import PublicKey
+            except ImportError:
+                # Fallback auf solana
+                from solana.publickey import PublicKey
+            
             pubkey = PublicKey(address)
             logger.debug(f"PublicKey konvertiert: {pubkey}")
         except Exception as e:
@@ -39,7 +45,12 @@ async def execute_get_confirmed_signatures_for_address2(
             return None
         
         # ✅ Nutze die offizielle solana-py Methode mit PublicKey
-        response = await provider.get_signatures_for_address(pubkey, limit=limit)
+        try:
+            response = await provider.get_signatures_for_address(pubkey, limit=limit)
+        except TypeError:
+            # Fallback: Versuche direkt mit String
+            logger.debug("Fallback: Versuche mit String-Adresse")
+            response = await provider.get_signatures_for_address(address, limit=limit)
         
         if response and response.get('result'):
             signatures = response['result']
@@ -55,10 +66,10 @@ async def execute_get_confirmed_signatures_for_address2(
                     'confirmationStatus': sig_obj.get('confirmationStatus')
                 })
             
-            logger.info(f"✅ Gefunden {len(formatted_sigs)} Signaturen für {address}")
+            logger.info(f"Gefunden {len(formatted_sigs)} Signaturen für {address}")
             return formatted_sigs
         else:
-            logger.info(f"ℹ️  Keine Signaturen für Adresse {address} gefunden")
+            logger.info(f"Keine Signaturen für Adresse {address} gefunden")
             return []
             
     except Exception as e:
