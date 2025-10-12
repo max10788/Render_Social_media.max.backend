@@ -1,4 +1,4 @@
-# app/core/backend_crypto_tracker/blockchain/blockchain_specific/ethereum/get_address_transactions.py
+import asyncio
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import aiohttp
@@ -13,7 +13,8 @@ async def execute_get_address_transactions(
     end_block: int = 99999999,
     sort: str = 'asc',
     base_url: str = "https://api.etherscan.io/api",
-    chainid: int = 1
+    chainid: int = 1,
+    limit: int = 25
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Holt Transaktionen für eine Ethereum-Adresse von Etherscan API V2
@@ -24,16 +25,18 @@ async def execute_get_address_transactions(
         start_block: Startblock
         end_block: Endblock
         sort: Sortierung ('asc' oder 'desc')
-        base_url: Etherscan API URL (wird auf V2 angepasst)
+        base_url: Etherscan API URL
         chainid: Blockchain Chain ID (default: 1 = Ethereum Mainnet)
+        limit: Maximale Anzahl von Transaktionen (default: 25)
     
     Returns:
         Liste von Transaktionen oder None bei Fehler
     """
     try:
-        # ✅ Verwende Etherscan API V2 statt V1
+        # ✅ Verwende Etherscan API V2
         v2_base_url = "https://api.etherscan.io/v2/api"
         
+        # ✅ Nutze den limit Parameter
         params = {
             'chainid': chainid,
             'module': 'account',
@@ -44,32 +47,39 @@ async def execute_get_address_transactions(
             'sort': sort,
             'apikey': api_key,
             'page': 1,
-            'offset': 10000
+            'offset': limit  # ✅ Nutze limit statt hardcoded 10000
         }
         
-        logger.info(f"🔍 Etherscan API V2 Request: {v2_base_url}")
+        logger.info(f"Etherscan API V2 Request: {v2_base_url}")
         logger.info(f"   Address: {address}")
         logger.info(f"   Blocks: {start_block} bis {end_block}")
+        logger.info(f"   Limit: {limit}")
         
         async with aiohttp.ClientSession() as session:
             async with session.get(v2_base_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 if response.status != 200:
-                    logger.error(f"❌ HTTP Error {response.status}: {await response.text()}")
+                    logger.error(f"HTTP Error {response.status}: {await response.text()}")
                     return None
                 
                 data = await response.json()
                 
-                # ✅ Bessere Fehlerbehandlung
                 if not data:
-                    logger.error("❌ Keine Daten von Etherscan API erhalten")
+                    logger.error("Keine Daten von Etherscan API erhalten")
                     return None
                 
-                logger.info(f"📥 Etherscan Response Status: {data.get('status')}, Message: {data.get('message')}")
+                logger.info(f"Etherscan Response Status: {data.get('status')}, Message: {data.get('message')}")
         
         # ✅ Prüfe auf erfolgreiche API-Antwort (V2 Format)
         if data.get('status') == '1' and data.get('result'):
             transactions = []
-            for tx in data['result']:
+            result = data['result']
+            
+            # Limitiere auf die gewünschte Anzahl
+            if len(result) > limit:
+                result = result[:limit]
+                logger.info(f"Limitiert auf {limit} von {len(data['result'])} Transaktionen")
+            
+            for tx in result:
                 transactions.append({
                     'hash': tx.get('hash'),
                     'tx_hash': tx.get('hash'),
@@ -92,30 +102,30 @@ async def execute_get_address_transactions(
                     'outputs': []
                 })
             
-            logger.info(f"✅ {len(transactions)} Transaktionen für {address} abgerufen")
+            logger.info(f"Erfolgreich {len(transactions)} Ethereum-Transaktionen abgerufen")
             return transactions
         
-        # ✅ Detaillierte Fehlerausgabe
+        # ✅ Detaillierte Fehlerbehandlung
         elif data.get('status') == '0':
             message = data.get('message', 'Unknown error')
             result = data.get('result', '')
             
             # Leere Adresse ist OK (keine Transaktionen)
             if 'No transactions found' in str(result) or message == 'No transactions found':
-                logger.info(f"ℹ️  Keine Transaktionen für {address} gefunden (neue Adresse?)")
+                logger.info(f"Keine Transaktionen für {address} gefunden (neue Adresse?)")
                 return []
             
             # Andere Fehler
-            logger.error(f"❌ Etherscan API Error: {message} - {result}")
+            logger.error(f"Etherscan API Error: {message} - {result}")
             return None
         
         else:
-            logger.warning(f"⚠️  Unerwartete API-Antwort: {data}")
+            logger.warning(f"Unerwartete API-Antwort: {data}")
             return []
             
     except asyncio.TimeoutError:
-        logger.error(f"❌ Timeout beim Abrufen von Ethereum-Transaktionen für {address}")
+        logger.error(f"Timeout beim Abrufen von Ethereum-Transaktionen für {address}")
         return None
     except Exception as e:
-        logger.error(f"❌ Exception beim Abrufen von Ethereum-Transaktionen: {e}", exc_info=True)
+        logger.error(f"Exception beim Abrufen von Ethereum-Transaktionen: {e}", exc_info=True)
         return None
