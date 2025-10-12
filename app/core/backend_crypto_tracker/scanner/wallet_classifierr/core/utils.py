@@ -1,8 +1,4 @@
-# ============================================================================
-# core/utils.py
-# ============================================================================
 """Utility functions for wallet analysis."""
-
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 
@@ -58,15 +54,26 @@ def calculate_entropy(values: List[float]) -> float:
 
 
 def calculate_gini_coefficient(values: List[float]) -> float:
-    """Calculate Gini coefficient for inequality measurement."""
+    """
+    Calculate Gini coefficient for inequality measurement.
+    
+    Returns 0 for empty lists, single values, or zero sum.
+    Returns value between 0 and 1 where 0 = perfect equality, 1 = perfect inequality.
+    """
     if not values or len(values) < 2:
         return 0
     
     sorted_values = sorted(values)
     n = len(sorted_values)
+    total_sum = sum(sorted_values)
+    
+    # ✅ FIX: Guard against division by zero
+    if total_sum == 0:
+        return 0
+    
     cumsum = sum((i + 1) * val for i, val in enumerate(sorted_values))
     
-    return (2 * cumsum) / (n * sum(sorted_values)) - (n + 1) / n
+    return (2 * cumsum) / (n * total_sum) - (n + 1) / n
 
 
 def is_round_amount(value: float, tolerance: float = 0.01) -> bool:
