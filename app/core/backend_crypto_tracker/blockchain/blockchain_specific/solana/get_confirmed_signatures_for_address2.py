@@ -1,41 +1,54 @@
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, Optional, List
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-async def execute_get_confirmed_signatures_for_address2(provider, address: str, limit: int = 1000) -> Optional[List[Dict[str, Any]]]:
-    """Holt bestätigte Signaturen für eine Adresse (v2 Methode)"""
+async def execute_get_confirmed_signatures_for_address2(
+    provider, 
+    address: str, 
+    limit: int = 25
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    ✅ Holt die letzten bestätigten Signaturen für eine Solana-Adresse
+    
+    Args:
+        provider: Solana RPC Client (SolanaClient)
+        address: Solana Wallet-Adresse
+        limit: Maximale Anzahl von Signaturen (default 25)
+    
+    Returns:
+        Liste von Signaturen oder None bei Fehler
+    """
     try:
-        params = {
-            'jsonrpc': '2.0',
-            'id': 1,
-            'method': 'getConfirmedSignaturesForAddress2',
-            'params': [
-                address,
-                {'limit': limit}
-            ]
-        }
+        if not provider:
+            raise Exception("Provider ist None")
         
-        data = await provider._make_post_request(provider.base_url, params)
+        logger.info(f"Rufe Solana Signaturen für {address} ab (limit={limit})")
         
-        if data and data.get('result'):
-            signatures = []
-            for sig in data['result']:
-                signatures.append({
-                    'signature': sig.get('signature'),
-                    'slot': sig.get('slot'),
-                    'block_time': datetime.fromtimestamp(sig.get('blockTime', 0)) if sig.get('blockTime') else None,
-                    'confirmation_status': sig.get('confirmationStatus'),
-                    'err': sig.get('err'),
-                    'memo': sig.get('memo'),
-                    'last_updated': datetime.now()
+        # ✅ Nutze die offizielle solana-py Methode
+        response = await provider.get_signatures_for_address(address, limit=limit)
+        
+        if response and response.get('result'):
+            signatures = response['result']
+            
+            # Konvertiere zu Standard-Format
+            formatted_sigs = []
+            for sig_obj in signatures:
+                formatted_sigs.append({
+                    'signature': sig_obj.get('signature', ''),
+                    'slot': sig_obj.get('slot'),
+                    'err': sig_obj.get('err'),
+                    'blockTime': sig_obj.get('blockTime'),
+                    'confirmationStatus': sig_obj.get('confirmationStatus')
                 })
             
-            return signatures
+            logger.info(f"✅ Gefunden {len(formatted_sigs)} Signaturen für {address}")
+            return formatted_sigs
+        else:
+            logger.info(f"ℹ️  Keine Signaturen für Adresse {address} gefunden")
+            return []
+            
     except Exception as e:
-        logger.error(f"Error fetching Solana confirmed signatures for address2: {e}")
-    
-    return None
+        logger.error(f"Error fetching Solana confirmed signatures for address2: {str(e)}", exc_info=True)
+        return None
