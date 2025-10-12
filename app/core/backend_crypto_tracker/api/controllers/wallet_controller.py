@@ -93,8 +93,14 @@ def normalize_blockchain_data(transactions: List[Dict], blockchain: str) -> Dict
         'inputs_per_tx': {}
     }
     
+    if not transactions:
+        return blockchain_data
+    
     for tx in transactions:
         tx_hash = tx.get('hash', tx.get('tx_hash', tx.get('signature', '')))
+        
+        if not tx_hash:
+            tx_hash = f"tx_{len(blockchain_data['outputs_per_tx'])}"
         
         blockchain_data['outputs_per_tx'][tx_hash] = 0
         blockchain_data['inputs_per_tx'][tx_hash] = 0
@@ -110,12 +116,19 @@ def normalize_blockchain_data(transactions: List[Dict], blockchain: str) -> Dict
         outputs = tx.get('outputs', [])
         if outputs:
             for out in outputs:
-                out_copy = out.copy()
+                out_copy = out.copy() if isinstance(out, dict) else {'value': 0}
                 out_copy['tx_hash'] = tx_hash
                 blockchain_data['outputs'].append(out_copy)
                 blockchain_data['outputs_per_tx'][tx_hash] += 1
-        else:
-            blockchain_data['outputs_per_tx'][tx_hash] = max(1, blockchain_data['outputs_per_tx'][tx_hash])
+        
+        # Stelle sicher dass jede TX mindestens 1 Output hat
+        if blockchain_data['outputs_per_tx'][tx_hash] == 0:
+            blockchain_data['outputs_per_tx'][tx_hash] = 1
+            blockchain_data['outputs'].append({
+                'tx_hash': tx_hash,
+                'value': 0,
+                'index': 0
+            })
     
     return blockchain_data
 
@@ -327,6 +340,7 @@ class WalletController:
             blockchain_data['address'] = wallet_address
             
             logger.info(f"Klassifiziere Wallet {wallet_address}")
+            logger.debug(f"Blockchain-Daten: outputs_per_tx={len(blockchain_data['outputs_per_tx'])}, txs={len(blockchain_data['txs'])}")
             
             classifier = WalletClassifier()
             results = classifier.classify(
