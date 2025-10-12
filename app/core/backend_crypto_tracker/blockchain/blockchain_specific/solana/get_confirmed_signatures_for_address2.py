@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional, List
 from app.core.backend_crypto_tracker.utils.logger import get_logger
+from solana.publickey import PublicKey
 
 logger = get_logger(__name__)
 
@@ -14,7 +15,7 @@ async def execute_get_confirmed_signatures_for_address2(
     
     Args:
         provider: Solana RPC Client (SolanaClient)
-        address: Solana Wallet-Adresse
+        address: Solana Wallet-Adresse (string)
         limit: Maximale Anzahl von Signaturen (default 25)
     
     Returns:
@@ -24,10 +25,21 @@ async def execute_get_confirmed_signatures_for_address2(
         if not provider:
             raise Exception("Provider ist None")
         
+        if not address:
+            raise Exception("Address ist leer")
+        
         logger.info(f"Rufe Solana Signaturen für {address} ab (limit={limit})")
         
-        # ✅ Nutze die offizielle solana-py Methode
-        response = await provider.get_signatures_for_address(address, limit=limit)
+        # ✅ Konvertiere String zu PublicKey
+        try:
+            pubkey = PublicKey(address)
+            logger.debug(f"PublicKey konvertiert: {pubkey}")
+        except Exception as e:
+            logger.error(f"Invalid PublicKey: {address}, Error: {str(e)}")
+            return None
+        
+        # ✅ Nutze die offizielle solana-py Methode mit PublicKey
+        response = await provider.get_signatures_for_address(pubkey, limit=limit)
         
         if response and response.get('result'):
             signatures = response['result']
@@ -50,5 +62,5 @@ async def execute_get_confirmed_signatures_for_address2(
             return []
             
     except Exception as e:
-        logger.error(f"Error fetching Solana confirmed signatures for address2: {str(e)}", exc_info=True)
+        logger.error(f"Error fetching Solana confirmed signatures: {str(e)}", exc_info=True)
         return None
