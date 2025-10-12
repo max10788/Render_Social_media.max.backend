@@ -580,6 +580,19 @@ class WalletController:
                 blockchain_data = normalize_blockchain_data(transactions, blockchain)
                 blockchain_data['address'] = address
                 
+                # DEBUG: Logge die Struktur
+                logger.debug(f"Blockchain-Daten für {address}:")
+                logger.debug(f"  - txs: {len(blockchain_data.get('txs', []))}")
+                logger.debug(f"  - outputs_per_tx: {len(blockchain_data.get('outputs_per_tx', {}))}")
+                logger.debug(f"  - inputs_per_tx: {len(blockchain_data.get('inputs_per_tx', {}))}")
+                logger.debug(f"  - inputs: {len(blockchain_data.get('inputs', []))}")
+                logger.debug(f"  - outputs: {len(blockchain_data.get('outputs', []))}")
+                
+                if not blockchain_data.get('outputs_per_tx'):
+                    logger.warning(f"WARNUNG: outputs_per_tx ist leer für {address}!")
+                    # Erstelle fallback
+                    blockchain_data['outputs_per_tx'] = {tx.get('hash', f'tx_{i}'): 1 for i, tx in enumerate(transactions)}
+                
                 try:
                     analysis = classifier.classify(
                         address=address,
