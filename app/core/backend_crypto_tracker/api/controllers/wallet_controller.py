@@ -97,7 +97,7 @@ def normalize_blockchain_data(transactions: List[Dict], blockchain: str) -> Dict
         return blockchain_data
     
     for tx in transactions:
-        tx_hash = tx.get('hash', tx.get('tx_hash', tx.get('signature', '')))
+        tx_hash = tx.get('hash', tx.get('tx_hash', tx.get('signature', tx.get('digest', ''))))
         
         if not tx_hash:
             tx_hash = f"tx_{len(blockchain_data['outputs_per_tx'])}"
@@ -121,7 +121,6 @@ def normalize_blockchain_data(transactions: List[Dict], blockchain: str) -> Dict
                 blockchain_data['outputs'].append(out_copy)
                 blockchain_data['outputs_per_tx'][tx_hash] += 1
         
-        # Stelle sicher dass jede TX mindestens 1 Output hat
         if blockchain_data['outputs_per_tx'][tx_hash] == 0:
             blockchain_data['outputs_per_tx'][tx_hash] = 1
             blockchain_data['outputs'].append({
@@ -192,7 +191,7 @@ class BlockchainDataFetcher:
             raise Exception(f"Solana Provider-Fehler: {str(e)}")
     
     @staticmethod
-    async def fetch_solana_transactions_sync(address: str, limit: int = DEFAULT_TX_LIMIT) -> List[Dict]:
+    async def fetch_solana_transactions(address: str, limit: int = DEFAULT_TX_LIMIT) -> List[Dict]:
         """Holt Solana-Transaktionen für eine Adresse"""
         try:
             provider = await BlockchainDataFetcher.get_solana_provider()
@@ -236,21 +235,38 @@ class BlockchainDataFetcher:
         except Exception as e:
             logger.error(f"Fehler beim Abrufen von Solana-Transaktionen: {str(e)}", exc_info=True)
             raise Exception(f"Solana-API-Fehler: {str(e)}")
-        
+    
     @staticmethod
-    def fetch_sui_transactions_sync(address: str, limit: int = DEFAULT_TX_LIMIT) -> List[Dict]:
-        """Holt Sui-Transaktionen für eine Adresse"""
+    async def fetch_sui_transactions(provider, address: str, limit: int = DEFAULT_TX_LIMIT) -> List[Dict]:
+        """Holt Sui-Transaktionen für eine Adresse (async)"""
         try:
-            transactions = await get_sui_transactions(provider, address=address, limit=limit)
-            return transactions if transactions else []
+            logger.info(f"Rufe Sui-Transaktionen für {address} ab (limit={limit})")
+            
+            transactions = await get_sui_transactions(
+                provider=provider,
+                address=address,
+                limit=limit
+            )
+            
+            if not transactions:
+                logger.info(f"Keine Sui-Transaktionen für {address} gefunden")
+                return []
+            
+            if isinstance(transactions, dict):
+                transactions = [transactions]
+            
+            logger.info(f"Erfolgreich {len(transactions)} Sui-Transaktionen abgerufen")
+            return transactions if isinstance(transactions, list) else []
+            
         except Exception as e:
-            logger.error(f"Fehler beim Abrufen von Sui-Transaktionen: {str(e)}")
+            logger.error(f"Fehler beim Abrufen von Sui-Transaktionen: {str(e)}", exc_info=True)
             raise Exception(f"Sui-API-Fehler: {str(e)}")
     
     @staticmethod
     async def fetch_transactions(
         address: str,
         blockchain: str,
+        provider=None,
         limit: int = DEFAULT_TX_LIMIT
     ) -> List[Dict]:
         """Universelle Methode zum Abrufen von Transaktionen"""
@@ -259,9 +275,11 @@ class BlockchainDataFetcher:
         if blockchain in ['ethereum', 'eth']:
             return await BlockchainDataFetcher.fetch_ethereum_transactions(address, limit)
         elif blockchain in ['solana', 'sol']:
-            return await BlockchainDataFetcher.fetch_solana_transactions_sync(address, limit)
+            return await BlockchainDataFetcher.fetch_solana_transactions(address, limit)
         elif blockchain == 'sui':
-            return BlockchainDataFetcher.fetch_sui_transactions_sync(address, limit)
+            if not provider:
+                raise ValueError("Sui provider erforderlich")
+            return await BlockchainDataFetcher.fetch_sui_transactions(provider, address, limit)
         else:
             raise ValueError(f"Unbekannte Blockchain: {blockchain}")
 
@@ -274,6 +292,7 @@ class WalletController:
         transactions: Optional[list] = None,
         wallet_address: Optional[str] = None,
         blockchain: Optional[str] = None,
+        provider=None,
         stage: int = 1,
         fetch_limit: int = DEFAULT_TX_LIMIT
     ) -> Dict[str, Any]:
@@ -299,6 +318,7 @@ class WalletController:
                     transactions = await BlockchainDataFetcher.fetch_transactions(
                         address=wallet_address,
                         blockchain=blockchain,
+                        provider=provider,
                         limit=fetch_limit
                     )
                 except Exception as e:
@@ -404,12 +424,13 @@ class WalletController:
                 'error_code': 'ANALYSIS_ERROR',
                 'timestamp': datetime.utcnow().isoformat()
             }
-        
+    
     @staticmethod
     async def get_top_matches(
         transactions: Optional[list] = None,
         wallet_address: Optional[str] = None,
         blockchain: Optional[str] = None,
+        provider=None,
         stage: int = 1,
         top_n: int = 3,
         fetch_limit: int = DEFAULT_TX_LIMIT
@@ -428,6 +449,7 @@ class WalletController:
                     transactions = await BlockchainDataFetcher.fetch_transactions(
                         address=wallet_address,
                         blockchain=blockchain,
+                        provider=provider,
                         limit=fetch_limit
                     )
                 except Exception as e:
@@ -523,6 +545,7 @@ class WalletController:
     @staticmethod
     async def batch_analyze(
         wallets: list,
+        provider=None,
         stage: int = 1,
         fetch_limit: int = DEFAULT_TX_LIMIT
     ) -> Dict[str, Any]:
@@ -542,6 +565,7 @@ class WalletController:
                         transactions = await BlockchainDataFetcher.fetch_transactions(
                             address=address,
                             blockchain=blockchain,
+                            provider=provider,
                             limit=fetch_limit
                         )
                     except Exception as e:
@@ -580,7 +604,6 @@ class WalletController:
                 blockchain_data = normalize_blockchain_data(transactions, blockchain)
                 blockchain_data['address'] = address
                 
-                # DEBUG: Logge die Struktur
                 logger.debug(f"Blockchain-Daten für {address}:")
                 logger.debug(f"  - txs: {len(blockchain_data.get('txs', []))}")
                 logger.debug(f"  - outputs_per_tx: {len(blockchain_data.get('outputs_per_tx', {}))}")
@@ -590,7 +613,6 @@ class WalletController:
                 
                 if not blockchain_data.get('outputs_per_tx'):
                     logger.warning(f"WARNUNG: outputs_per_tx ist leer für {address}!")
-                    # Erstelle fallback
                     blockchain_data['outputs_per_tx'] = {tx.get('hash', f'tx_{i}'): 1 for i, tx in enumerate(transactions)}
                 
                 try:
