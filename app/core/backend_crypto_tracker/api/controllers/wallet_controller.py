@@ -241,7 +241,7 @@ class BlockchainDataFetcher:
     def fetch_sui_transactions_sync(address: str, limit: int = DEFAULT_TX_LIMIT) -> List[Dict]:
         """Holt Sui-Transaktionen für eine Adresse"""
         try:
-            transactions = get_sui_transactions(address, limit=limit)
+            transactions = await get_sui_transactions(provider, address=address, limit=limit)
             return transactions if transactions else []
         except Exception as e:
             logger.error(f"Fehler beim Abrufen von Sui-Transaktionen: {str(e)}")
