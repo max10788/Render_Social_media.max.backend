@@ -237,13 +237,13 @@ class BlockchainDataFetcher:
             raise Exception(f"Solana-API-Fehler: {str(e)}")
     
     @staticmethod
-    async def fetch_sui_transactions(provider, address: str, limit: int = DEFAULT_TX_LIMIT) -> List[Dict]:
-        """Holt Sui-Transaktionen für eine Adresse (async)"""
+    async def fetch_sui_transactions(address: str, limit: int = DEFAULT_TX_LIMIT) -> List[Dict]:
+        """Holt Sui-Transaktionen für eine Adresse (async) - OHNE Provider"""
         try:
             logger.info(f"Rufe Sui-Transaktionen für {address} ab (limit={limit})")
             
+            # Rufe get_sui_transactions OHNE provider Parameter auf
             transactions = await get_sui_transactions(
-                provider=provider,
                 address=address,
                 limit=limit
             )
@@ -266,7 +266,7 @@ class BlockchainDataFetcher:
     async def fetch_transactions(
         address: str,
         blockchain: str,
-        provider=None,
+        provider=None,  # Provider wird ignoriert für Sui
         limit: int = DEFAULT_TX_LIMIT
     ) -> List[Dict]:
         """Universelle Methode zum Abrufen von Transaktionen"""
@@ -277,9 +277,8 @@ class BlockchainDataFetcher:
         elif blockchain in ['solana', 'sol']:
             return await BlockchainDataFetcher.fetch_solana_transactions(address, limit)
         elif blockchain == 'sui':
-            if not provider:
-                raise ValueError("Sui provider erforderlich")
-            return await BlockchainDataFetcher.fetch_sui_transactions(provider, address, limit)
+            # Sui benötigt KEINEN provider - rufe direkt auf
+            return await BlockchainDataFetcher.fetch_sui_transactions(address, limit)
         else:
             raise ValueError(f"Unbekannte Blockchain: {blockchain}")
 
