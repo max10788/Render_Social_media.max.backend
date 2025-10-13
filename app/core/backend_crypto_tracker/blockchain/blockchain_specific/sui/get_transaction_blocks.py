@@ -1,24 +1,31 @@
+ =============================================================================
+# DATEI 1: app/core/backend_crypto_tracker/blockchain/blockchain_specific/sui/get_transaction_blocks.py
+# =============================================================================
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+import httpx
+import os
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 async def execute_get_transaction_blocks(
-    provider, 
     address: str = None,
     digest: str = None,
-    limit: int = 100
+    limit: int = 100,
+    provider=None  # Optional, wird ignoriert - für Kompatibilität
 ) -> Optional[Dict[str, Any]]:
     """
     Holt Transaction Blocks entweder für eine Adresse oder einen einzelnen Digest
+    OHNE Provider - nutzt direkte HTTP-Calls
     
     Args:
-        provider: Sui RPC provider
         address: Sui wallet address (zum Abrufen mehrerer Transaktionen)
         digest: Single transaction digest (zum Abrufen eines spezifischen Blocks)
         limit: Maximale Anzahl Transaktionen zu abrufen (nur bei address)
+        provider: DEPRECATED - wird ignoriert
     
     Returns:
         Transaction Block Daten oder Liste von Blocks
@@ -26,11 +33,11 @@ async def execute_get_transaction_blocks(
     try:
         # Fall 1: Einzelne Digest abrufen
         if digest:
-            return await _get_single_transaction_block(provider, digest)
+            return await _get_single_transaction_block(digest)
         
         # Fall 2: Transaktionen für eine Adresse abrufen
         if address:
-            return await _get_address_transaction_blocks(provider, address, limit)
+            return await _get_address_transaction_blocks(address, limit)
         
         logger.error("Either 'address' or 'digest' parameter required")
         return None
@@ -40,30 +47,47 @@ async def execute_get_transaction_blocks(
         return None
 
 
-async def _get_single_transaction_block(
-    provider, 
-    digest: str
-) -> Optional[Dict[str, Any]]:
-    """Holt einen einzelnen Transaction Block"""
+async def _make_sui_rpc_call(method: str, params: list) -> Optional[Dict]:
+    """Macht einen direkten RPC-Call an Sui"""
     try:
-        params = {
+        sui_rpc_url = os.getenv('SUI_RPC_URL', 'https://fullnode.mainnet.sui.io:443')
+        
+        payload = {
             'jsonrpc': '2.0',
             'id': 1,
-            'method': 'sui_getTransactionBlock',
-            'params': [
-                digest,
-                {
-                    'showInput': True,
-                    'showRawInput': True,
-                    'showEffects': True,
-                    'showEvents': True,
-                    'showObjectChanges': True,
-                    'showBalanceChanges': True
-                }
-            ]
+            'method': method,
+            'params': params
         }
         
-        data = await provider._make_post_request(provider.base_url, params)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(sui_rpc_url, json=payload)
+            response.raise_for_status()
+            return response.json()
+            
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error in Sui RPC call: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Error in Sui RPC call: {e}")
+        return None
+
+
+async def _get_single_transaction_block(digest: str) -> Optional[Dict[str, Any]]:
+    """Holt einen einzelnen Transaction Block"""
+    try:
+        params = [
+            digest,
+            {
+                'showInput': True,
+                'showRawInput': True,
+                'showEffects': True,
+                'showEvents': True,
+                'showObjectChanges': True,
+                'showBalanceChanges': True
+            }
+        ]
+        
+        data = await _make_sui_rpc_call('sui_getTransactionBlock', params)
         
         if data and data.get('result'):
             tx_block = data['result']
@@ -85,7 +109,6 @@ async def _get_single_transaction_block(
 
 
 async def _get_address_transaction_blocks(
-    provider,
     address: str,
     limit: int = 100
 ) -> List[Dict[str, Any]]:
@@ -94,7 +117,7 @@ async def _get_address_transaction_blocks(
     """
     try:
         # Schritt 1: Transaktions-Digests für diese Adresse abrufen
-        digests = await _get_transaction_digests_for_address(provider, address, limit)
+        digests = await _get_transaction_digests_for_address(address, limit)
         
         if not digests:
             logger.info(f"No transactions found for address {address}")
@@ -106,7 +129,7 @@ async def _get_address_transaction_blocks(
         transactions = []
         for digest in digests:
             try:
-                tx_block = await _get_single_transaction_block(provider, digest)
+                tx_block = await _get_single_transaction_block(digest)
                 if tx_block:
                     transactions.append(tx_block)
             except Exception as e:
@@ -122,7 +145,6 @@ async def _get_address_transaction_blocks(
 
 
 async def _get_transaction_digests_for_address(
-    provider,
     address: str,
     limit: int = 100
 ) -> List[str]:
@@ -131,23 +153,22 @@ async def _get_transaction_digests_for_address(
     Nutzt queryTransactionBlocks RPC-Methode
     """
     try:
-        params = {
-            'jsonrpc': '2.0',
-            'id': 1,
-            'method': 'suix_queryTransactionBlocks',
-            'params': [
-                {
-                    'filter': {
-                        'FromAddress': address
-                    },
-                    'order': 'descending',
-                    'limit': min(limit, 100)  # Sui hat oft ein Maximum von 100
+        params = [
+            {
+                'filter': {
+                    'FromAddress': address
                 },
-                None  # cursor für Pagination
-            ]
-        }
+                'options': {
+                    'showInput': False,
+                    'showEffects': False,
+                    'showEvents': False
+                }
+            },
+            None,  # cursor für Pagination
+            min(limit, 100)  # Sui hat oft ein Maximum von 100
+        ]
         
-        data = await provider._make_post_request(provider.base_url, params)
+        data = await _make_sui_rpc_call('suix_queryTransactionBlocks', params)
         
         if data and data.get('result'):
             result = data['result']
