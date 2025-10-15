@@ -286,6 +286,193 @@ class BlockchainDataFetcher:
         else:
             raise ValueError(f"Unbekannte Blockchain: {blockchain}")
 
+class WalletMetadataFetcher:
+    """Holt zusätzliche Wallet-Metadaten (Balance, First/Last TX)"""
+    
+    @staticmethod
+    async def get_ethereum_metadata(address: str, transactions: List[Dict]) -> Dict[str, Any]:
+        """Holt Ethereum Wallet-Metadaten"""
+        try:
+            metadata = {
+                'balance': 0.0,
+                'first_transaction': None,
+                'last_transaction': None
+            }
+            
+            # Balance abrufen
+            try:
+                api_key = os.getenv('ETHERSCAN_API_KEY') or os.getenv('ETHEREUM_API_KEY')
+                if api_key:
+                    balance_result = await get_eth_balance(
+                        address=address,
+                        api_key=api_key,
+                        base_url=ETHERSCAN_BASE_URL
+                    )
+                    
+                    if balance_result and 'balance' in balance_result:
+                        # Konvertiere Wei zu ETH
+                        metadata['balance'] = float(balance_result['balance']) / 1e18
+            except Exception as e:
+                logger.warning(f"Fehler beim Abrufen der Ethereum-Balance: {str(e)}")
+            
+            # First & Last Transaction aus vorhandenen Daten
+            if transactions and len(transactions) > 0:
+                # Sortiere nach Timestamp
+                sorted_txs = sorted(
+                    transactions,
+                    key=lambda x: x.get('timestamp', 0)
+                )
+                
+                if sorted_txs:
+                    first_tx = sorted_txs[0]
+                    last_tx = sorted_txs[-1]
+                    
+                    # Konvertiere Unix-Timestamps zu ISO-Format
+                    first_ts = first_tx.get('timestamp', 0)
+                    last_ts = last_tx.get('timestamp', 0)
+                    
+                    if isinstance(first_ts, (int, float)) and first_ts > 0:
+                        metadata['first_transaction'] = datetime.fromtimestamp(first_ts).isoformat()
+                    
+                    if isinstance(last_ts, (int, float)) and last_ts > 0:
+                        metadata['last_transaction'] = datetime.fromtimestamp(last_ts).isoformat()
+            
+            return metadata
+            
+        except Exception as e:
+            logger.error(f"Fehler beim Abrufen von Ethereum-Metadaten: {str(e)}")
+            return {
+                'balance': 0.0,
+                'first_transaction': None,
+                'last_transaction': None
+            }
+    
+    @staticmethod
+    async def get_solana_metadata(address: str, transactions: List[Dict]) -> Dict[str, Any]:
+        """Holt Solana Wallet-Metadaten"""
+        try:
+            metadata = {
+                'balance': 0.0,
+                'first_transaction': None,
+                'last_transaction': None
+            }
+            
+            # Balance abrufen
+            try:
+                provider = await BlockchainDataFetcher.get_solana_provider()
+                balance_result = await get_sol_balance(
+                    provider=provider,
+                    address=address
+                )
+                
+                if balance_result and 'balance' in balance_result:
+                    # Konvertiere Lamports zu SOL
+                    metadata['balance'] = float(balance_result['balance']) / 1e9
+            except Exception as e:
+                logger.warning(f"Fehler beim Abrufen der Solana-Balance: {str(e)}")
+            
+            # First & Last Transaction
+            if transactions and len(transactions) > 0:
+                sorted_txs = sorted(
+                    transactions,
+                    key=lambda x: x.get('blockTime', 0) or x.get('timestamp', 0)
+                )
+                
+                if sorted_txs:
+                    first_tx = sorted_txs[0]
+                    last_tx = sorted_txs[-1]
+                    
+                    first_ts = first_tx.get('blockTime') or first_tx.get('timestamp', 0)
+                    last_ts = last_tx.get('blockTime') or last_tx.get('timestamp', 0)
+                    
+                    if isinstance(first_ts, (int, float)) and first_ts > 0:
+                        metadata['first_transaction'] = datetime.fromtimestamp(first_ts).isoformat()
+                    
+                    if isinstance(last_ts, (int, float)) and last_ts > 0:
+                        metadata['last_transaction'] = datetime.fromtimestamp(last_ts).isoformat()
+            
+            return metadata
+            
+        except Exception as e:
+            logger.error(f"Fehler beim Abrufen von Solana-Metadaten: {str(e)}")
+            return {
+                'balance': 0.0,
+                'first_transaction': None,
+                'last_transaction': None
+            }
+    
+    @staticmethod
+    async def get_sui_metadata(address: str, transactions: List[Dict]) -> Dict[str, Any]:
+        """Holt Sui Wallet-Metadaten"""
+        try:
+            metadata = {
+                'balance': 0.0,
+                'first_transaction': None,
+                'last_transaction': None
+            }
+            
+            # Balance abrufen
+            try:
+                balance_result = await get_sui_balance(address=address)
+                
+                if balance_result and 'balance' in balance_result:
+                    # Konvertiere MIST zu SUI (1 SUI = 1e9 MIST)
+                    metadata['balance'] = float(balance_result['balance']) / 1e9
+            except Exception as e:
+                logger.warning(f"Fehler beim Abrufen der Sui-Balance: {str(e)}")
+            
+            # First & Last Transaction
+            if transactions and len(transactions) > 0:
+                sorted_txs = sorted(
+                    transactions,
+                    key=lambda x: x.get('timestampMs', 0) or x.get('timestamp', 0)
+                )
+                
+                if sorted_txs:
+                    first_tx = sorted_txs[0]
+                    last_tx = sorted_txs[-1]
+                    
+                    first_ts = first_tx.get('timestampMs', 0)
+                    last_ts = last_tx.get('timestampMs', 0)
+                    
+                    # Sui verwendet Millisekunden
+                    if isinstance(first_ts, (int, float)) and first_ts > 0:
+                        metadata['first_transaction'] = datetime.fromtimestamp(first_ts / 1000).isoformat()
+                    
+                    if isinstance(last_ts, (int, float)) and last_ts > 0:
+                        metadata['last_transaction'] = datetime.fromtimestamp(last_ts / 1000).isoformat()
+            
+            return metadata
+            
+        except Exception as e:
+            logger.error(f"Fehler beim Abrufen von Sui-Metadaten: {str(e)}")
+            return {
+                'balance': 0.0,
+                'first_transaction': None,
+                'last_transaction': None
+            }
+    
+    @staticmethod
+    async def fetch_metadata(
+        address: str,
+        blockchain: str,
+        transactions: List[Dict]
+    ) -> Dict[str, Any]:
+        """Universelle Methode zum Abrufen von Wallet-Metadaten"""
+        blockchain = blockchain.lower()
+        
+        if blockchain in ['ethereum', 'eth']:
+            return await WalletMetadataFetcher.get_ethereum_metadata(address, transactions)
+        elif blockchain in ['solana', 'sol']:
+            return await WalletMetadataFetcher.get_solana_metadata(address, transactions)
+        elif blockchain == 'sui':
+            return await WalletMetadataFetcher.get_sui_metadata(address, transactions)
+        else:
+            return {
+                'balance': 0.0,
+                'first_transaction': None,
+                'last_transaction': None
+            }
 
 class WalletController:
     """Controller für Wallet-Analyse-Operationen"""
@@ -672,5 +859,82 @@ class WalletController:
                 'success': False,
                 'error': str(e),
                 'error_code': 'BATCH_ANALYSIS_ERROR',
+                'timestamp': datetime.utcnow().isoformat()
+            }
+
+    @staticmethod
+    async def get_wallet_metadata(
+        wallet_address: str,
+        blockchain: str,
+        transactions: Optional[List[Dict]] = None,
+        fetch_limit: int = DEFAULT_TX_LIMIT
+    ) -> Dict[str, Any]:
+        """
+        Holt zusätzliche Wallet-Metadaten (Balance, First/Last Transaction)
+        
+        Args:
+            wallet_address: Die Wallet-Adresse
+            blockchain: Die Blockchain (ethereum, solana, sui)
+            transactions: Optional - bereits geladene Transaktionen
+            fetch_limit: Limit für Transaction-Fetch falls nicht vorhanden
+            
+        Returns:
+            Dict mit success, data (balance, first_transaction, last_transaction)
+        """
+        try:
+            if not wallet_address or not blockchain:
+                return {
+                    'success': False,
+                    'error': 'wallet_address und blockchain erforderlich',
+                    'error_code': 'MISSING_PARAMETERS'
+                }
+            
+            # Transaktionen abrufen falls nicht vorhanden
+            if transactions is None:
+                try:
+                    logger.info(f"Hole Transaktionen für Metadaten: {wallet_address}")
+                    transactions = await BlockchainDataFetcher.fetch_transactions(
+                        address=wallet_address,
+                        blockchain=blockchain,
+                        provider=None,
+                        limit=fetch_limit
+                    )
+                except Exception as e:
+                    logger.error(f"Fehler beim Abrufen von Transaktionen: {str(e)}")
+                    transactions = []
+            
+            # Konvertiere Timestamps falls nötig
+            if transactions:
+                try:
+                    transactions = convert_timestamps_to_unix(transactions)
+                except Exception as e:
+                    logger.warning(f"Timestamp-Konvertierung fehlgeschlagen: {str(e)}")
+            
+            # Metadaten abrufen
+            metadata = await WalletMetadataFetcher.fetch_metadata(
+                address=wallet_address,
+                blockchain=blockchain,
+                transactions=transactions
+            )
+            
+            return {
+                'success': True,
+                'data': {
+                    'wallet_address': wallet_address,
+                    'blockchain': blockchain,
+                    'balance': round(float(metadata['balance']), 8),
+                    'first_transaction': metadata['first_transaction'],
+                    'last_transaction': metadata['last_transaction'],
+                    'transaction_count': len(transactions) if transactions else 0
+                },
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Fehler in get_wallet_metadata: {str(e)}", exc_info=True)
+            return {
+                'success': False,
+                'error': str(e),
+                'error_code': 'METADATA_ERROR',
                 'timestamp': datetime.utcnow().isoformat()
             }
