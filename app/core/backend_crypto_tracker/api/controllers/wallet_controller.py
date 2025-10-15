@@ -13,6 +13,10 @@ from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_c
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_transaction_details import execute_get_transaction_details as get_sol_transaction
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_transaction_blocks import execute_get_transaction_blocks as get_sui_transactions
 
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_address_balance import execute_get_address_balance as get_eth_balance
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_account_balance import execute_get_account_balance as get_sol_balance
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_account_balance import execute_get_account_balance as get_sui_balance
+
 logger = logging.getLogger(__name__)
 
 ETHERSCAN_BASE_URL = "https://api.etherscan.io/api"
