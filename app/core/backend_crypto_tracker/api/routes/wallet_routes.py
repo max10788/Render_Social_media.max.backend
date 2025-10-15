@@ -431,6 +431,82 @@ async def batch_analyze(request: Request):
             }
         )
 
+    @staticmethod
+    async def get_wallet_metadata(
+        wallet_address: str,
+        blockchain: str,
+        transactions: Optional[List[Dict]] = None,
+        fetch_limit: int = DEFAULT_TX_LIMIT
+    ) -> Dict[str, Any]:
+        """
+        Holt zusätzliche Wallet-Metadaten (Balance, First/Last Transaction)
+        
+        Args:
+            wallet_address: Die Wallet-Adresse
+            blockchain: Die Blockchain (ethereum, solana, sui)
+            transactions: Optional - bereits geladene Transaktionen
+            fetch_limit: Limit für Transaction-Fetch falls nicht vorhanden
+            
+        Returns:
+            Dict mit success, data (balance, first_transaction, last_transaction)
+        """
+        try:
+            if not wallet_address or not blockchain:
+                return {
+                    'success': False,
+                    'error': 'wallet_address und blockchain erforderlich',
+                    'error_code': 'MISSING_PARAMETERS'
+                }
+            
+            # Transaktionen abrufen falls nicht vorhanden
+            if transactions is None:
+                try:
+                    logger.info(f"Hole Transaktionen für Metadaten: {wallet_address}")
+                    transactions = await BlockchainDataFetcher.fetch_transactions(
+                        address=wallet_address,
+                        blockchain=blockchain,
+                        provider=None,
+                        limit=fetch_limit
+                    )
+                except Exception as e:
+                    logger.error(f"Fehler beim Abrufen von Transaktionen: {str(e)}")
+                    transactions = []
+            
+            # Konvertiere Timestamps falls nötig
+            if transactions:
+                try:
+                    transactions = convert_timestamps_to_unix(transactions)
+                except Exception as e:
+                    logger.warning(f"Timestamp-Konvertierung fehlgeschlagen: {str(e)}")
+            
+            # Metadaten abrufen
+            metadata = await WalletMetadataFetcher.fetch_metadata(
+                address=wallet_address,
+                blockchain=blockchain,
+                transactions=transactions
+            )
+            
+            return {
+                'success': True,
+                'data': {
+                    'wallet_address': wallet_address,
+                    'blockchain': blockchain,
+                    'balance': round(float(metadata['balance']), 8),
+                    'first_transaction': metadata['first_transaction'],
+                    'last_transaction': metadata['last_transaction'],
+                    'transaction_count': len(transactions) if transactions else 0
+                },
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Fehler in get_wallet_metadata: {str(e)}", exc_info=True)
+            return {
+                'success': False,
+                'error': str(e),
+                'error_code': 'METADATA_ERROR',
+                'timestamp': datetime.utcnow().isoformat()
+            }
 
 @router.get("/health")
 async def health_check():
