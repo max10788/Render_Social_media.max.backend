@@ -1,19 +1,40 @@
+"""
+Token Data Resolver - Refactored to use new blockchain data system
+Resolves token addresses to token data using direct function imports
+"""
+
 import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-import asyncio
 
+# Import data models
 from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data import TokenPriceData
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 
+# Import aggregator functions
+from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko.get_token_market_data import get_token_market_data as coingecko_get_market_data
+from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap.get_token_quote import get_token_quote as coinmarketcap_get_quote
+
+# Import blockchain-specific functions
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_token_price import get_token_price as ethereum_get_price
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_token_price import get_token_price as solana_get_price
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_token_metadata import get_token_metadata as solana_get_metadata
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_token_price import get_token_price as sui_get_price
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_coin_metadata import get_coin_metadata as sui_get_metadata
+
 logger = logging.getLogger(__name__)
 
+
 class TokenDataResolver:
-    """Klasse zur Auflösung von Token-Adressen zu Token-Daten"""
+    """
+    Klasse zur Auflösung von Token-Adressen zu Token-Daten
+    Refactored to use direct function imports instead of api_manager
+    """
     
-    def __init__(self, api_manager):
-        self.api_manager = api_manager
+    def __init__(self):
+        """Initialisiert den TokenDataResolver ohne api_manager"""
         self.token_cache = {}  # Einfacher Cache für Token-Daten
+        logger.info("TokenDataResolver initialisiert mit neuem Blockchain-Daten-System")
         
     async def resolve_token_data(self, token_address: str, chain: str) -> Optional[Token]:
         """
@@ -21,7 +42,7 @@ class TokenDataResolver:
         
         Args:
             token_address: Die Token-Adresse
-            chain: Die Blockchain
+            chain: Die Blockchain (ethereum, bsc, solana, sui)
             
         Returns:
             Token-Objekt oder None wenn nicht gefunden
@@ -34,6 +55,9 @@ class TokenDataResolver:
             if cache_key in self.token_cache:
                 logger.info(f"Returning cached token data for {token_address}")
                 return self.token_cache[cache_key]
+            
+            # Normalisiere Chain-Name
+            chain = chain.lower()
             
             # Versuche, Token-Daten von verschiedenen Quellen zu erhalten
             token_data = await self._resolve_from_multiple_sources(token_address, chain)
@@ -51,133 +75,125 @@ class TokenDataResolver:
             return self._create_unknown_token(token_address, chain)
     
     async def _resolve_from_multiple_sources(self, token_address: str, chain: str) -> Optional[Token]:
-        """Versucht, Token-Daten von verschiedenen Quellen zu erhalten"""
+        """
+        Versucht, Token-Daten von verschiedenen Quellen zu erhalten
+        Neue Implementierung mit direkten Funktionsaufrufen
+        """
         
-        # Quelle 1: Direkte Preisabfrage
+        # Quelle 1: Chain-spezifische Preisabfrage
         price_data = await self._try_get_price_data(token_address, chain)
         if price_data and self._is_valid_price_data(price_data):
             return self._create_token_from_price_data(price_data, token_address, chain)
         
-        # Quelle 2: Token-Metadaten
+        # Quelle 2: Token-Metadaten (Aggregatoren)
         metadata = await self._try_get_token_metadata(token_address, chain)
         if metadata and self._is_valid_metadata(metadata):
             return self._create_token_from_metadata(metadata, token_address, chain)
         
-        # Quelle 3: On-Chain Daten
-        onchain_data = await self._try_get_onchain_data(token_address, chain)
-        if onchain_data:
-            return self._create_token_from_onchain_data(onchain_data, token_address, chain)
+        # Quelle 3: Chain-spezifische Metadaten
+        chain_metadata = await self._try_get_chain_metadata(token_address, chain)
+        if chain_metadata and self._is_valid_metadata(chain_metadata):
+            return self._create_token_from_metadata(chain_metadata, token_address, chain)
         
         return None
     
     async def _try_get_price_data(self, token_address: str, chain: str) -> Optional[TokenPriceData]:
-        """Versucht, Preisdaten für den Token von verschiedenen Quellen zu erhalten"""
+        """
+        Versucht, Preisdaten für den Token zu erhalten
+        Neue Implementierung mit direkten Chain-spezifischen Funktionen
+        """
         try:
-            # Zuerst CoinMarketCap versuchen (höheres Rate-Limit: 333/Minute vs. 10/Minute)
-            if hasattr(self.api_manager, 'coinmarketcap_provider'):
-                logger.info(f"Trying to get price data from CoinMarketCap for {token_address}")
-                price_data = await self.api_manager.coinmarketcap_provider.get_token_price_by_address(token_address, chain)
-                if price_data and self._is_valid_price_data(price_data):
-                    logger.info(f"Successfully got price data from CoinMarketCap for {token_address}")
-                    return price_data
+            logger.info(f"Trying to get price data for {token_address} on {chain}")
             
-            # Dann CoinGecko versuchen (als Fallback)
-            if hasattr(self.api_manager, 'coingecko_provider'):
-                logger.info(f"Trying to get price data from CoinGecko for {token_address}")
-                price_data = await self.api_manager.coingecko_provider.get_token_price(token_address, chain)
-                if price_data and self._is_valid_price_data(price_data):
-                    logger.info(f"Successfully got price data from CoinGecko for {token_address}")
-                    return price_data
+            # Chain-spezifische Preisabfrage
+            if chain in ['ethereum', 'bsc']:
+                price_data = await ethereum_get_price(token_address)
+            elif chain == 'solana':
+                price_data = await solana_get_price(token_address)
+            elif chain == 'sui':
+                price_data = await sui_get_price(token_address)
+            else:
+                logger.warning(f"Unsupported chain: {chain}")
+                return None
             
-            # Wenn keine der Quellen funktioniert hat, gebe None zurück
-            logger.warning(f"No price data found for {token_address} on {chain}")
+            if price_data and self._is_valid_price_data(price_data):
+                logger.info(f"Successfully got price data for {token_address} on {chain}")
+                return price_data
+            
+            logger.warning(f"No valid price data found for {token_address} on {chain}")
             return None
+            
         except Exception as e:
-            logger.warning(f"Error getting price data for {token_address}: {e}")
+            logger.warning(f"Error getting price data for {token_address} on {chain}: {e}")
             return None
     
     async def _try_get_token_metadata(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
-        """Versucht, Token-Metadaten zu erhalten - CoinMarketCap zuerst"""
+        """
+        Versucht, Token-Metadaten von Aggregatoren zu erhalten
+        Priorisiert CoinMarketCap (höheres Rate-Limit)
+        """
         try:
-            # Prüfe, ob api_manager ein providers-Attribut hat
-            if not hasattr(self.api_manager, 'providers'):
-                logger.warning(f"api_manager has no 'providers' attribute")
-                
-                # VERSUCHE ALTERNATIVE METHODEN
-                # Methode 1: Direkter CoinMarketCap-Zugriff
-                if hasattr(self.api_manager, 'coinmarketcap_provider'):
-                    logger.info(f"Trying direct coinmarketcap_provider")
-                    provider = self.api_manager.coinmarketcap_provider
-                    if hasattr(provider, 'get_token_metadata'):
-                        metadata = await provider.get_token_metadata(token_address, chain)
-                        if metadata and metadata.get('name') != 'Unknown':
-                            return metadata
-                
-                # Methode 2: Direkter CoinGecko-Zugriff
-                elif hasattr(self.api_manager, 'coingecko_provider'):
-                    logger.info(f"Trying direct coingecko_provider")
-                    provider = self.api_manager.coingecko_provider
-                    if hasattr(provider, 'get_token_metadata'):
-                        metadata = await provider.get_token_metadata(token_address, chain)
-                        if metadata and metadata.get('name') != 'Unknown':
-                            return metadata
-                
-                # Methode 3: Spezielle Metadaten-Methoden
-                elif hasattr(self.api_manager, 'get_coinmarketcap_metadata'):
-                    logger.info(f"Trying get_coinmarketcap_metadata method")
-                    metadata = await self.api_manager.get_coinmarketcap_metadata(token_address, chain)
-                    if metadata and metadata.get('name') != 'Unknown':
-                        return metadata
-                
-                elif hasattr(self.api_manager, 'get_coingecko_metadata'):
-                    logger.info(f"Trying get_coingecko_metadata method")
-                    metadata = await self.api_manager.get_coingecko_metadata(token_address, chain)
-                    if metadata and metadata.get('name') != 'Unknown':
-                        return metadata
-                
-                return None
-                
-            # Original-Code, falls providers-Attribut existiert
-            else:
-                # Versuche verschiedene Provider - CoinMarketCap zuerst
-                providers = ['coinmarketcap', 'coingecko']
-                
-                for provider_name in providers:
-                    if provider_name in self.api_manager.providers:
-                        provider = self.api_manager.providers[provider_name]
-                        
-                        if hasattr(provider, 'get_token_metadata'):
-                            metadata = await provider.get_token_metadata(token_address, chain)
-                            if metadata and metadata.get('name') != 'Unknown':
-                                return metadata
-                
-                return None
-                
+            logger.info(f"Trying to get token metadata from aggregators for {token_address}")
+            
+            # Versuch 1: CoinMarketCap (höheres Rate-Limit: 333/min)
+            try:
+                metadata = await coinmarketcap_get_quote(token_address, chain)
+                if metadata and metadata.get('name') != 'Unknown':
+                    logger.info(f"Successfully got metadata from CoinMarketCap for {token_address}")
+                    return metadata
+            except Exception as e:
+                logger.debug(f"CoinMarketCap metadata fetch failed: {e}")
+            
+            # Versuch 2: CoinGecko (Fallback)
+            try:
+                metadata = await coingecko_get_market_data(token_address, chain)
+                if metadata and metadata.get('name') != 'Unknown':
+                    logger.info(f"Successfully got metadata from CoinGecko for {token_address}")
+                    return metadata
+            except Exception as e:
+                logger.debug(f"CoinGecko metadata fetch failed: {e}")
+            
+            logger.warning(f"No metadata found from aggregators for {token_address}")
+            return None
+            
         except Exception as e:
             logger.warning(f"Error getting token metadata for {token_address}: {e}")
             return None
     
-    async def _try_get_onchain_data(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
-        """Versucht, On-Chain-Daten für den Token zu erhalten"""
+    async def _try_get_chain_metadata(self, token_address: str, chain: str) -> Optional[Dict[str, Any]]:
+        """
+        Versucht, Chain-spezifische Metadaten zu erhalten
+        """
         try:
-            # Dies würde eine separate On-Chain-Analyse erfordern
-            # Für jetzt geben wir None zurück
+            logger.info(f"Trying to get chain-specific metadata for {token_address} on {chain}")
+            
+            if chain == 'solana':
+                metadata = await solana_get_metadata(token_address)
+                if metadata and metadata.get('name') != 'Unknown':
+                    logger.info(f"Successfully got Solana metadata for {token_address}")
+                    return metadata
+            
+            elif chain == 'sui':
+                metadata = await sui_get_metadata(token_address)
+                if metadata and metadata.get('name') != 'Unknown':
+                    logger.info(f"Successfully got Sui metadata for {token_address}")
+                    return metadata
+            
             return None
+            
         except Exception as e:
-            logger.warning(f"Error getting onchain data for {token_address}: {e}")
+            logger.warning(f"Error getting chain metadata for {token_address} on {chain}: {e}")
             return None
     
-    # === ANGEPASSTE METHODE - LÖSUNG 1 ===
     def _is_valid_price_data(self, price_data: TokenPriceData) -> bool:
         """Prüft, ob die Preisdaten gültig sind"""
         if not price_data:
             return False
         
         # Prüfe nur, ob der Preis sinnvoll ist
-        if price_data.price <= 0:
+        if hasattr(price_data, 'price') and price_data.price <= 0:
             return False
         
-        # Name und Symbol sind optional - entferne diese Prüfungen
         return True
     
     def _is_valid_metadata(self, metadata: Dict[str, Any]) -> bool:
@@ -196,8 +212,8 @@ class TokenDataResolver:
         """Erstellt ein Token-Objekt aus Preisdaten"""
         return Token(
             address=token_address,
-            name=getattr(price_data, 'name', 'Unknown'),  # Standardwert 'Unknown'
-            symbol=getattr(price_data, 'symbol', 'UNKNOWN'),  # Standardwert 'UNKNOWN'
+            name=getattr(price_data, 'name', 'Unknown'),
+            symbol=getattr(price_data, 'symbol', 'UNKNOWN'),
             chain=chain,
             market_cap=getattr(price_data, 'market_cap', 0),
             volume_24h=getattr(price_data, 'volume_24h', 0),
@@ -215,28 +231,12 @@ class TokenDataResolver:
             name=metadata.get('name', 'Unknown'),
             symbol=metadata.get('symbol', 'UNKNOWN'),
             chain=chain,
-            market_cap=0,
-            volume_24h=0,
+            market_cap=metadata.get('market_cap', 0),
+            volume_24h=metadata.get('volume_24h', 0),
             liquidity=0,
             holders_count=0,
             contract_verified=False,
             creation_date=None,
-            token_score=0
-        )
-    
-    def _create_token_from_onchain_data(self, onchain_data: Dict[str, Any], token_address: str, chain: str) -> Token:
-        """Erstellt ein Token-Objekt aus On-Chain-Daten"""
-        return Token(
-            address=token_address,
-            name=onchain_data.get('name', 'Unknown'),
-            symbol=onchain_data.get('symbol', 'UNKNOWN'),
-            chain=chain,
-            market_cap=0,
-            volume_24h=0,
-            liquidity=0,
-            holders_count=0,
-            contract_verified=onchain_data.get('contract_verified', False),
-            creation_date=onchain_data.get('creation_date'),
             token_score=0
         )
     
@@ -255,3 +255,14 @@ class TokenDataResolver:
             creation_date=None,
             token_score=0
         )
+    
+    def clear_cache(self):
+        """Leert den Token-Cache"""
+        self.token_cache.clear()
+        logger.info("Token cache cleared")
+    
+    def get_cache_stats(self) -> Dict[str, int]:
+        """Gibt Cache-Statistiken zurück"""
+        return {
+            'cached_tokens': len(self.token_cache)
+        }
