@@ -80,19 +80,22 @@ class TokenDataResolver:
         Neue Implementierung mit direkten Funktionsaufrufen
         """
         
-        # Quelle 1: Chain-spezifische Preisabfrage
+        # Quelle 1: Chain-spezifische Preisabfrage (inkl. On-Chain-Metadaten)
         price_data = await self._try_get_price_data(token_address, chain)
         if price_data and self._is_valid_price_data(price_data):
+            logger.info(f"Successfully resolved token from price data: {getattr(price_data, 'name', 'Unknown')}")
             return self._create_token_from_price_data(price_data, token_address, chain)
         
         # Quelle 2: Token-Metadaten (Aggregatoren)
         metadata = await self._try_get_token_metadata(token_address, chain)
         if metadata and self._is_valid_metadata(metadata):
+            logger.info(f"Successfully resolved token from aggregator metadata")
             return self._create_token_from_metadata(metadata, token_address, chain)
         
         # Quelle 3: Chain-spezifische Metadaten
         chain_metadata = await self._try_get_chain_metadata(token_address, chain)
         if chain_metadata and self._is_valid_metadata(chain_metadata):
+            logger.info(f"Successfully resolved token from chain-specific metadata")
             return self._create_token_from_metadata(chain_metadata, token_address, chain)
         
         return None
@@ -105,7 +108,7 @@ class TokenDataResolver:
         try:
             logger.info(f"Trying to get price data for {token_address} on {chain}")
             
-            # Chain-spezifische Preisabfrage - ✅ MIT chain Parameter
+            # Chain-spezifische Preisabfrage - MIT chain Parameter
             if chain in ['ethereum', 'bsc']:
                 price_data = await ethereum_get_price(token_address, chain)
             elif chain == 'solana':
@@ -186,15 +189,32 @@ class TokenDataResolver:
             return None
     
     def _is_valid_price_data(self, price_data: TokenPriceData) -> bool:
-        """Prüft, ob die Preisdaten gültig sind"""
+        """
+        Prüft, ob die Preisdaten gültig sind
+        ✅ FIX: Token ist auch gültig, wenn Preis = 0 aber Metadaten vorhanden
+        """
         if not price_data:
             return False
         
-        # Prüfe nur, ob der Preis sinnvoll ist
-        if hasattr(price_data, 'price') and price_data.price <= 0:
-            return False
+        # Prüfe, ob Name oder Symbol vorhanden sind (= on-chain gefunden)
+        has_metadata = (
+            (hasattr(price_data, 'name') and price_data.name and price_data.name != 'Unknown') or
+            (hasattr(price_data, 'symbol') and price_data.symbol and price_data.symbol != 'UNKNOWN')
+        )
         
-        return True
+        # Token ist gültig wenn:
+        # 1. Es einen Preis > 0 hat, ODER
+        # 2. Es Metadaten (Name/Symbol) hat (= on-chain gefunden)
+        has_price = hasattr(price_data, 'price') and price_data.price > 0
+        
+        is_valid = has_price or has_metadata
+        
+        if is_valid:
+            logger.debug(f"Price data is valid (has_price={has_price}, has_metadata={has_metadata})")
+        else:
+            logger.debug(f"Price data is invalid (has_price={has_price}, has_metadata={has_metadata})")
+        
+        return is_valid
     
     def _is_valid_metadata(self, metadata: Dict[str, Any]) -> bool:
         """Prüft, ob die Metadaten gültig sind"""
@@ -209,17 +229,32 @@ class TokenDataResolver:
         return True
     
     def _create_token_from_price_data(self, price_data: TokenPriceData, token_address: str, chain: str) -> Token:
-        """Erstellt ein Token-Objekt aus Preisdaten"""
+        """
+        Erstellt ein Token-Objekt aus Preisdaten
+        ✅ FIX: Bessere Fehlerbehandlung und contract_verified Flag
+        """
+        # Hole Werte sicher mit Fallbacks
+        name = getattr(price_data, 'name', None) or 'Unknown'
+        symbol = getattr(price_data, 'symbol', None) or 'UNKNOWN'
+        market_cap = getattr(price_data, 'market_cap', 0) or 0
+        volume_24h = getattr(price_data, 'volume_24h', 0) or 0
+        
+        # Token ist verifiziert wenn on-chain gefunden (Source enthält "RPC")
+        source = getattr(price_data, 'source', '')
+        contract_verified = 'RPC' in source or 'on-chain' in source.lower()
+        
+        logger.info(f"Creating token from price data: {name} ({symbol}), verified={contract_verified}")
+        
         return Token(
             address=token_address,
-            name=getattr(price_data, 'name', 'Unknown'),
-            symbol=getattr(price_data, 'symbol', 'UNKNOWN'),
+            name=name,
+            symbol=symbol,
             chain=chain,
-            market_cap=getattr(price_data, 'market_cap', 0),
-            volume_24h=getattr(price_data, 'volume_24h', 0),
+            market_cap=market_cap,
+            volume_24h=volume_24h,
             liquidity=0,  # Wird später berechnet
             holders_count=0,  # Wird später geholt
-            contract_verified=False,  # Wird später geprüft
+            contract_verified=contract_verified,  # ✅ True wenn on-chain gefunden
             creation_date=None,  # Wird später geholt
             token_score=0  # Wird später berechnet
         )
