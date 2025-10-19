@@ -249,12 +249,13 @@ class TokenAnalyzer:
         try:
             self.logger.debug(f"Fetching holders for {token_address} on {chain}")
             
+            # ✅ FIX: Übergebe chain Parameter
             if chain in ['ethereum', 'bsc']:
-                holders = await ethereum_get_holders(token_address)
+                holders = await ethereum_get_holders(token_address, chain)
             elif chain == 'solana':
-                holders = await solana_get_holders(token_address)
+                holders = await solana_get_holders(token_address, chain)
             elif chain == 'sui':
-                holders = await sui_get_holders(token_address)
+                holders = await sui_get_holders(token_address, chain)
             else:
                 self.logger.warning(f"Unsupported chain: {chain}")
                 return []
