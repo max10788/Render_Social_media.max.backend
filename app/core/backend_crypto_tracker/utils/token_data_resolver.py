@@ -105,13 +105,13 @@ class TokenDataResolver:
         try:
             logger.info(f"Trying to get price data for {token_address} on {chain}")
             
-            # Chain-spezifische Preisabfrage
+            # Chain-spezifische Preisabfrage - ✅ MIT chain Parameter
             if chain in ['ethereum', 'bsc']:
-                price_data = await ethereum_get_price(token_address)
+                price_data = await ethereum_get_price(token_address, chain)
             elif chain == 'solana':
-                price_data = await solana_get_price(token_address)
+                price_data = await solana_get_price(token_address, chain)
             elif chain == 'sui':
-                price_data = await sui_get_price(token_address)
+                price_data = await sui_get_price(token_address, chain)
             else:
                 logger.warning(f"Unsupported chain: {chain}")
                 return None
