@@ -151,24 +151,29 @@ async def execute_get_token_price(token_address: str, chain: str) -> Optional[To
         # Schritt 3: Kombiniere Daten
         # WICHTIG: Gib Token-Daten zurück, auch wenn CoinGecko keinen Preis hat!
         if onchain_metadata:
-            # Token existiert on-chain!
+            # Token existiert on-chain! ✅
             return TokenPriceData(
+                token_address=token_address,
+                chain=chain,
                 name=onchain_metadata.get('name', 'Unknown'),
                 symbol=onchain_metadata.get('symbol', 'UNKNOWN'),
-                price=float(coingecko_data.get('usd', 0)) if coingecko_data else 0,
-                market_cap=float(coingecko_data.get('usd_market_cap', 0)) if coingecko_data else 0,
-                volume_24h=float(coingecko_data.get('usd_24h_vol', 0)) if coingecko_data else 0,
-                price_change_percentage_24h=float(coingecko_data.get('usd_24h_change', 0)) if coingecko_data else 0,
+                decimals=onchain_metadata.get('decimals'),
+                price=float(coingecko_data.get('usd', 0)) if coingecko_data else 0.0,
+                market_cap=float(coingecko_data.get('usd_market_cap', 0)) if coingecko_data else 0.0,
+                volume_24h=float(coingecko_data.get('usd_24h_vol', 0)) if coingecko_data else 0.0,
+                price_change_24h=float(coingecko_data.get('usd_24h_change', 0)) if coingecko_data else 0.0,
                 source="Ethereum RPC + CoinGecko" if coingecko_data else "Ethereum RPC (no price)",
                 last_updated=datetime.now()
             )
         elif coingecko_data:
             # Nur CoinGecko-Daten verfügbar
             return TokenPriceData(
+                token_address=token_address,
+                chain=chain,
                 price=float(coingecko_data.get('usd', 0)),
                 market_cap=float(coingecko_data.get('usd_market_cap', 0)),
                 volume_24h=float(coingecko_data.get('usd_24h_vol', 0)),
-                price_change_percentage_24h=float(coingecko_data.get('usd_24h_change', 0)),
+                price_change_24h=float(coingecko_data.get('usd_24h_change', 0)),
                 source="CoinGecko",
                 last_updated=datetime.now()
             )
