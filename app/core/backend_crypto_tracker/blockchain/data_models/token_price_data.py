@@ -29,13 +29,6 @@ class MarketData:
     total_supply: Optional[Decimal] = None
     last_updated: Optional[datetime] = None
 
-# blockchain/data_models/token_price_data.py
-from dataclasses import dataclass
-from typing import Optional
-from datetime import datetime
-from decimal import Decimal
-
-
 @dataclass
 class TokenPriceData:
     """
