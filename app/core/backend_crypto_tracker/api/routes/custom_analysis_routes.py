@@ -95,7 +95,7 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
         logger.info(f"Starting analysis for {request.token_address} on {request.chain}")
         
         # Import des Analyzers
-        from app.core.backend_crypto_tracker.analyzer.low_cap_analyzer import LowCapAnalyzer
+        from app.core.backend_crypto_tracker.scanner.low_cap_analyzer import LowCapAnalyzer
         
         # Initialisierung mit async with context manager
         async with LowCapAnalyzer() as analyzer:
