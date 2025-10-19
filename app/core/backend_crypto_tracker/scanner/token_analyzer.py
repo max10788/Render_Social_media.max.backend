@@ -33,13 +33,13 @@ from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_toke
 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_transaction import execute_get_transaction_details as sui_get_transaction
 
 # Import wallet classification system
-from app.core.backend_crypto_tracker.scanner.wallet_classifier.core.stages_blockchain import Stage1_RawMetrics
-from app.core.backend_crypto_tracker.scanner.wallet_classifier.core.stages import Stage2_DerivedMetrics, Stage3_ContextAnalysis
-from app.core.backend_crypto_tracker.scanner.wallet_classifier.classes.dust_sweeper import DustSweeperAnalyzer
-from app.core.backend_crypto_tracker.scanner.wallet_classifier.classes.hodler import HodlerAnalyzer
-from app.core.backend_crypto_tracker.scanner.wallet_classifier.classes.mixer import MixerAnalyzer
-from app.core.backend_crypto_tracker.scanner.wallet_classifier.classes.trader import TraderAnalyzer
-from app.core.backend_crypto_tracker.scanner.wallet_classifier.classes.whale import WhaleAnalyzer
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.stages_blockchain import Stage1_RawMetrics
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.stages import Stage2_DerivedMetrics, Stage3_ContextAnalysis
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes.dust_sweeper import DustSweeperAnalyzer
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes.hodler import HodlerAnalyzer
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes.mixer import MixerAnalyzer
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes.trader import TraderAnalyzer
+from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes.whale import WhaleAnalyzer
 
 logger = get_logger(__name__)
 
