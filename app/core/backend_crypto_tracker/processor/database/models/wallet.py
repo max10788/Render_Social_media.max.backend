@@ -1,5 +1,5 @@
 # processor/database/models/wallet.py
-from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Index, Text, JSON, Float, Enum
+from sqlalchemy import Column, Integer, String, DateTime, Boolean, ForeignKey, Index, Text, JSON, Float, Enum as SQLEnum
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.backend_crypto_tracker.processor.database.models import Base
@@ -8,20 +8,37 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-class WalletTypeEnum(enum.Enum):
-    UNKNOWN = "unknown"
-    EOA = "eoa"
-    CONTRACT = "contract"
-    CEX_WALLET = "cex_wallet"
-    DEFI_WALLET = "defi_wallet"
-    DEV_WALLET = "dev_wallet"
-    WHALE_WALLET = "whale_wallet"
-    SNIPER_WALLET = "sniper_wallet"
-    RUGPULL_SUSPECT = "rugpull_suspect"
-    BURN_WALLET = "burn_wallet"
-    DEX_CONTRACT = "dex_contract"
 
-class WalletAnalysis(Base):
+class WalletTypeEnum(Enum):
+    """
+    Enum für Wallet-Typen basierend auf dem 3-Stage-Klassifizierungssystem
+    """
+    # Neue 5 Haupttypen aus dem Klassifizierungssystem
+    DUST_SWEEPER = "DUST_SWEEPER"      # Consolidates small amounts
+    HODLER = "HODLER"                   # Long-term holder
+    MIXER = "MIXER"                     # Privacy-focused, uses mixers
+    TRADER = "TRADER"                   # Active trading
+    WHALE = "WHALE"                     # Large holder (>$10M)
+    
+    # Legacy/Fallback Typen (optional behalten für Rückwärtskompatibilität)
+    DEV_WALLET = "DEV_WALLET"           # Developer wallet (frühe Transaktionen)
+    SNIPER_WALLET = "SNIPER_WALLET"     # Very early buyer
+    RUGPULL_SUSPECT = "RUGPULL_SUSPECT" # Suspicious selling pattern
+    
+    # Standard Typen
+    BURN_WALLET = "BURN_WALLET"         # Burn address
+    DEX_CONTRACT = "DEX_CONTRACT"       # DEX smart contract
+    CEX_WALLET = "CEX_WALLET"           # Centralized exchange
+    UNKNOWN = "UNKNOWN"                 # Unclassified
+    
+    # Old types for backwards compatibility
+    EOA = "EOA"
+    CONTRACT = "CONTRACT"
+    DEFI_WALLET = "DEFI_WALLET"
+
+
+class WalletAnalysisModel(Base):
+    """SQLAlchemy model for wallet analysis (database table)"""
     __tablename__ = "wallet_analyses"
     
     # Primärschlüssel und Identifikation
@@ -30,7 +47,7 @@ class WalletAnalysis(Base):
     chain = Column(String(20), nullable=False, index=True)
     
     # Wallet-Klassifizierung
-    wallet_type = Column(Enum(WalletTypeEnum), nullable=False, index=True)
+    wallet_type = Column(SQLEnum(WalletTypeEnum), nullable=False, index=True)
     confidence_score = Column(Float)  # 0-1, wie sicher die Klassifizierung ist
     
     # Token-bezogene Daten
@@ -65,7 +82,7 @@ class WalletAnalysis(Base):
     )
     
     def __repr__(self):
-        return f"<WalletAnalysis(address='{self.wallet_address[:8]}...', type='{self.wallet_type.value}', risk={self.risk_score})>"
+        return f"<WalletAnalysisModel(address='{self.wallet_address[:8]}...', type='{self.wallet_type.value}', risk={self.risk_score})>"
     
     def to_dict(self):
         """Konvertiert das WalletAnalysis-Objekt in ein Dictionary"""
@@ -84,34 +101,15 @@ class WalletAnalysis(Base):
             'last_transaction': self.last_transaction.isoformat() if self.last_transaction else None,
             'risk_score': self.risk_score,
             'risk_flags': self.risk_flags,
-
-class WalletTypeEnum(Enum):
-    """
-    Enum für Wallet-Typen basierend auf dem 3-Stage-Klassifizierungssystem
-    """
-    # Neue 5 Haupttypen aus dem Klassifizierungssystem
-    DUST_SWEEPER = "DUST_SWEEPER"      # Consolidates small amounts
-    HODLER = "HODLER"                   # Long-term holder
-    MIXER = "MIXER"                     # Privacy-focused, uses mixers
-    TRADER = "TRADER"                   # Active trading
-    WHALE = "WHALE"                     # Large holder (>$10M)
-    
-    # Legacy/Fallback Typen (optional behalten für Rückwärtskompatibilität)
-    DEV_WALLET = "DEV_WALLET"           # Developer wallet (frühe Transaktionen)
-    SNIPER_WALLET = "SNIPER_WALLET"     # Very early buyer
-    RUGPULL_SUSPECT = "RUGPULL_SUSPECT" # Suspicious selling pattern
-    
-    # Standard Typen
-    BURN_WALLET = "BURN_WALLET"         # Burn address
-    DEX_CONTRACT = "DEX_CONTRACT"       # DEX smart contract
-    CEX_WALLET = "CEX_WALLET"           # Centralized exchange
-    UNKNOWN = "UNKNOWN"                 # Unclassified
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
 
 
 @dataclass
 class WalletAnalysis:
     """
-    Data class für Wallet-Analyse-Ergebnisse
+    Data class für Wallet-Analyse-Ergebnisse (in-memory representation)
     """
     wallet_address: str
     wallet_type: WalletTypeEnum
@@ -201,6 +199,3 @@ def get_wallet_type_risk_level(wallet_type: WalletTypeEnum) -> str:
         WalletTypeEnum.UNKNOWN: "medium"
     }
     return risk_levels.get(wallet_type, "medium")
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
-        }
