@@ -16,11 +16,11 @@ from app.core.backend_crypto_tracker.blockchain.aggregators.coingecko.get_token_
 from app.core.backend_crypto_tracker.blockchain.aggregators.coinmarketcap.get_token_quote import get_token_quote as coinmarketcap_get_quote
 
 # Import blockchain-specific functions
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_token_price import get_token_price as ethereum_get_price
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_token_price import get_token_price as solana_get_price
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_token_metadata import get_token_metadata as solana_get_metadata
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_token_price import get_token_price as sui_get_price
-from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_coin_metadata import get_coin_metadata as sui_get_metadata
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_token_price import execute_get_token_price as ethereum_get_price
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_token_price import execute_get_token_price as solana_get_price
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_token_metadata import execute_get_token_metadata as solana_get_metadata
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_token_price import execute_get_token_price as sui_get_price
+from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_coin_metadata import execute_get_coin_metadata as sui_get_metadata
 
 logger = logging.getLogger(__name__)
 
