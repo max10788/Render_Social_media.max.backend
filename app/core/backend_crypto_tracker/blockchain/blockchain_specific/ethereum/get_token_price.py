@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 import aiohttp
 import os
 from web3 import Web3
@@ -37,15 +37,64 @@ ERC20_ABI = [
         "name": "symbol",
         "outputs": [{"name": "", "type": "string"}],
         "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "totalSupply",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
     }
 ]
+
+
+async def get_onchain_metadata(token_address: str, rpc_url: str) -> Optional[Dict[str, Any]]:
+    """Holt Token-Metadaten direkt von der Blockchain"""
+    try:
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        
+        if not w3.is_connected():
+            logger.warning(f"Could not connect to Ethereum RPC")
+            return None
+        
+        logger.info(f"Connected to Ethereum RPC: {rpc_url}")
+        
+        # Erstelle Contract-Instanz
+        contract = w3.eth.contract(
+            address=Web3.to_checksum_address(token_address),
+            abi=ERC20_ABI
+        )
+        
+        # Hole Token-Metadaten
+        name = contract.functions.name().call()
+        symbol = contract.functions.symbol().call()
+        decimals = contract.functions.decimals().call()
+        
+        try:
+            total_supply = contract.functions.totalSupply().call()
+        except:
+            total_supply = 0
+        
+        logger.info(f"Found token on-chain: {name} ({symbol}), decimals: {decimals}")
+        
+        return {
+            'name': name,
+            'symbol': symbol,
+            'decimals': decimals,
+            'total_supply': total_supply
+        }
+        
+    except Exception as e:
+        logger.warning(f"Could not fetch token metadata from RPC: {e}")
+        return None
 
 
 async def execute_get_token_price(token_address: str, chain: str) -> Optional[TokenPriceData]:
     """
     Ethereum-spezifische Token-Preisabfrage
-    1. Versucht RPC-Verbindung für On-Chain-Daten
-    2. Fallback auf CoinGecko API
+    1. Holt On-Chain-Metadaten (Name, Symbol, Decimals)
+    2. Versucht Preis von CoinGecko zu holen
+    3. Gibt Token-Daten zurück - auch OHNE Preis wenn on-chain gefunden
     """
     try:
         logger.info(f"Fetching price for {token_address} on {chain}")
@@ -53,38 +102,13 @@ async def execute_get_token_price(token_address: str, chain: str) -> Optional[To
         # Hole RPC URL aus Environment
         rpc_url = os.getenv('ETHEREUM_RPC_URL')
         
-        if rpc_url:
-            # Versuche On-Chain-Daten zu holen
-            try:
-                w3 = Web3(Web3.HTTPProvider(rpc_url))
-                
-                if w3.is_connected():
-                    logger.info(f"Connected to Ethereum RPC: {rpc_url}")
-                    
-                    # Erstelle Contract-Instanz
-                    contract = w3.eth.contract(
-                        address=Web3.to_checksum_address(token_address),
-                        abi=ERC20_ABI
-                    )
-                    
-                    # Hole Token-Metadaten
-                    try:
-                        name = contract.functions.name().call()
-                        symbol = contract.functions.symbol().call()
-                        decimals = contract.functions.decimals().call()
-                        
-                        logger.info(f"Found token on-chain: {name} ({symbol}), decimals: {decimals}")
-                        
-                        # Preis muss von CoinGecko kommen (On-Chain hat keinen USD-Preis)
-                        # Aber wir wissen jetzt, dass der Token existiert
-                    except Exception as e:
-                        logger.warning(f"Could not fetch token metadata from RPC: {e}")
-                else:
-                    logger.warning(f"Could not connect to Ethereum RPC")
-            except Exception as e:
-                logger.warning(f"Error using Ethereum RPC: {e}")
+        onchain_metadata = None
         
-        # Fallback oder primäre Quelle: CoinGecko API
+        # Schritt 1: Hole On-Chain-Metadaten
+        if rpc_url:
+            onchain_metadata = await get_onchain_metadata(token_address, rpc_url)
+        
+        # Schritt 2: Versuche Preis von CoinGecko zu holen
         platform_map = {
             'ethereum': 'ethereum',
             'bsc': 'binance-smart-chain',
@@ -103,33 +127,55 @@ async def execute_get_token_price(token_address: str, chain: str) -> Optional[To
             'include_24hr_change': 'true'
         }
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    token_data = data.get(token_address.lower(), {})
-                    
-                    if token_data and 'usd' in token_data:
-                        logger.info(f"Successfully fetched price for {token_address} from CoinGecko")
+        coingecko_data = None
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        token_data = data.get(token_address.lower(), {})
                         
-                        return TokenPriceData(
-                            price=float(token_data.get('usd', 0)),
-                            market_cap=float(token_data.get('usd_market_cap', 0)),
-                            volume_24h=float(token_data.get('usd_24h_vol', 0)),
-                            price_change_percentage_24h=float(token_data.get('usd_24h_change', 0)),
-                            source="CoinGecko",
-                            last_updated=datetime.now()
-                        )
+                        if token_data and 'usd' in token_data:
+                            logger.info(f"Successfully fetched price for {token_address} from CoinGecko")
+                            coingecko_data = token_data
+                        else:
+                            logger.warning(f"No price data found for {token_address} on CoinGecko")
+                    elif response.status == 429:
+                        logger.warning(f"Rate limit exceeded for CoinGecko API")
                     else:
-                        logger.warning(f"No price data found for {token_address} on CoinGecko")
-                        return None
-                        
-                elif response.status == 429:
-                    logger.warning(f"Rate limit exceeded for CoinGecko API")
-                    return None
-                else:
-                    logger.warning(f"CoinGecko API returned status {response.status}")
-                    return None
+                        logger.warning(f"CoinGecko API returned status {response.status}")
+        except Exception as e:
+            logger.warning(f"Error fetching from CoinGecko: {e}")
+        
+        # Schritt 3: Kombiniere Daten
+        # WICHTIG: Gib Token-Daten zurück, auch wenn CoinGecko keinen Preis hat!
+        if onchain_metadata:
+            # Token existiert on-chain!
+            return TokenPriceData(
+                name=onchain_metadata.get('name', 'Unknown'),
+                symbol=onchain_metadata.get('symbol', 'UNKNOWN'),
+                price=float(coingecko_data.get('usd', 0)) if coingecko_data else 0,
+                market_cap=float(coingecko_data.get('usd_market_cap', 0)) if coingecko_data else 0,
+                volume_24h=float(coingecko_data.get('usd_24h_vol', 0)) if coingecko_data else 0,
+                price_change_percentage_24h=float(coingecko_data.get('usd_24h_change', 0)) if coingecko_data else 0,
+                source="Ethereum RPC + CoinGecko" if coingecko_data else "Ethereum RPC (no price)",
+                last_updated=datetime.now()
+            )
+        elif coingecko_data:
+            # Nur CoinGecko-Daten verfügbar
+            return TokenPriceData(
+                price=float(coingecko_data.get('usd', 0)),
+                market_cap=float(coingecko_data.get('usd_market_cap', 0)),
+                volume_24h=float(coingecko_data.get('usd_24h_vol', 0)),
+                price_change_percentage_24h=float(coingecko_data.get('usd_24h_change', 0)),
+                source="CoinGecko",
+                last_updated=datetime.now()
+            )
+        else:
+            # Weder on-chain noch CoinGecko
+            logger.warning(f"Token {token_address} not found on-chain or in CoinGecko")
+            return None
                     
     except Exception as e:
         logger.error(f"Error fetching Ethereum token price: {e}")
