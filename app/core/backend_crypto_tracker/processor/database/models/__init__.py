@@ -14,7 +14,7 @@ from .custom_analysis import CustomAnalysis
 from .scan_result import ScanResult
 from .token import Token
 from .transaction import Transaction
-from .wallet import WalletAnalysis
+from app.core.backend_crypto_tracker.processor.database.models.wallet import WalletAnalysis
 from .scan_job import ScanJob
 
 # Liste aller Modelle für einfache Referenz
