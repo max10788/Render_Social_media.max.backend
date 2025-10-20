@@ -92,15 +92,18 @@ async def get_onchain_metadata(token_address: str, rpc_url: str) -> Optional[Dic
 async def execute_get_token_price(token_address: str, chain: str) -> Optional[TokenPriceData]:
     """
     Ethereum-spezifische Token-Preisabfrage
-    1. Holt On-Chain-Metadaten (Name, Symbol, Decimals)
-    2. Versucht Preis von CoinGecko zu holen
-    3. Gibt Token-Daten zurück - auch OHNE Preis wenn on-chain gefunden
     """
     try:
         logger.info(f"Fetching price for {token_address} on {chain}")
         
-        # Hole RPC URL aus Environment
-        rpc_url = os.getenv('ETHEREUM_RPC_URL')
+        # ✅ FIX: Hole RPC URL aus scanner_config statt Environment
+        from app.core.backend_crypto_tracker.config.scanner_config import scanner_config
+        
+        rpc_url = None
+        if chain == 'ethereum':
+            rpc_url = scanner_config.rpc_config.ethereum_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
+        elif chain == 'bsc':
+            rpc_url = scanner_config.rpc_config.bsc_rpc or "https://go.getblock.io/79261441b53344bfbb3b8bdf37fe4047"
         
         onchain_metadata = None
         
