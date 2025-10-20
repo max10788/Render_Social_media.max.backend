@@ -1,13 +1,14 @@
 """
 Ethereum Token Price Fetcher
-✅ FIXED: Multi-layer RPC URL fallback system
+✅ FIXED: Multi-RPC-Provider Fallback System mit Request Session
 """
 
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import aiohttp
 import os
 from web3 import Web3
+from web3.providers import HTTPProvider
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.blockchain.data_models.token_price_data import TokenPriceData
 
@@ -53,141 +54,178 @@ ERC20_ABI = [
 ]
 
 
-def get_rpc_url(chain: str) -> Optional[str]:
+def get_rpc_urls(chain: str) -> List[str]:
     """
-    ✅ FIX: Multi-layer RPC URL resolution strategy
-    Versucht in dieser Reihenfolge:
-    1. Environment Variable (höchste Priorität)
-    2. scanner_config (Fallback)
-    3. Hardcoded Default URLs (letzter Fallback)
+    ✅ NEW: Multi-RPC-Provider mit Fallback-Liste
+    Gibt mehrere RPC-URLs zurück, die nacheinander versucht werden
     """
-    rpc_url = None
+    rpc_urls = []
     
-    # Layer 1: Environment Variables (höchste Priorität)
+    # Layer 1: Environment Variables
     if chain == 'ethereum':
-        rpc_url = os.getenv('ETHEREUM_RPC_URL')
+        env_rpc = os.getenv('ETHEREUM_RPC_URL')
+        if env_rpc:
+            rpc_urls.append(env_rpc)
+            logger.info(f"Added RPC from environment: {env_rpc[:50]}...")
     elif chain == 'bsc':
-        rpc_url = os.getenv('BSC_RPC_URL')
+        env_rpc = os.getenv('BSC_RPC_URL')
+        if env_rpc:
+            rpc_urls.append(env_rpc)
     
-    if rpc_url:
-        logger.info(f"Using RPC URL from environment for {chain}: {rpc_url[:50]}...")
-        return rpc_url
-    
-    # Layer 2: scanner_config (Fallback)
+    # Layer 2: scanner_config
     try:
         from app.core.backend_crypto_tracker.config.scanner_config import scanner_config
         
         if chain == 'ethereum':
-            rpc_url = scanner_config.rpc_config.ethereum_rpc
+            config_rpc = scanner_config.rpc_config.ethereum_rpc
+            if config_rpc and config_rpc not in rpc_urls and "YOUR_INFURA_KEY" not in config_rpc:
+                rpc_urls.append(config_rpc)
+                logger.info(f"Added RPC from scanner_config")
         elif chain == 'bsc':
-            rpc_url = scanner_config.rpc_config.bsc_rpc
-        
-        if rpc_url and rpc_url != "https://mainnet.infura.io/v3/YOUR_INFURA_KEY":
-            logger.info(f"Using RPC URL from scanner_config for {chain}")
-            return rpc_url
+            config_rpc = scanner_config.rpc_config.bsc_rpc
+            if config_rpc and config_rpc not in rpc_urls:
+                rpc_urls.append(config_rpc)
     except Exception as e:
         logger.warning(f"Could not load RPC from scanner_config: {e}")
     
-    # Layer 3: Hardcoded defaults (letzter Fallback)
-    default_rpcs = {
-        'ethereum': "https://mainnet.infura.io/v3/ad87a00e831d4ac6996e0a847f689c13",
-        'bsc': "https://bsc-dataseed.binance.org/"
+    # Layer 3: Public Fallback RPCs
+    public_rpcs = {
+        'ethereum': [
+            "https://eth.llamarpc.com",  # Sehr zuverlässig
+            "https://rpc.ankr.com/eth",
+            "https://ethereum.publicnode.com",
+            "https://eth.drpc.org",
+            "https://cloudflare-eth.com"
+        ],
+        'bsc': [
+            "https://bsc-dataseed.binance.org/",
+            "https://bsc-dataseed1.defibit.io/",
+            "https://bsc.publicnode.com"
+        ]
     }
     
-    rpc_url = default_rpcs.get(chain)
+    fallbacks = public_rpcs.get(chain, [])
+    for fallback_rpc in fallbacks:
+        if fallback_rpc not in rpc_urls:
+            rpc_urls.append(fallback_rpc)
+            logger.info(f"Added fallback RPC: {fallback_rpc[:50]}...")
     
-    if rpc_url:
-        logger.info(f"Using default fallback RPC URL for {chain}")
-        return rpc_url
+    if not rpc_urls:
+        logger.error(f"No RPC URLs available for chain: {chain}")
     
-    logger.error(f"No RPC URL available for chain: {chain}")
+    return rpc_urls
+
+
+async def get_onchain_metadata(token_address: str, rpc_urls: List[str]) -> Optional[Dict[str, Any]]:
+    """
+    ✅ IMPROVED: Versucht mehrere RPCs nacheinander
+    """
+    for i, rpc_url in enumerate(rpc_urls):
+        try:
+            logger.info(f"Attempt {i+1}/{len(rpc_urls)}: Connecting to {rpc_url[:50]}...")
+            
+            # ✅ FIX: HTTPProvider mit Request-Session für bessere Kompatibilität
+            provider = HTTPProvider(
+                rpc_url,
+                request_kwargs={'timeout': 10}
+            )
+            w3 = Web3(provider)
+            
+            # Test connection
+            if not w3.is_connected():
+                logger.warning(f"RPC {i+1} not connected, trying next...")
+                continue
+            
+            logger.info(f"✅ Successfully connected to RPC {i+1}!")
+            
+            # Hole die aktuelle Blocknummer als Connection-Test
+            try:
+                block_number = w3.eth.block_number
+                logger.info(f"Current block number: {block_number}")
+            except Exception as e:
+                logger.warning(f"Could not fetch block number: {e}")
+                continue
+            
+            # Erstelle Contract-Instanz
+            checksum_address = Web3.to_checksum_address(token_address)
+            contract = w3.eth.contract(
+                address=checksum_address,
+                abi=ERC20_ABI
+            )
+            
+            # Hole Token-Metadaten mit Fehlerbehandlung
+            metadata = {}
+            
+            try:
+                metadata['name'] = contract.functions.name().call()
+                logger.info(f"✅ Got name: {metadata['name']}")
+            except Exception as e:
+                logger.warning(f"Could not fetch name: {e}")
+                metadata['name'] = "Unknown"
+            
+            try:
+                metadata['symbol'] = contract.functions.symbol().call()
+                logger.info(f"✅ Got symbol: {metadata['symbol']}")
+            except Exception as e:
+                logger.warning(f"Could not fetch symbol: {e}")
+                metadata['symbol'] = "UNKNOWN"
+            
+            try:
+                metadata['decimals'] = contract.functions.decimals().call()
+                logger.info(f"✅ Got decimals: {metadata['decimals']}")
+            except Exception as e:
+                logger.warning(f"Could not fetch decimals: {e}")
+                metadata['decimals'] = 18
+            
+            try:
+                metadata['total_supply'] = contract.functions.totalSupply().call()
+            except Exception as e:
+                logger.warning(f"Could not fetch totalSupply: {e}")
+                metadata['total_supply'] = 0
+            
+            # Wenn wir zumindest Name oder Symbol haben, ist es erfolgreich
+            if metadata['name'] != "Unknown" or metadata['symbol'] != "UNKNOWN":
+                logger.info(f"✅ Found token on-chain: {metadata['name']} ({metadata['symbol']})")
+                return metadata
+            else:
+                logger.warning(f"Token found but has no valid metadata")
+                # Versuche nächsten RPC
+                continue
+                
+        except Exception as e:
+            logger.warning(f"RPC {i+1} failed: {e}")
+            if i < len(rpc_urls) - 1:
+                logger.info(f"Trying next RPC...")
+            continue
+    
+    logger.error(f"All RPCs failed for token {token_address}")
     return None
-
-
-async def get_onchain_metadata(token_address: str, rpc_url: str) -> Optional[Dict[str, Any]]:
-    """
-    Holt Token-Metadaten direkt von der Blockchain
-    ✅ IMPROVED: Bessere Fehlerbehandlung und Logging
-    """
-    try:
-        logger.info(f"Attempting to connect to RPC: {rpc_url[:50]}...")
-        
-        w3 = Web3(Web3.HTTPProvider(rpc_url))
-        
-        if not w3.is_connected():
-            logger.warning(f"Could not connect to Ethereum RPC: {rpc_url[:50]}...")
-            return None
-        
-        logger.info(f"Successfully connected to RPC!")
-        
-        # Erstelle Contract-Instanz
-        checksum_address = Web3.to_checksum_address(token_address)
-        contract = w3.eth.contract(
-            address=checksum_address,
-            abi=ERC20_ABI
-        )
-        
-        # Hole Token-Metadaten mit Fehlerbehandlung
-        try:
-            name = contract.functions.name().call()
-        except Exception as e:
-            logger.warning(f"Could not fetch name: {e}")
-            name = "Unknown"
-        
-        try:
-            symbol = contract.functions.symbol().call()
-        except Exception as e:
-            logger.warning(f"Could not fetch symbol: {e}")
-            symbol = "UNKNOWN"
-        
-        try:
-            decimals = contract.functions.decimals().call()
-        except Exception as e:
-            logger.warning(f"Could not fetch decimals: {e}")
-            decimals = 18  # Default für ERC20
-        
-        try:
-            total_supply = contract.functions.totalSupply().call()
-        except Exception as e:
-            logger.warning(f"Could not fetch totalSupply: {e}")
-            total_supply = 0
-        
-        logger.info(f"✅ Found token on-chain: {name} ({symbol}), decimals: {decimals}")
-        
-        return {
-            'name': name,
-            'symbol': symbol,
-            'decimals': decimals,
-            'total_supply': total_supply
-        }
-        
-    except Exception as e:
-        logger.warning(f"Could not fetch token metadata from RPC: {e}")
-        return None
 
 
 async def execute_get_token_price(token_address: str, chain: str) -> Optional[TokenPriceData]:
     """
     Ethereum-spezifische Token-Preisabfrage
-    ✅ FIXED: Multi-layer RPC URL resolution
+    ✅ FIXED: Multi-RPC-Provider Fallback System
     
     Strategie:
-    1. Holt On-Chain-Metadaten (Name, Symbol, Decimals) via RPC
-    2. Versucht Preis von CoinGecko zu holen
-    3. Gibt Token-Daten zurück - auch OHNE Preis wenn on-chain gefunden
+    1. Versucht mehrere RPC-Provider nacheinander
+    2. Holt On-Chain-Metadaten (Name, Symbol, Decimals)
+    3. Versucht Preis von CoinGecko zu holen
+    4. Gibt Token-Daten zurück - auch OHNE Preis wenn on-chain gefunden
     """
     try:
         logger.info(f"Fetching price for {token_address} on {chain}")
         
-        # ✅ FIX: Hole RPC URL mit Multi-Layer-Strategie
-        rpc_url = get_rpc_url(chain)
+        # ✅ FIX: Hole Liste von RPC-URLs
+        rpc_urls = get_rpc_urls(chain)
         
-        if not rpc_url:
-            logger.error(f"No RPC URL available for {chain}. Cannot fetch on-chain data.")
+        if not rpc_urls:
+            logger.error(f"No RPC URLs available for {chain}. Cannot fetch on-chain data.")
             onchain_metadata = None
         else:
-            # Schritt 1: Hole On-Chain-Metadaten
-            onchain_metadata = await get_onchain_metadata(token_address, rpc_url)
+            logger.info(f"Will try {len(rpc_urls)} RPC providers")
+            # Schritt 1: Hole On-Chain-Metadaten (versucht alle RPCs)
+            onchain_metadata = await get_onchain_metadata(token_address, rpc_urls)
         
         # Schritt 2: Versuche Preis von CoinGecko zu holen
         platform_map = {
@@ -230,7 +268,6 @@ async def execute_get_token_price(token_address: str, chain: str) -> Optional[To
             logger.warning(f"Error fetching from CoinGecko: {e}")
         
         # Schritt 3: Kombiniere Daten
-        # WICHTIG: Gib Token-Daten zurück, auch wenn CoinGecko keinen Preis hat!
         if onchain_metadata:
             # ✅ Token existiert on-chain!
             logger.info(f"✅ Returning token data (on-chain found)")
@@ -244,7 +281,7 @@ async def execute_get_token_price(token_address: str, chain: str) -> Optional[To
                 market_cap=float(coingecko_data.get('usd_market_cap', 0)) if coingecko_data else 0.0,
                 volume_24h=float(coingecko_data.get('usd_24h_vol', 0)) if coingecko_data else 0.0,
                 price_change_24h=float(coingecko_data.get('usd_24h_change', 0)) if coingecko_data else 0.0,
-                source="Ethereum RPC + CoinGecko" if coingecko_data else "Ethereum RPC (no price)",
+                source="On-Chain RPC + CoinGecko" if coingecko_data else "On-Chain RPC (no price)",
                 last_updated=datetime.now()
             )
         elif coingecko_data:
