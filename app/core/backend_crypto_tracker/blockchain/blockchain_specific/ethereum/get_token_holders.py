@@ -1,61 +1,42 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 import aiohttp
 import os
-from web3 import Web3
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ERC20 ABI für Transfer Events
-TRANSFER_EVENT_ABI = {
-    "anonymous": False,
-    "inputs": [
-        {"indexed": True, "name": "from", "type": "address"},
-        {"indexed": True, "name": "to", "type": "address"},
-        {"indexed": False, "name": "value", "type": "uint256"}
-    ],
-    "name": "Transfer",
-    "type": "event"
-}
-
 
 async def execute_get_token_holders(token_address: str, chain: str) -> List[Dict[str, Any]]:
     """
-    Ethereum-spezifische Token-Holder-Abfrage
-    Nutzt Etherscan API oder RPC für Token-Holder
+    Holt Token Holders für einen ERC20 Token auf Ethereum
+    Nutzt Etherscan API
+    
+    Args:
+        token_address: ERC20 Token Contract Adresse
+        chain: Blockchain ('ethereum' oder 'bsc')
+    
+    Returns:
+        Liste von Holder-Dictionaries mit address, balance, percentage
     """
     try:
         logger.info(f"Fetching token holders for {token_address} on {chain}")
         
-        # Versuch 1: Etherscan API (falls API Key vorhanden)
-        etherscan_api_key = os.getenv('ETHERSCAN_API_KEY')
+        # Hole API Key aus Environment
+        if chain == 'ethereum':
+            api_key = os.getenv('ETHERSCAN_API_KEY')
+            base_url = "https://api.etherscan.io/api"
+        elif chain == 'bsc':
+            api_key = os.getenv('BSCSCAN_API_KEY')
+            base_url = "https://api.bscscan.com/api"
+        else:
+            logger.warning(f"Unsupported chain for token holders: {chain}")
+            return []
         
-        if etherscan_api_key:
-            holders = await _get_holders_from_etherscan(token_address, etherscan_api_key)
-            if holders:
-                logger.info(f"Found {len(holders)} holders from Etherscan")
-                return holders
+        if not api_key:
+            logger.warning(f"No API key found for {chain} - cannot fetch holders")
+            return []
         
-        # Versuch 2: CoinGecko API (Top Holders)
-        holders = await _get_holders_from_coingecko(token_address, chain)
-        if holders:
-            logger.info(f"Found {len(holders)} holders from CoinGecko")
-            return holders
-        
-        # Versuch 3: RPC (Transfer Events - sehr aufwändig)
-        # Für Production besser externe APIs nutzen
-        logger.warning(f"Could not fetch holders for {token_address} - no API available")
-        return []
-        
-    except Exception as e:
-        logger.error(f"Error fetching token holders: {e}")
-        return []
-
-
-async def _get_holders_from_etherscan(token_address: str, api_key: str) -> List[Dict[str, Any]]:
-    """Holt Top Token Holders von Etherscan"""
-    try:
-        url = "https://api.etherscan.io/api"
+        # Etherscan API: Token Holder List
         params = {
             'module': 'token',
             'action': 'tokenholderlist',
@@ -66,70 +47,71 @@ async def _get_holders_from_etherscan(token_address: str, api_key: str) -> List[
         }
         
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
+            async with session.get(
+                base_url, 
+                params=params, 
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as response:
                 if response.status == 200:
                     data = await response.json()
                     
+                    # Prüfe Etherscan Response Status
                     if data.get('status') == '1' and data.get('result'):
                         holders = []
+                        total_supply = 0
+                        
+                        # Berechne Total Supply aus allen Holders
                         for holder in data['result']:
-                            holders.append({
-                                'address': holder.get('TokenHolderAddress'),
-                                'balance': float(holder.get('TokenHolderQuantity', 0)),
-                                'percentage': 0  # Muss berechnet werden
-                            })
+                            try:
+                                balance = float(holder.get('TokenHolderQuantity', 0))
+                                total_supply += balance
+                            except (ValueError, TypeError):
+                                continue
+                        
+                        # Erstelle Holder-Liste mit Percentage
+                        for holder in data['result']:
+                            try:
+                                balance = float(holder.get('TokenHolderQuantity', 0))
+                                percentage = (balance / total_supply * 100) if total_supply > 0 else 0
+                                
+                                holders.append({
+                                    'address': holder.get('TokenHolderAddress', ''),
+                                    'balance': balance,
+                                    'percentage': round(percentage, 4)
+                                })
+                            except (ValueError, TypeError) as e:
+                                logger.warning(f"Error parsing holder data: {e}")
+                                continue
+                        
+                        logger.info(f"Successfully fetched {len(holders)} holders for {token_address}")
                         return holders
-                    else:
-                        logger.warning(f"Etherscan API returned status: {data.get('message')}")
+                    
+                    elif data.get('status') == '0':
+                        # Etherscan Error
+                        error_msg = data.get('message', 'Unknown error')
+                        logger.warning(f"Etherscan API error: {error_msg}")
+                        
+                        if 'rate limit' in error_msg.lower():
+                            logger.warning("Rate limit exceeded - waiting before retry")
+                        
                         return []
+                    
+                    else:
+                        logger.warning(f"Unexpected Etherscan response: {data}")
+                        return []
+                
+                elif response.status == 429:
+                    logger.warning(f"Rate limit exceeded for {chain} API")
+                    return []
+                
                 else:
-                    logger.warning(f"Etherscan API returned HTTP {response.status}")
+                    logger.warning(f"{chain} API returned HTTP {response.status}")
                     return []
                     
+    except aiohttp.ClientError as e:
+        logger.error(f"Network error fetching token holders: {e}")
+        return []
+    
     except Exception as e:
-        logger.warning(f"Error fetching from Etherscan: {e}")
-        return []
-
-
-async def _get_holders_from_coingecko(token_address: str, chain: str) -> List[Dict[str, Any]]:
-    """
-    Versucht Top Holders von CoinGecko zu holen
-    Hinweis: CoinGecko bietet keine direkten Holder-Daten in der Free API
-    """
-    try:
-        # CoinGecko hat keine direkte Token Holder API
-        # Würde Pro API erfordern
-        logger.debug(f"CoinGecko does not provide holder data in free tier")
-        return []
-        
-    except Exception as e:
-        logger.warning(f"Error fetching from CoinGecko: {e}")
-        return []
-
-
-async def _get_holders_from_rpc(token_address: str) -> List[Dict[str, Any]]:
-    """
-    Holt Token Holders via RPC (Transfer Events)
-    WARNUNG: Sehr langsam und ressourcenintensiv!
-    """
-    try:
-        rpc_url = os.getenv('ETHEREUM_RPC_URL')
-        
-        if not rpc_url:
-            logger.warning("No RPC URL provided")
-            return []
-        
-        w3 = Web3(Web3.HTTPProvider(rpc_url))
-        
-        if not w3.is_connected():
-            logger.warning("Could not connect to Ethereum RPC")
-            return []
-        
-        # Dies würde alle Transfer-Events durchsuchen müssen
-        # Für Production NICHT empfohlen - zu langsam!
-        logger.warning("RPC-based holder fetching not implemented (too slow)")
-        return []
-        
-    except Exception as e:
-        logger.error(f"Error with RPC holder fetching: {e}")
+        logger.error(f"Error fetching token holders for {token_address}: {e}")
         return []
