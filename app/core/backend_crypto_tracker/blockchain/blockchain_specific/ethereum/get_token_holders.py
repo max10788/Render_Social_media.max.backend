@@ -1,277 +1,254 @@
 """
-Ethereum Token Holders Fetcher
-✅ FIXED: Updated to Etherscan API V2
+Token Holders Fetcher
+✅ ULTIMATE VERSION: Moralis (Primary) + Etherscan (Fallback)
 """
 
 from typing import List, Dict, Any, Optional
 import aiohttp
 import os
+import asyncio
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Rate limiters
+_last_moralis_request = 0
+_last_etherscan_request = 0
+_moralis_delay = 0.04    # 40ms = 25 calls/sec
+_etherscan_delay = 0.22  # 220ms = 5 calls/sec
 
-async def test_api_key_v2(api_key: str, chain: str) -> Dict[str, Any]:
+
+async def get_holders_moralis(
+    token_address: str,
+    api_key: str,
+    limit: int = 100
+) -> Optional[List[Dict[str, Any]]]:
     """
-    ✅ V2: Test if API key is valid using V2 endpoint
+    ✅ Get token holders via Moralis API
     """
-    if chain == 'ethereum':
-        base_url = "https://api.etherscan.io/v2/api"
-    elif chain == 'bsc':
-        base_url = "https://api.bscscan.com/v2/api"
-    else:
-        return {'valid': False, 'message': 'Unsupported chain', 'result': ''}
-    
-    # Simple test request - get ETH balance for a known address (Vitalik's address)
-    test_address = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
-    params = {
-        'chainid': '1',  # V2 requires chainid
-        'module': 'account',
-        'action': 'balance',
-        'address': test_address,
-        'tag': 'latest',
-        'apikey': api_key
-    }
+    global _last_moralis_request
     
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(base_url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return {
-                        'valid': data.get('status') == '1',
-                        'message': data.get('message', ''),
-                        'result': data.get('result', '')
-                    }
-    except Exception as e:
-        logger.error(f"API key test failed: {e}")
-    
-    return {'valid': False, 'message': 'Test request failed', 'result': ''}
-
-
-async def get_holders_from_transfers_v2(token_address: str, chain: str, api_key: str, base_url: str, chainid: str) -> List[Dict[str, Any]]:
-    """
-    ✅ V2: Fallback method - Get holders by analyzing token transfers
-    """
-    try:
-        logger.info(f"Trying fallback method: analyzing token transfers (V2 API)...")
+        # Rate limiting
+        current_time = asyncio.get_event_loop().time()
+        time_since_last = current_time - _last_moralis_request
         
-        # Get recent token transfers
+        if time_since_last < _moralis_delay:
+            await asyncio.sleep(_moralis_delay - time_since_last)
+        
+        _last_moralis_request = asyncio.get_event_loop().time()
+        
+        # Moralis Token API
+        url = f"https://deep-index.moralis.io/api/v2/erc20/{token_address}/owners"
+        
+        headers = {
+            'accept': 'application/json',
+            'X-API-Key': api_key
+        }
+        
+        params = {
+            'chain': 'eth',
+            'limit': limit,
+            'order': 'DESC'  # Sort by balance
+        }
+        
+        logger.info(f"🚀 Moralis: Fetching token holders for {token_address}")
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"Moralis HTTP Error {response.status}: {error_text}")
+                    return None
+                
+                data = await response.json()
+                
+                if not data or 'result' not in data:
+                    logger.warning("No result field in Moralis response")
+                    return None
+                
+                holders = []
+                total_supply = 0
+                
+                # First pass: calculate total supply
+                for holder in data['result']:
+                    try:
+                        balance = float(holder.get('balance', 0))
+                        total_supply += balance
+                    except (ValueError, TypeError):
+                        continue
+                
+                # Second pass: create holder list with percentages
+                for holder in data['result']:
+                    try:
+                        balance = float(holder.get('balance', 0))
+                        percentage = (balance / total_supply * 100) if total_supply > 0 else 0
+                        
+                        holders.append({
+                            'address': holder.get('owner_address', ''),
+                            'balance': balance,
+                            'percentage': round(percentage, 4)
+                        })
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Error parsing holder: {e}")
+                        continue
+                
+                logger.info(f"✅ Moralis: Found {len(holders)} token holders")
+                return holders
+                
+    except Exception as e:
+        logger.error(f"Moralis API error: {e}")
+        return None
+
+
+async def get_holders_etherscan_v2(
+    token_address: str,
+    chain: str,
+    api_key: str,
+    limit: int = 100
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Etherscan V2 fallback
+    """
+    global _last_etherscan_request
+    
+    try:
+        # Rate limiting
+        current_time = asyncio.get_event_loop().time()
+        time_since_last = current_time - _last_etherscan_request
+        
+        if time_since_last < _etherscan_delay:
+            await asyncio.sleep(_etherscan_delay - time_since_last)
+        
+        _last_etherscan_request = asyncio.get_event_loop().time()
+        
+        # Config
+        if chain == 'ethereum':
+            base_url = "https://api.etherscan.io/v2/api"
+            chainid = '1'
+        elif chain == 'bsc':
+            base_url = "https://api.bscscan.com/v2/api"
+            chainid = '56'
+        else:
+            logger.warning(f"Unsupported chain: {chain}")
+            return None
+        
+        # Try token transfers as fallback (tokenholderlist is PRO only)
+        logger.info(f"🔄 Etherscan: Analyzing token transfers for holders...")
+        
         params = {
             'chainid': chainid,
             'module': 'account',
             'action': 'tokentx',
             'contractaddress': token_address,
             'page': 1,
-            'offset': 1000,  # Get 1000 recent transfers
+            'offset': 1000,
             'sort': 'desc',
             'apikey': api_key
         }
         
         async with aiohttp.ClientSession() as session:
-            async with session.get(base_url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    if data.get('status') == '1' and data.get('result'):
-                        # Aggregate holders from transfers
-                        holder_balances = {}
-                        
-                        for tx in data['result']:
-                            to_addr = tx.get('to', '').lower()
-                            from_addr = tx.get('from', '').lower()
-                            
-                            try:
-                                value = float(tx.get('value', 0))
-                            except (ValueError, TypeError):
-                                continue
-                            
-                            # Track transfers
-                            if to_addr and to_addr not in ['0x0000000000000000000000000000000000000000']:
-                                holder_balances[to_addr] = holder_balances.get(to_addr, 0) + value
-                            
-                            if from_addr and from_addr not in ['0x0000000000000000000000000000000000000000']:
-                                holder_balances[from_addr] = holder_balances.get(from_addr, 0) - value
-                        
-                        # Filter positive balances and sort
-                        holders = [
-                            {'address': addr, 'balance': balance, 'percentage': 0}
-                            for addr, balance in holder_balances.items()
-                            if balance > 0
-                        ]
-                        
-                        # Sort by balance
-                        holders.sort(key=lambda x: x['balance'], reverse=True)
-                        
-                        # Calculate percentages
-                        total_supply = sum(h['balance'] for h in holders)
-                        for holder in holders:
-                            holder['percentage'] = round((holder['balance'] / total_supply * 100) if total_supply > 0 else 0, 4)
-                        
-                        logger.info(f"✅ Found {len(holders)} holders from transfers (approximate)")
-                        return holders[:100]  # Return top 100
-                    else:
-                        logger.warning(f"Transfer method failed: {data.get('message', 'Unknown')}")
-                        return []
+            async with session.get(base_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                if response.status != 200:
+                    logger.error(f"Etherscan HTTP Error {response.status}")
+                    return None
                 
-                return []
+                data = await response.json()
+                
+                if data.get('status') == '1' and data.get('result'):
+                    # Aggregate holders from transfers
+                    holder_balances = {}
+                    
+                    for tx in data['result']:
+                        to_addr = tx.get('to', '').lower()
+                        from_addr = tx.get('from', '').lower()
+                        
+                        try:
+                            value = float(tx.get('value', 0))
+                        except (ValueError, TypeError):
+                            continue
+                        
+                        # Track transfers
+                        if to_addr and to_addr != '0x0000000000000000000000000000000000000000':
+                            holder_balances[to_addr] = holder_balances.get(to_addr, 0) + value
+                        
+                        if from_addr and from_addr != '0x0000000000000000000000000000000000000000':
+                            holder_balances[from_addr] = holder_balances.get(from_addr, 0) - value
+                    
+                    # Filter positive balances
+                    holders = [
+                        {'address': addr, 'balance': balance, 'percentage': 0}
+                        for addr, balance in holder_balances.items()
+                        if balance > 0
+                    ]
+                    
+                    # Sort by balance
+                    holders.sort(key=lambda x: x['balance'], reverse=True)
+                    
+                    # Calculate percentages
+                    total_supply = sum(h['balance'] for h in holders)
+                    for holder in holders:
+                        holder['percentage'] = round((holder['balance'] / total_supply * 100) if total_supply > 0 else 0, 4)
+                    
+                    logger.info(f"✅ Etherscan: Found {len(holders)} holders from transfers")
+                    return holders[:limit]
+                else:
+                    logger.warning(f"Etherscan error: {data.get('message', 'Unknown')}")
+                    return None
                 
     except Exception as e:
-        logger.error(f"Fallback transfer method failed: {e}")
-        return []
+        logger.error(f"Etherscan API error: {e}")
+        return None
 
 
 async def execute_get_token_holders(token_address: str, chain: str) -> List[Dict[str, Any]]:
     """
-    Holt Token Holders für einen ERC20 Token auf Ethereum
-    ✅ UPDATED: Now uses Etherscan API V2
+    Get token holders with intelligent provider selection:
+    1. Try Moralis first (better, no PRO needed)
+    2. Fallback to Etherscan transfer analysis
     
-    Args:
-        token_address: ERC20 Token Contract Adresse
-        chain: Blockchain ('ethereum' oder 'bsc')
-    
-    Returns:
-        Liste von Holder-Dictionaries mit address, balance, percentage
+    ✅ Auto-loads API keys from environment
     """
     try:
         logger.info(f"Fetching token holders for {token_address} on {chain}")
         
-        # Configure API endpoints and chain IDs
+        # Load API keys
+        moralis_key = os.getenv('MORALIS_API_KEY')
+        
         if chain == 'ethereum':
-            api_key = os.getenv('ETHERSCAN_API_KEY')
-            base_url = "https://api.etherscan.io/v2/api"
-            chainid = '1'  # Ethereum Mainnet
+            etherscan_key = os.getenv('ETHERSCAN_API_KEY')
         elif chain == 'bsc':
-            api_key = os.getenv('BSCSCAN_API_KEY')
-            base_url = "https://api.bscscan.com/v2/api"
-            chainid = '56'  # BSC Mainnet
+            etherscan_key = os.getenv('BSCSCAN_API_KEY')
         else:
-            logger.warning(f"Unsupported chain for token holders: {chain}")
+            logger.warning(f"Unsupported chain: {chain}")
             return []
         
-        if not api_key:
-            logger.warning(f"⚠️ No API key found for {chain} - cannot fetch holders")
-            logger.info(f"Please set {'ETHERSCAN_API_KEY' if chain == 'ethereum' else 'BSCSCAN_API_KEY'} environment variable")
-            return []
-        
-        # ✅ V2: Test API key first
-        logger.info(f"Testing {chain} API key (V2)...")
-        key_test = await test_api_key_v2(api_key, chain)
-        if not key_test['valid']:
-            logger.error(f"❌ API key validation failed for {chain}!")
-            logger.error(f"API Response: {key_test['message']}")
-            logger.info(f"Get a free API key at: https://{'etherscan.io' if chain == 'ethereum' else 'bscscan.com'}/register")
-            return []
+        # Strategy 1: Try Moralis (preferred)
+        if moralis_key and chain == 'ethereum':  # Moralis only supports ETH mainnet in free tier
+            logger.info(f"🚀 Trying Moralis API...")
+            result = await get_holders_moralis(token_address, moralis_key, limit=100)
+            
+            if result is not None and len(result) > 0:
+                return result
+            
+            logger.info(f"⚠️ Moralis failed or returned no holders, trying Etherscan...")
         else:
-            logger.info(f"✅ API key is valid for {chain} (V2)")
+            logger.debug(f"ℹ️ No Moralis key or non-ETH chain, using Etherscan")
         
-        # Method 1: Try tokenholderlist endpoint (V2)
-        logger.info(f"Method 1: Trying tokenholderlist endpoint (V2)...")
-        params = {
-            'chainid': chainid,
-            'module': 'token',
-            'action': 'tokenholderlist',
-            'contractaddress': token_address,
-            'page': 1,
-            'offset': 100,  # Top 100 Holders
-            'apikey': api_key
-        }
+        # Strategy 2: Fallback to Etherscan
+        if etherscan_key:
+            logger.info(f"🔄 Trying Etherscan fallback...")
+            result = await get_holders_etherscan_v2(token_address, chain, etherscan_key, limit=100)
+            
+            if result is not None:
+                return result
+            
+            logger.warning(f"⚠️ Both providers failed")
+        else:
+            logger.error(f"❌ No Etherscan API key found")
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                base_url, 
-                params=params, 
-                timeout=aiohttp.ClientTimeout(total=15)
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    # Log API response
-                    logger.info(f"API V2 Response Status: {data.get('status')}")
-                    logger.info(f"API V2 Response Message: {data.get('message')}")
-                    
-                    # Success case
-                    if data.get('status') == '1' and data.get('result'):
-                        holders = []
-                        total_supply = 0
-                        
-                        # Calculate Total Supply from all Holders
-                        for holder in data['result']:
-                            try:
-                                balance = float(holder.get('TokenHolderQuantity', 0))
-                                total_supply += balance
-                            except (ValueError, TypeError):
-                                continue
-                        
-                        # Create Holder list with Percentage
-                        for holder in data['result']:
-                            try:
-                                balance = float(holder.get('TokenHolderQuantity', 0))
-                                percentage = (balance / total_supply * 100) if total_supply > 0 else 0
-                                
-                                holders.append({
-                                    'address': holder.get('TokenHolderAddress', ''),
-                                    'balance': balance,
-                                    'percentage': round(percentage, 4)
-                                })
-                            except (ValueError, TypeError) as e:
-                                logger.warning(f"Error parsing holder data: {e}")
-                                continue
-                        
-                        logger.info(f"✅ Successfully fetched {len(holders)} holders for {token_address}")
-                        return holders
-                    
-                    # Error case
-                    elif data.get('status') == '0':
-                        error_msg = data.get('message', 'Unknown error')
-                        result = data.get('result', '')
-                        
-                        logger.warning(f"❌ Etherscan API V2 Error:")
-                        logger.warning(f"   Status: {data.get('status')}")
-                        logger.warning(f"   Message: {error_msg}")
-                        logger.warning(f"   Result: {result}")
-                        
-                        # Check specific error types
-                        if 'rate limit' in error_msg.lower():
-                            logger.warning("⏱️ Rate limit exceeded - please wait before retry")
-                            return []
-                        
-                        if 'invalid' in error_msg.lower() and 'api' in error_msg.lower():
-                            logger.error("❌ Invalid API key - check your ETHERSCAN_API_KEY")
-                            return []
-                        
-                        # If tokenholderlist fails, try fallback method
-                        if 'notok' in error_msg.lower() or 'no transactions found' in str(result).lower() or 'no data found' in str(result).lower():
-                            logger.warning(f"Token {token_address} might not have holder data on Etherscan")
-                            logger.info(f"Trying fallback method (analyze transfers)...")
-                            
-                            # Try fallback method
-                            return await get_holders_from_transfers_v2(token_address, chain, api_key, base_url, chainid)
-                        
-                        return []
-                    
-                    else:
-                        logger.warning(f"Unexpected Etherscan V2 response: {data}")
-                        return []
-                
-                elif response.status == 429:
-                    logger.warning(f"⏱️ Rate limit exceeded for {chain} API")
-                    return []
-                
-                elif response.status == 403:
-                    logger.error(f"❌ Access forbidden - check your API key permissions")
-                    return []
-                
-                else:
-                    logger.warning(f"{chain} API returned HTTP {response.status}")
-                    text = await response.text()
-                    logger.debug(f"Response body: {text[:200]}")
-                    return []
-                    
-    except aiohttp.ClientError as e:
-        logger.error(f"Network error fetching token holders: {e}")
         return []
-    
+        
     except Exception as e:
-        logger.error(f"Error fetching token holders for {token_address}: {e}", exc_info=True)
+        logger.error(f"Error fetching token holders: {e}", exc_info=True)
         return []
