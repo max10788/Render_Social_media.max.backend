@@ -334,6 +334,25 @@ class TokenAnalyzer:
                 # Classify wallet with all analyzers
                 wallet_type, classification_score = self._classify_wallet_multistage(all_metrics)
                 
+                # ✅ FIX: Sichere datetime Konvertierung
+                first_tx = raw_metrics.get('first_seen')
+                last_tx = raw_metrics.get('last_seen')
+                
+                # Konvertiere zu datetime wenn nötig
+                if isinstance(first_tx, (int, float)) and first_tx > 0:
+                    first_transaction = datetime.fromtimestamp(first_tx)
+                elif isinstance(first_tx, datetime):
+                    first_transaction = first_tx
+                else:
+                    first_transaction = None
+                
+                if isinstance(last_tx, (int, float)) and last_tx > 0:
+                    last_transaction = datetime.fromtimestamp(last_tx)
+                elif isinstance(last_tx, datetime):
+                    last_transaction = last_tx
+                else:
+                    last_transaction = None
+                
                 # Create WalletAnalysis
                 wallet_analysis = WalletAnalysis(
                     wallet_address=wallet_address,
@@ -341,8 +360,8 @@ class TokenAnalyzer:
                     balance=balance,
                     percentage_of_supply=percentage,
                     transaction_count=raw_metrics.get('tx_count', 0),
-                    first_transaction=datetime.fromtimestamp(raw_metrics.get('first_seen', 0)) if raw_metrics.get('first_seen') else None,
-                    last_transaction=datetime.fromtimestamp(raw_metrics.get('last_seen', 0)) if raw_metrics.get('last_seen') else None,
+                    first_transaction=first_transaction,
+                    last_transaction=last_transaction,
                     risk_score=classification_score * 100  # Convert to 0-100 scale
                 )
                 
@@ -357,7 +376,7 @@ class TokenAnalyzer:
                 continue
         
         return wallet_analyses
-
+        
     async def _get_wallet_blockchain_data(self, wallet_address: str, chain: str, token_address: str) -> Dict[str, Any]:
         """Get blockchain transaction data for wallet"""
         try:
