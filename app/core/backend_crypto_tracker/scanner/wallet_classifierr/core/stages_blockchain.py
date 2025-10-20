@@ -126,8 +126,17 @@ class Stage1_AccountBased(Stage1_BlockchainAdapter):
                 outgoing_txs.append(tx)
                 total_sent += tx_value
         
-        # Temporal metrics
-        timestamps = [tx.get('timestamp', 0) for tx in txs if tx.get('timestamp')]
+        # ✅ FIX: Temporal metrics - Konvertiere datetime zu timestamp
+        timestamps = []
+        for tx in txs:
+            ts = tx.get('timestamp')
+            if ts:
+                # Konvertiere datetime zu Unix timestamp wenn nötig
+                if isinstance(ts, datetime):
+                    timestamps.append(int(ts.timestamp()))
+                elif isinstance(ts, (int, float)):
+                    timestamps.append(int(ts))
+        
         first_seen = min(timestamps) if timestamps else 0
         last_seen = max(timestamps) if timestamps else 0
         
@@ -195,7 +204,6 @@ class Stage1_AccountBased(Stage1_BlockchainAdapter):
             'timestamps': timestamps,
             'blockchain_type': 'account'
         }
-
 
 class Stage1_RawMetrics:
     """Adapter that selects the right Stage 1 implementation."""
