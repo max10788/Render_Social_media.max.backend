@@ -1,6 +1,6 @@
 """
 Custom Analysis Routes - API Endpoint für Token-Analyse
-UNVERÄNDERT - Funktioniert mit dem neuen System out-of-the-box
+✅ FIXED: Import von TokenAnalyzer statt LowCapAnalyzer
 """
 
 from fastapi import APIRouter, HTTPException, Depends
@@ -94,9 +94,9 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
     try:
         logger.info(f"Starting analysis for {request.token_address} on {request.chain}")
         
-        # Import des Analyzers
+        # ✅ FIX: Korrekte Imports - TokenAnalyzer statt LowCapAnalyzer
         from app.core.backend_crypto_tracker.scanner.token_analyzer import TokenAnalyzer
-
+        
         # Initialisierung mit async with context manager
         async with TokenAnalyzer() as analyzer:
             # Analyse durchführen
