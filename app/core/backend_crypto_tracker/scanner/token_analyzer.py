@@ -99,6 +99,10 @@ class TokenAnalyzer:
         self.config = config or TokenAnalysisConfig()
         self.logger = get_logger(__name__)
         
+        # ✅ FIX: Reduziere max_holders_to_analyze auf 10
+        # Ursprünglich war es 100, aber das führt zu 100 API Calls!
+        self.config.max_holders_to_analyze = 10  # ← DIESE ZEILE HINZUFÜGEN!
+        
         # Cache
         self.enable_cache = self.config.enable_cache
         self.cache_ttl = self.config.cache_ttl_seconds
@@ -128,6 +132,7 @@ class TokenAnalyzer:
         
         self._initialized = False
         self.logger.info("TokenAnalyzer initialized with 3-stage wallet classification")
+        self.logger.info(f"⚠️ Max holders to analyze: {self.config.max_holders_to_analyze}")  # ← LOG HINZUFÜGEN
 
     async def __aenter__(self):
         if not self._initialized:
