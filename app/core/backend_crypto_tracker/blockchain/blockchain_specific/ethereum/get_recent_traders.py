@@ -41,8 +41,9 @@ async def get_recent_transfers_moralis(
         
         _last_moralis_request = asyncio.get_event_loop().time()
         
-        # Calculate timestamp for X hours ago
-        time_ago = datetime.now() - timedelta(hours=hours)
+        # ✅ FIX: Calculate timestamp with UTC timezone
+        from datetime import timezone
+        time_ago = datetime.now(timezone.utc) - timedelta(hours=hours)
         from_block = 0  # Moralis uses block numbers, we'll filter by timestamp later
         
         # Moralis Token Transfers API
@@ -300,7 +301,7 @@ async def execute_get_recent_traders(
         # Strategy 1: Try Moralis
         if moralis_key and chain == 'ethereum':
             logger.info(f"🚀 Trying Moralis API...")
-            transfers = await get_recent_transfers_moralis(token_address, moralis_key, hours, limit=1000)
+            transfers = await get_recent_transfers_moralis(token_address, moralis_key, hours, limit=100)  # ✅ Max 100
             
             if transfers is None:
                 logger.info(f"⚠️ Moralis failed, trying Etherscan...")
@@ -308,7 +309,7 @@ async def execute_get_recent_traders(
         # Strategy 2: Fallback to Etherscan
         if transfers is None and etherscan_key:
             logger.info(f"🔄 Trying Etherscan fallback...")
-            transfers = await get_recent_transfers_etherscan(token_address, chain, etherscan_key, hours, limit=1000)
+            transfers = await get_recent_transfers_etherscan(token_address, chain, etherscan_key, hours, limit=100)  # ✅ Match Moralis
         
         if not transfers:
             logger.warning(f"No recent transfers found")
