@@ -157,13 +157,24 @@ class TokenAnalyzer:
             self.logger.debug("TokenAnalyzer resources closed")
 
     @retry_with_backoff(max_retries=3, base_delay=2, max_delay=30)
-    async def analyze_custom_token(self, token_address: str, chain: str, use_cache: Optional[bool] = None) -> Dict[str, Any]:
-        """Main token analysis method"""
+    async def analyze_custom_token(
+        self, 
+        token_address: str, 
+        chain: str, 
+        use_cache: Optional[bool] = None,
+        wallet_source: str = "top_holders",  # ✅ NEU
+        recent_hours: Optional[int] = 3      # ✅ NEU
+    ) -> Dict[str, Any]:
+        """
+        Main token analysis method
+        ✅ UPDATED: Supports top_holders and recent_traders
+        """
         self.logger.info(f"Starting analysis for token {token_address} on {chain}")
+        self.logger.info(f"Wallet source: {wallet_source}, Recent hours: {recent_hours if wallet_source == 'recent_traders' else 'N/A'}")
         
         # Cache management
         should_use_cache = use_cache if use_cache is not None else self.enable_cache
-        cache_key = f"token_analysis_{token_address}_{chain}"
+        cache_key = f"token_analysis_{token_address}_{chain}_{wallet_source}_{recent_hours}"
         
         if should_use_cache and self.cache:
             cached_result = await self.cache.get(cache_key)
@@ -188,16 +199,46 @@ class TokenAnalyzer:
                 self.logger.warning(f"Token {token_address} not found on {chain}")
                 raise ValueError("Token data could not be retrieved")
             
-            # Step 2: Get holders
-            holders = await self._get_token_holders(token_address, chain)
+            # Step 2: Get wallets based on source
+            if wallet_source == "recent_traders":
+                # ✅ NEW: Get recent traders
+                from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_recent_traders import execute_get_recent_traders
+                
+                self.logger.info(f"🔍 Getting recent traders (last {recent_hours}h)...")
+                traders_result = await execute_get_recent_traders(token_address, chain, recent_hours)
+                wallets = traders_result.get('traders', [])
+                
+                self.logger.info(f"✅ Found {len(wallets)} recent traders")
+                
+                # Convert to holder format for compatibility
+                holders = [
+                    {
+                        'address': w['address'],
+                        'balance': w.get('total_bought', 0) - w.get('total_sold', 0),  # Net position
+                        'percentage': 0  # Will be calculated later
+                    }
+                    for w in wallets[:200]  # ✅ Limit to 200
+                ]
+                
+            else:
+                # Default: Get top holders
+                self.logger.info(f"🔍 Getting top token holders...")
+                holders = await self._get_token_holders(token_address, chain)
             
             # Step 3: Analyze wallets with 3-stage classification
-            wallet_analyses = await self._analyze_wallets_3stage(token_data, holders, chain)
+            # ✅ NEW: Split into classified (50) and unclassified (150)
+            wallet_results = await self._analyze_wallets_split(
+                token_data, 
+                holders, 
+                chain,
+                wallet_source,
+                traders_result if wallet_source == 'recent_traders' else None
+            )
             
             # Step 4: Calculate token score
-            score_result = self._calculate_token_score(token_data, wallet_analyses)
+            score_result = self._calculate_token_score(token_data, wallet_results['classified'])
             
-            # Step 5: Build result
+            # Step 5: Build result with new structure
             result = {
                 'token_info': {
                     'address': token_data.address,
@@ -215,22 +256,38 @@ class TokenAnalyzer:
                 'metrics': score_result['metrics'],
                 'risk_flags': score_result['risk_flags'],
                 'wallet_analysis': {
-                    'total_wallets': len(wallet_analyses),
-                    'dust_sweepers': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.DUST_SWEEPER]),
-                    'hodlers': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.HODLER]),
-                    'mixers': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.MIXER]),
-                    'traders': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.TRADER]),
-                    'whales': len([w for w in wallet_analyses if w.wallet_type == WalletTypeEnum.WHALE]),
-                    'top_holders': [
+                    'wallet_source': wallet_source,
+                    'recent_hours': recent_hours if wallet_source == 'recent_traders' else None,
+                    'total_wallets': wallet_results['total'],
+                    'classified_count': len(wallet_results['classified']),
+                    'unclassified_count': len(wallet_results['unclassified']),
+                    
+                    # ✅ Classified wallets (TOP 50 with full analysis)
+                    'classified': [
                         {
                             'address': w.wallet_address,
                             'balance': w.balance,
                             'percentage': w.percentage_of_supply,
                             'type': w.wallet_type.value,
-                            'risk_score': w.risk_score
+                            'risk_score': w.risk_score,
+                            'transaction_count': w.transaction_count,
+                            'first_transaction': w.first_transaction.isoformat() if w.first_transaction else None,
+                            'last_transaction': w.last_transaction.isoformat() if w.last_transaction else None
                         }
-                        for w in wallet_analyses[:10]
-                    ]
+                        for w in wallet_results['classified'][:10]  # Top 10 in response
+                    ],
+                    
+                    # ✅ Unclassified wallets (Remaining 150 with basic info only)
+                    'unclassified': wallet_results['unclassified'][:20],  # Sample in response
+                    
+                    # Summary stats
+                    'summary': {
+                        'dust_sweepers': len([w for w in wallet_results['classified'] if w.wallet_type == WalletTypeEnum.DUST_SWEEPER]),
+                        'hodlers': len([w for w in wallet_results['classified'] if w.wallet_type == WalletTypeEnum.HODLER]),
+                        'mixers': len([w for w in wallet_results['classified'] if w.wallet_type == WalletTypeEnum.MIXER]),
+                        'traders': len([w for w in wallet_results['classified'] if w.wallet_type == WalletTypeEnum.TRADER]),
+                        'whales': len([w for w in wallet_results['classified'] if w.wallet_type == WalletTypeEnum.WHALE])
+                    }
                 }
             }
             
