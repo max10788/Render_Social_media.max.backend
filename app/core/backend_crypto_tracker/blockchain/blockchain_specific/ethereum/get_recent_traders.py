@@ -53,9 +53,12 @@ async def get_recent_transfers_moralis(
             'X-API-Key': api_key
         }
         
+        # ✅ FIX: Moralis Free Tier limit = 100
+        actual_limit = min(limit, 100)
+        
         params = {
             'chain': 'eth',
-            'limit': limit,
+            'limit': actual_limit,
             'order': 'DESC'  # Newest first
         }
         
