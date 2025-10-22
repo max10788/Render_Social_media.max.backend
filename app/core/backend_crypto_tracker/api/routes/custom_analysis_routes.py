@@ -1,18 +1,17 @@
 """
 Custom Analysis Routes - API Endpoint für Token-Analyse
-✅ FIXED: Import von TokenAnalyzer statt LowCapAnalyzer
+✅ UPDATED: wallet_source Parameter (top_holders | recent_traders)
 """
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, validator
-from typing import Optional
+from pydantic import BaseModel, validator, Field
+from typing import Optional, Literal
 from datetime import datetime
 import re
 import logging
 import json
 
-# Importieren Sie die Hilfsfunktionen für JSON-Bereinigung
 from app.core.backend_crypto_tracker.utils.json_helpers import sanitize_value, SafeJSONEncoder
 
 router = APIRouter(prefix="/api/analyze", tags=["custom-analysis"])
@@ -23,6 +22,16 @@ class CustomAnalysisRequest(BaseModel):
     """Request Model für Custom Token Analysis"""
     token_address: str
     chain: str
+    wallet_source: Literal["top_holders", "recent_traders"] = Field(
+        default="top_holders",
+        description="Source of wallets to analyze"
+    )
+    recent_hours: int = Field(
+        default=3,
+        ge=1,
+        le=24,
+        description="Hours to look back for recent_traders (1-24)"
+    )
     
     @validator('chain')
     def validate_chain(cls, v):
@@ -36,15 +45,12 @@ class CustomAnalysisRequest(BaseModel):
         chain = values.get('chain', '').lower()
         
         if chain in ['ethereum', 'bsc']:
-            # Ethereum/BSC: 0x + 40 hex characters
             if not re.match(r'^0x[a-fA-F0-9]{40}$', v):
                 raise ValueError('Invalid Ethereum/BSC address format')
         elif chain == 'solana':
-            # Solana: Base58 string, 32-44 characters
             if not re.match(r'^[1-9A-HJ-NP-Za-km-z]{32,44}$', v):
                 raise ValueError('Invalid Solana address format')
         elif chain == 'sui':
-            # Sui: 0x + 64 hex characters
             if not re.match(r'^0x[a-fA-F0-9]{64}$', v):
                 raise ValueError('Invalid Sui address format')
         
@@ -56,6 +62,8 @@ class CustomAnalysisResponse(BaseModel):
     success: bool
     token_address: str
     chain: str
+    wallet_source: str
+    recent_hours: Optional[int] = None
     analysis_result: Optional[dict] = None
     error_message: Optional[str] = None
     analyzed_at: datetime
@@ -72,44 +80,49 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
     - solana
     - sui
     
+    **Wallet Sources:**
+    - top_holders: Analyzes wallets with largest token balances (default)
+    - recent_traders: Analyzes wallets that recently traded the token
+    
     **Returns:**
     - Token Info (name, symbol, market_cap, volume_24h, etc.)
     - Token Score (0-100)
     - Risk Flags
-    - Wallet Analysis mit 5 Klassifizierungstypen:
-      - Dust Sweeper
-      - Hodler
-      - Mixer
-      - Trader
-      - Whale
+    - Wallet Analysis:
+      - classified: Top 50 wallets with full 3-stage classification
+      - unclassified: Remaining wallets with basic trade stats only
     
     **Example Request:**
     ```json
     {
         "token_address": "0x6b175474e89094c44da98b954eedeac495271d0f",
-        "chain": "ethereum"
+        "chain": "ethereum",
+        "wallet_source": "recent_traders",
+        "recent_hours": 3
     }
     ```
     """
     try:
         logger.info(f"Starting analysis for {request.token_address} on {request.chain}")
+        logger.info(f"Wallet source: {request.wallet_source}, Hours: {request.recent_hours if request.wallet_source == 'recent_traders' else 'N/A'}")
         
-        # ✅ FIX: Korrekte Imports - TokenAnalyzer statt LowCapAnalyzer
+        # ✅ Korrekter Import
         from app.core.backend_crypto_tracker.scanner.token_analyzer import TokenAnalyzer
         
         # Initialisierung mit async with context manager
         async with TokenAnalyzer() as analyzer:
-            # Analyse durchführen
+            # ✅ Analyse mit neuem Parameter
             result = await analyzer.analyze_custom_token(
                 token_address=request.token_address,
-                chain=request.chain
+                chain=request.chain,
+                wallet_source=request.wallet_source,
+                recent_hours=request.recent_hours if request.wallet_source == 'recent_traders' else None
             )
             
             # Prüfe, ob der Token gefunden wurde
             if result.get('token_info', {}).get('name') == 'Unknown':
                 logger.warning(f"Token not found: {request.token_address} on {request.chain}")
                 
-                # Token nicht gefunden - gib eine detaillierte Fehlermeldung zurück
                 error_details = {
                     "error": "TOKEN_NOT_FOUND",
                     "message": f"Token mit der Adresse {request.token_address} konnte nicht in den Datenbanken gefunden werden.",
@@ -121,11 +134,6 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
                             "Der Token existiert nicht mehr",
                             "Der Token ist noch nicht in den Datenbanken gelistet",
                             "Der Token ist auf einer anderen Blockchain"
-                        ],
-                        "suggestions": [
-                            "Überprüfen Sie die Token-Adresse auf Tippfehler",
-                            "Stellen Sie sicher, dass die richtige Blockchain ausgewählt ist",
-                            "Versuchen Sie es mit einer bekannten Token-Adresse zur Überprüfung"
                         ]
                     }
                 }
@@ -134,12 +142,13 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
                     success=False,
                     token_address=request.token_address,
                     chain=request.chain,
+                    wallet_source=request.wallet_source,
+                    recent_hours=request.recent_hours if request.wallet_source == 'recent_traders' else None,
                     analysis_result=error_details,
                     error_message=f"Token nicht gefunden: {request.token_address}",
                     analyzed_at=datetime.utcnow()
                 )
                 
-                # JSON Response mit Sanitizing
                 response_dict = response.dict()
                 sanitized_response = sanitize_value(response_dict)
                 json_content = json.dumps(sanitized_response, cls=SafeJSONEncoder)
@@ -152,7 +161,7 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
         
         logger.info(f"Analysis completed successfully for {request.token_address}")
         
-        # Bereinige das Ergebnis von ungültigen Float-Werten
+        # Bereinige das Ergebnis
         sanitized_result = sanitize_value(result)
         
         # Erstelle die Antwort
@@ -160,15 +169,14 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
             success=True,
             token_address=request.token_address,
             chain=request.chain,
+            wallet_source=request.wallet_source,
+            recent_hours=request.recent_hours if request.wallet_source == 'recent_traders' else None,
             analysis_result=sanitized_result,
             analyzed_at=datetime.utcnow()
         )
         
-        # Konvertiere zu Dictionary und bereinige erneut (für Sicherheit)
         response_dict = response_data.dict()
         sanitized_response_dict = sanitize_value(response_dict)
-        
-        # Verwende json.dumps mit SafeJSONEncoder
         json_content = json.dumps(sanitized_response_dict, cls=SafeJSONEncoder)
         
         return JSONResponse(
@@ -179,11 +187,12 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
     except ValueError as e:
         logger.error(f"Validation error: {str(e)}")
         
-        # Bereinige die Fehlermeldung
         error_response = CustomAnalysisResponse(
             success=False,
             token_address=request.token_address,
             chain=request.chain,
+            wallet_source=request.wallet_source,
+            recent_hours=request.recent_hours if request.wallet_source == 'recent_traders' else None,
             error_message=str(e),
             analyzed_at=datetime.utcnow()
         )
@@ -199,27 +208,22 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
         )
         
     except Exception as e:
-        # Detaillierte Fehlermeldung für Debugging
         error_msg = str(e)
         logger.error(f"Fehler in analyze_custom_token: {error_msg}", exc_info=True)
         
-        # Benutzerfreundliche Fehlermeldung
-        user_msg = "Ein unerwarteter Fehler ist aufgetreten. Bitte versuchen Sie es später erneut."
+        user_msg = "Ein unerwarteter Fehler ist aufgetreten."
         
         if "Token data could not be retrieved" in error_msg:
-            user_msg = f"Token mit der Adresse {request.token_address} konnte nicht gefunden werden. Bitte überprüfen Sie die Adresse oder versuchen Sie es mit einem anderen Token."
-        elif "Analyse fehlgeschlagen" in error_msg:
-            user_msg = error_msg
+            user_msg = f"Token konnte nicht gefunden werden."
         elif "Rate limit exceeded" in error_msg:
-            user_msg = "Zu viele Anfragen. Bitte warten Sie einige Minuten und versuchen Sie es erneut."
-        elif "Initialisierung fehlgeschlagen" in error_msg:
-            user_msg = "Service-Initialisierung fehlgeschlagen. Bitte versuchen Sie es später erneut."
+            user_msg = "Zu viele Anfragen. Bitte warten Sie."
         
-        # Bereinige die Fehlerantwort
         error_response = CustomAnalysisResponse(
             success=False,
             token_address=request.token_address,
             chain=request.chain,
+            wallet_source=request.wallet_source,
+            recent_hours=request.recent_hours if request.wallet_source == 'recent_traders' else None,
             error_message=user_msg,
             analyzed_at=datetime.utcnow()
         )
@@ -237,14 +241,13 @@ async def analyze_custom_token(request: CustomAnalysisRequest):
 
 @router.get("/health")
 async def health_check():
-    """
-    Health Check Endpoint für den Analysis Service
-    """
+    """Health Check Endpoint"""
     return {
         "status": "healthy",
         "service": "custom-analysis",
         "timestamp": datetime.utcnow().isoformat(),
         "supported_chains": ["ethereum", "bsc", "solana", "sui"],
+        "wallet_sources": ["top_holders", "recent_traders"],
         "wallet_classification_types": [
             "DUST_SWEEPER",
             "HODLER", 
@@ -257,9 +260,7 @@ async def health_check():
 
 @router.get("/supported-chains")
 async def get_supported_chains():
-    """
-    Gibt eine Liste der unterstützten Blockchains zurück
-    """
+    """Liste der unterstützten Blockchains"""
     return {
         "chains": [
             {
@@ -290,11 +291,36 @@ async def get_supported_chains():
     }
 
 
+@router.get("/wallet-sources")
+async def get_wallet_sources():
+    """Wallet Source Types"""
+    return {
+        "sources": [
+            {
+                "id": "top_holders",
+                "name": "Top Token Holders",
+                "description": "Analyzes wallets with the largest token balances",
+                "typical_count": "100-200 holders",
+                "classified": 50,
+                "use_case": "Understanding token distribution and whale behavior"
+            },
+            {
+                "id": "recent_traders",
+                "name": "Recent Traders",
+                "description": "Analyzes wallets that recently bought or sold the token",
+                "typical_count": "200+ traders",
+                "classified": 50,
+                "unclassified": 150,
+                "timeframe_hours": "1-24 hours",
+                "use_case": "Understanding recent trading activity and sentiment"
+            }
+        ]
+    }
+
+
 @router.get("/wallet-types")
 async def get_wallet_types():
-    """
-    Gibt Informationen über die Wallet-Klassifizierungstypen zurück
-    """
+    """Wallet Classification Types"""
     from app.core.backend_crypto_tracker.processor.database.models.wallet import (
         get_wallet_type_description,
         get_wallet_type_risk_level,
@@ -302,8 +328,6 @@ async def get_wallet_types():
     )
     
     wallet_types = []
-    
-    # Nur die 5 Haupttypen aus dem neuen System
     main_types = [
         WalletTypeEnum.DUST_SWEEPER,
         WalletTypeEnum.HODLER,
