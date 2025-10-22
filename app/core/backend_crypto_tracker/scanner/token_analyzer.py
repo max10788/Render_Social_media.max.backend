@@ -433,6 +433,133 @@ class TokenAnalyzer:
                 continue
         
         return wallet_analyses
+
+    async def _analyze_wallets_split(
+        self,
+        token_data: Token,
+        holders: List[Dict[str, Any]],
+        chain: str,
+        wallet_source: str,
+        traders_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        ✅ NEW: Split wallet analysis into classified (50) and unclassified (150)
+        """
+        
+        total_supply = sum(float(h.get('balance', 0)) for h in holders)
+        
+        # Calculate percentages
+        for holder in holders:
+            balance = float(holder.get('balance', 0))
+            holder['percentage'] = (balance / total_supply * 100) if total_supply > 0 else 0
+        
+        # ✅ Split: TOP 50 for classification, rest for basic info
+        holders_to_classify = holders[:50]
+        holders_basic = holders[50:200]  # Max 150 more
+        
+        self.logger.info(f"📊 Wallets: {len(holders_to_classify)} to classify, {len(holders_basic)} basic only")
+        
+        # ===== CLASSIFIED WALLETS (TOP 50) =====
+        classified_wallets = []
+        
+        for holder in holders_to_classify:
+            try:
+                balance = float(holder.get('balance', 0))
+                wallet_address = holder.get('address', '')
+                percentage = holder.get('percentage', 0)
+                
+                # Cache check
+                cache_key = f"wallet_3stage_{wallet_address}_{token_data.address}"
+                if self.cache:
+                    cached = await self.cache.get(cache_key)
+                    if cached:
+                        classified_wallets.append(cached)
+                        continue
+                
+                # ✅ Get blockchain data (with LIMIT=15 for performance)
+                blockchain_data = await self._get_wallet_blockchain_data(
+                    wallet_address, 
+                    chain, 
+                    token_data.address,
+                    limit=15  # ✅ Reduced from 25
+                )
+                
+                # 3-Stage Pipeline
+                from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.stages_blockchain import Stage1_RawMetrics
+                from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.stages import Stage2_DerivedMetrics, Stage3_ContextAnalysis
+                
+                stage1 = Stage1_RawMetrics()
+                raw_metrics = stage1.execute(blockchain_data, config={'chain': chain}, blockchain=chain)
+                
+                stage2 = Stage2_DerivedMetrics()
+                derived_metrics = stage2.execute(raw_metrics, config={'btc_price': self.config.btc_price})
+                
+                stage3 = Stage3_ContextAnalysis()
+                context_metrics = stage3.execute(derived_metrics, wallet_address, context_db=None)
+                
+                all_metrics = {**raw_metrics, **derived_metrics, **context_metrics}
+                
+                # Classify
+                wallet_type, classification_score = self._classify_wallet_multistage(all_metrics)
+                
+                wallet_analysis = WalletAnalysis(
+                    wallet_address=wallet_address,
+                    wallet_type=wallet_type,
+                    balance=balance,
+                    percentage_of_supply=percentage,
+                    transaction_count=raw_metrics.get('tx_count', 0),
+                    first_transaction=datetime.fromtimestamp(raw_metrics.get('first_seen', 0)) if raw_metrics.get('first_seen') else None,
+                    last_transaction=datetime.fromtimestamp(raw_metrics.get('last_seen', 0)) if raw_metrics.get('last_seen') else None,
+                    risk_score=classification_score * 100
+                )
+                
+                classified_wallets.append(wallet_analysis)
+                
+                if self.cache:
+                    await self.cache.set(wallet_analysis, self.cache_ttl, cache_key)
+                
+            except Exception as e:
+                self.logger.error(f"Error analyzing wallet {holder.get('address')}: {e}")
+                continue
+        
+        # ===== UNCLASSIFIED WALLETS (151-200) =====
+        unclassified_wallets = []
+        
+        for holder in holders_basic:
+            wallet_address = holder.get('address', '')
+            balance = float(holder.get('balance', 0))
+            percentage = holder.get('percentage', 0)
+            
+            # Basic info only (no classification)
+            basic_info = {
+                'address': wallet_address,
+                'balance': balance,
+                'percentage': percentage
+            }
+            
+            # ✅ Add trader-specific data if available
+            if wallet_source == 'recent_traders' and traders_data:
+                trader_info = next((t for t in traders_data.get('traders', []) if t['address'].lower() == wallet_address.lower()), None)
+                if trader_info:
+                    basic_info.update({
+                        'buy_count': trader_info.get('buy_count', 0),
+                        'sell_count': trader_info.get('sell_count', 0),
+                        'total_bought': trader_info.get('total_bought', 0),
+                        'total_sold': trader_info.get('total_sold', 0),
+                        'tx_count': trader_info.get('tx_count', 0),
+                        'last_tx': trader_info.get('last_tx', 0)
+                    })
+            
+            unclassified_wallets.append(basic_info)
+        
+        self.logger.info(f"✅ Classified: {len(classified_wallets)}, Unclassified: {len(unclassified_wallets)}")
+        
+        return {
+            'classified': classified_wallets,
+            'unclassified': unclassified_wallets,
+            'total': len(classified_wallets) + len(unclassified_wallets)
+        }
+
         
     async def _get_wallet_blockchain_data(self, wallet_address: str, chain: str, token_address: str) -> Dict[str, Any]:
         """Get blockchain transaction data for wallet"""
