@@ -561,25 +561,36 @@ class TokenAnalyzer:
         }
 
         
-    async def _get_wallet_blockchain_data(self, wallet_address: str, chain: str, token_address: str) -> Dict[str, Any]:
+    async def _get_wallet_blockchain_data(
+        self, 
+        wallet_address: str, 
+        chain: str, 
+        token_address: str,
+        limit: int = 25  # ✅ NEU: Configurable limit
+    ) -> Dict[str, Any]:
         """Get blockchain transaction data for wallet"""
         try:
             if chain in ['ethereum', 'bsc']:
-                txs = await ethereum_get_transactions(wallet_address, token_address)
+                from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_address_transactions import execute_get_address_transactions
+                txs = await execute_get_address_transactions(
+                    wallet_address, 
+                    limit=limit  # ✅ Use limit
+                )
             elif chain == 'solana':
-                txs = await solana_get_transaction(wallet_address)
+                from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_transaction_details import execute_get_transaction_details
+                txs = await execute_get_transaction_details(wallet_address)
             elif chain == 'sui':
-                txs = await sui_get_transaction(wallet_address)
+                from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_transaction import execute_get_transaction_details
+                txs = await execute_get_transaction_details(wallet_address)
             else:
                 return {'txs': [], 'balance': 0, 'address': wallet_address}
             
-            # Format for Stage 1
             return {
                 'address': wallet_address,
                 'txs': txs or [],
-                'balance': 0,  # Will be calculated from txs
-                'inputs': [],   # Will be extracted from txs
-                'outputs': []   # Will be extracted from txs
+                'balance': 0,
+                'inputs': [],
+                'outputs': []
             }
             
         except Exception as e:
