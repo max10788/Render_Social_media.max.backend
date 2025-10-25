@@ -58,7 +58,7 @@ class TokenAnalysisConfig:
     min_liquidity_threshold: float = 50_000
     whale_threshold_percentage: float = 5.0
     dev_threshold_percentage: float = 2.0
-    max_holders_to_analyze: int = 30  # ✅ Changed to 30
+    max_holders_to_analyze: int = 15
     request_delay_seconds: float = 1.0
     enable_cache: bool = True
     cache_ttl_seconds: int = 300
