@@ -13,7 +13,7 @@ class MixerAnalyzer(BaseWalletAnalyzer):
     
     CLASS_NAME = "Mixer"
     METRICS = MIXER_METRICS
-    THRESHOLD = 0.6
+    THRESHOLD = 0.45
     WEIGHTS = {"primary": 0.5, "secondary": 0.2, "context": 0.3}
     
     def compute_score(self, metrics: Dict[str, Any]) -> float:
