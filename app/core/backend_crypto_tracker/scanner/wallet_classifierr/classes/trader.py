@@ -11,7 +11,7 @@ class TraderAnalyzer(BaseWalletAnalyzer):
     
     CLASS_NAME = "Trader"
     METRICS = TRADER_METRICS
-    THRESHOLD = 0.6
+    THRESHOLD = 0.45
     WEIGHTS = {"primary": 0.65, "secondary": 0.2, "context": 0.15}
     
     def compute_score(self, metrics: Dict[str, Any]) -> float:
