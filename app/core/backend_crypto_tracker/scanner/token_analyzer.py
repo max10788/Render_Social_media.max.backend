@@ -552,7 +552,7 @@ class TokenAnalyzer:
         wallet_address: str, 
         chain: str, 
         token_address: str,
-        limit: int = 10
+        limit: int = 40
     ) -> Dict[str, Any]:
         """Get blockchain transaction data for wallet"""
         try:
