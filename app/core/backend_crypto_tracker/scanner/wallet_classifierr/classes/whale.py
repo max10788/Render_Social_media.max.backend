@@ -2,11 +2,9 @@
 # classes/whale.py
 # ============================================================================
 """Whale wallet analyzer."""
-
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.base_analyzer import BaseWalletAnalyzer
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.metric_definitions import WHALE_METRICS
 from typing import Dict, Any
-
 
 class WhaleAnalyzer(BaseWalletAnalyzer):
     """Analyzer for Whale wallets."""
@@ -14,17 +12,20 @@ class WhaleAnalyzer(BaseWalletAnalyzer):
     CLASS_NAME = "Whale"
     METRICS = WHALE_METRICS
     THRESHOLD = 0.55
-    WEIGHTS = {"primary": 0.75, "secondary": 0.15, "context": 0.1}
+    WEIGHTS = {"primary": 0.7, "secondary": 0.2, "context": 0.1}
     
     def compute_score(self, metrics: Dict[str, Any]) -> float:
         """Compute Whale score."""
-        # Primary indicators
+        # Primary indicators - Value and transaction size
         total_value = metrics.get('total_value_usd', 0)
         
         # Top 1% threshold (simplified: >$10M)
         value_score = 1.0 if total_value > 10_000_000 else self._normalize(total_value, 0, 10_000_000)
         
-        # Count of large transactions
+        # NEW: Large transaction ratio
+        large_tx_ratio = metrics.get('large_tx_ratio', 0)
+        
+        # Count of large transactions (legacy metric)
         large_tx_count = sum(
             1 for val in metrics.get('output_values', [])
             if val * 50000 > 1_000_000  # Assuming BTC price
@@ -42,22 +43,42 @@ class WhaleAnalyzer(BaseWalletAnalyzer):
         
         primary_score = self._avg([
             value_score,
+            large_tx_ratio,
             large_tx_score,
             concentration,
             net_inflow_score,
             age_score
         ])
         
-        # Secondary indicators
+        # Secondary indicators - Activity and connections
+        # Low transaction frequency (whales don't trade frequently)
+        low_tx_freq = 1.0 - self._normalize(metrics.get('tx_per_month', 0), 0, 20)
+        
+        # Whale cluster membership
         whale_cluster = 1.0 if metrics.get('whale_cluster_member', False) else 0
         
-        secondary_score = self._avg([whale_cluster, value_score * 0.5])
+        # NEW: Holding pattern (whales tend to hold)
+        holding_score = self._normalize(metrics.get('holding_period_days', 0), 0, 730)
         
-        # Context indicators
+        secondary_score = self._avg([
+            low_tx_freq,
+            whale_cluster,
+            holding_score,
+            value_score * 0.5
+        ])
+        
+        # Context indicators - Institutional and network position
         institutional = 1.0 if metrics.get('institutional_wallet', False) else 0
         high_eigenvector = self._normalize(metrics.get('eigenvector_centrality', 0), 0, 0.1)
         
-        context_score = self._avg([institutional, high_eigenvector])
+        # NEW: Strategic behavior (low activity but high value)
+        strategic_behavior = value_score * (1.0 - self._normalize(metrics.get('tx_per_month', 0), 0, 10))
+        
+        context_score = self._avg([
+            institutional,
+            high_eigenvector,
+            strategic_behavior
+        ])
         
         # Weighted combination
         final_score = (
@@ -67,4 +88,3 @@ class WhaleAnalyzer(BaseWalletAnalyzer):
         )
         
         return final_score
-
