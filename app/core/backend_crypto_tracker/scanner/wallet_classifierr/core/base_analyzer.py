@@ -4,7 +4,8 @@
 """Base class for all wallet class analyzers."""
 
 from typing import Dict, Any, List
-from .stages import Stage1_RawMetrics, Stage2_DerivedMetrics, Stage3_ContextAnalysis
+from .stages_blockchain import Stage1_RawMetrics
+from .stages import Stage2_DerivedMetrics, Stage3_ContextAnalysis
 
 
 class BaseWalletAnalyzer:
