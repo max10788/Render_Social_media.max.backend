@@ -13,7 +13,7 @@ class WhaleAnalyzer(BaseWalletAnalyzer):
     
     CLASS_NAME = "Whale"
     METRICS = WHALE_METRICS
-    THRESHOLD = 0.7
+    THRESHOLD = 0.55
     WEIGHTS = {"primary": 0.75, "secondary": 0.15, "context": 0.1}
     
     def compute_score(self, metrics: Dict[str, Any]) -> float:
