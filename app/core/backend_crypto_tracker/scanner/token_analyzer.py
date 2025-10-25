@@ -58,7 +58,7 @@ class TokenAnalysisConfig:
     min_liquidity_threshold: float = 50_000
     whale_threshold_percentage: float = 5.0
     dev_threshold_percentage: float = 2.0
-    max_holders_to_analyze: int = 50  # ✅ Reduced from 100
+    max_holders_to_analyze: int = 30  # ✅ Changed to 30
     request_delay_seconds: float = 1.0
     enable_cache: bool = True
     cache_ttl_seconds: int = 300
@@ -341,8 +341,8 @@ class TokenAnalyzer:
             balance = float(holder.get('balance', 0))
             holder['percentage'] = (balance / total_supply * 100) if total_supply > 0 else 0
         
-        # ✅ Split: Top 50 for classification, rest unclassified
-        max_to_classify = 50
+        # ✅ Split: Top 30 for classification, rest unclassified
+        max_to_classify = 30
         holders_to_classify = holders[:max_to_classify]
         holders_unclassified = holders[max_to_classify:]
         
@@ -383,6 +383,13 @@ class TokenAnalyzer:
                 
                 # Classify wallet
                 wallet_type, confidence_score = self._classify_wallet_multistage(all_metrics)
+                
+                # ✅ DEBUG: Log scores for debugging
+                self.logger.debug(f"Wallet {wallet_address} metrics sample:")
+                self.logger.debug(f"  - tx_count: {all_metrics.get('tx_count')}")
+                self.logger.debug(f"  - total_value_usd: {all_metrics.get('total_value_usd')}")
+                self.logger.debug(f"  - tx_per_month: {all_metrics.get('tx_per_month')}")
+                self.logger.debug(f"  - holding_period_days: {all_metrics.get('holding_period_days')}")
                 
                 # Calculate risk score
                 risk_score, risk_flags = self._calculate_wallet_risk(all_metrics, wallet_type)
@@ -588,6 +595,8 @@ class TokenAnalyzer:
             try:
                 score = analyzer.compute_score(all_metrics)
                 scores[name] = score
+                # ✅ DEBUG: Log each analyzer score
+                self.logger.debug(f"    {name}: {score:.4f} (threshold: {analyzer.THRESHOLD})")
             except Exception as e:
                 self.logger.warning(f"Error in {name} analyzer: {e}")
                 scores[name] = 0.0
@@ -595,6 +604,9 @@ class TokenAnalyzer:
         # Find best match
         best_class = max(scores, key=scores.get)
         best_score = scores[best_class]
+        
+        # ✅ DEBUG: Log best result
+        self.logger.info(f"  Best match: {best_class} with score {best_score:.4f}")
         
         # Map to WalletTypeEnum
         class_mapping = {
@@ -608,8 +620,10 @@ class TokenAnalyzer:
         # Check if score meets threshold
         analyzer = self.wallet_analyzers[best_class]
         if best_score >= analyzer.THRESHOLD:
+            self.logger.info(f"  ✅ CLASSIFIED as {best_class.upper()}")
             return class_mapping[best_class], best_score
         
+        self.logger.warning(f"  ❌ Score {best_score:.4f} below threshold {analyzer.THRESHOLD} → UNKNOWN")
         return WalletTypeEnum.UNKNOWN, best_score
 
     def _calculate_token_score(self, token_data: Token, wallet_analyses: List[WalletAnalysis]) -> Dict[str, Any]:
