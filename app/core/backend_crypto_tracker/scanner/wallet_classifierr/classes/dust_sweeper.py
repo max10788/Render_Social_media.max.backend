@@ -13,7 +13,7 @@ class DustSweeperAnalyzer(BaseWalletAnalyzer):
     
     CLASS_NAME = "Dust Sweeper"
     METRICS = DUST_SWEEPER_METRICS
-    THRESHOLD = 0.65
+    THRESHOLD = 0.45
     WEIGHTS = {"primary": 0.7, "secondary": 0.2, "context": 0.1}
     
     def compute_score(self, metrics: Dict[str, Any]) -> float:
