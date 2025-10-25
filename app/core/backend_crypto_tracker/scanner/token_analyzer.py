@@ -1,6 +1,7 @@
 """
-Token Analyzer - FINAL VERSION
-Fully integrated with new 3-stage wallet classification system
+Token Analyzer - FINAL VERSION with Frontend-Compatible Data Structure
+✅ Fully integrated with new 3-stage wallet classification system
+✅ Returns data in exact format expected by frontend
 """
 
 import asyncio
@@ -41,6 +42,9 @@ from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes.mixer im
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes.trader import TraderAnalyzer
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.classes.whale import WhaleAnalyzer
 
+# ✅ NEW IMPORT: Wallet Data Transformer
+from app.core.backend_crypto_tracker.scanner.wallet_data_transformer import WalletDataTransformer
+
 logger = get_logger(__name__)
 
 
@@ -54,7 +58,7 @@ class TokenAnalysisConfig:
     min_liquidity_threshold: float = 50_000
     whale_threshold_percentage: float = 5.0
     dev_threshold_percentage: float = 2.0
-    max_holders_to_analyze: int = 100
+    max_holders_to_analyze: int = 50  # ✅ Reduced from 100
     request_delay_seconds: float = 1.0
     enable_cache: bool = True
     cache_ttl_seconds: int = 300
@@ -93,15 +97,12 @@ def retry_with_backoff(max_retries=3, base_delay=1, max_delay=60):
 class TokenAnalyzer:
     """
     Token Analyzer with integrated 3-stage wallet classification system
+    ✅ Returns frontend-compatible wallet data structure
     """
     
     def __init__(self, config: TokenAnalysisConfig = None):
         self.config = config or TokenAnalysisConfig()
         self.logger = get_logger(__name__)
-        
-        # ✅ FIX: Reduziere max_holders_to_analyze auf 10
-        # Ursprünglich war es 100, aber das führt zu 100 API Calls!
-        self.config.max_holders_to_analyze = 10  # ← DIESE ZEILE HINZUFÜGEN!
         
         # Cache
         self.enable_cache = self.config.enable_cache
@@ -130,9 +131,12 @@ class TokenAnalyzer:
             'whale': WhaleAnalyzer()
         }
         
+        # ✅ NEW: Wallet Data Transformer
+        self.wallet_transformer = WalletDataTransformer()
+        
         self._initialized = False
         self.logger.info("TokenAnalyzer initialized with 3-stage wallet classification")
-        self.logger.info(f"⚠️ Max holders to analyze: {self.config.max_holders_to_analyze}")  # ← LOG HINZUFÜGEN
+        self.logger.info(f"⚠️ Max holders to classify: {self.config.max_holders_to_analyze}")
 
     async def __aenter__(self):
         if not self._initialized:
@@ -162,12 +166,12 @@ class TokenAnalyzer:
         token_address: str, 
         chain: str, 
         use_cache: Optional[bool] = None,
-        wallet_source: str = "top_holders",  # ✅ NEU
-        recent_hours: Optional[int] = 3      # ✅ NEU
+        wallet_source: str = "top_holders",
+        recent_hours: Optional[int] = 3
     ) -> Dict[str, Any]:
         """
         Main token analysis method
-        ✅ UPDATED: Supports top_holders and recent_traders
+        ✅ UPDATED: Returns frontend-compatible structure
         """
         self.logger.info(f"Starting analysis for token {token_address} on {chain}")
         self.logger.info(f"Wallet source: {wallet_source}, Recent hours: {recent_hours if wallet_source == 'recent_traders' else 'N/A'}")
@@ -200,45 +204,58 @@ class TokenAnalyzer:
                 raise ValueError("Token data could not be retrieved")
             
             # Step 2: Get wallets based on source
+            traders_data = None
             if wallet_source == "recent_traders":
-                # ✅ NEW: Get recent traders
                 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_recent_traders import execute_get_recent_traders
                 
                 self.logger.info(f"🔍 Getting recent traders (last {recent_hours}h)...")
-                traders_result = await execute_get_recent_traders(token_address, chain, recent_hours)
-                wallets = traders_result.get('traders', [])
+                traders_data = await execute_get_recent_traders(token_address, chain, recent_hours)
+                wallets = traders_data.get('traders', [])
                 
                 self.logger.info(f"✅ Found {len(wallets)} recent traders")
                 
-                # Convert to holder format for compatibility
                 holders = [
                     {
                         'address': w['address'],
-                        'balance': w.get('total_bought', 0) - w.get('total_sold', 0),  # Net position
-                        'percentage': 0  # Will be calculated later
+                        'balance': w.get('total_bought', 0) - w.get('total_sold', 0),
+                        'percentage': 0,
+                        'tx_count': w.get('tx_count', 0),
+                        'first_tx': w.get('first_tx'),
+                        'last_tx': w.get('last_tx')
                     }
-                    for w in wallets[:200]  # ✅ Limit to 200
+                    for w in wallets[:200]
                 ]
-                
             else:
-                # Default: Get top holders
                 self.logger.info(f"🔍 Getting top token holders...")
                 holders = await self._get_token_holders(token_address, chain)
             
-            # Step 3: Analyze wallets with 3-stage classification
-            # ✅ NEW: Split into classified (50) and unclassified (150)
-            wallet_results = await self._analyze_wallets_split(
-                token_data, 
-                holders, 
-                chain,
-                wallet_source,
-                traders_result if wallet_source == 'recent_traders' else None
+            # Step 3: Analyze wallets - ✅ NEW METHOD
+            wallet_results = await self._analyze_wallets(
+                holders=holders,
+                chain=chain,
+                token_address=token_address,
+                wallet_source=wallet_source,
+                traders_data=traders_data
             )
             
-            # Step 4: Calculate token score
-            score_result = self._calculate_token_score(token_data, wallet_results['classified'])
+            # Step 4: Calculate token score (use classified wallets only)
+            # Convert back to WalletAnalysis format for scoring
+            classified_wallet_objs = []
+            for w in wallet_results['classified']:
+                wallet_type = WalletTypeEnum[w['wallet_type'].upper()] if w['wallet_type'] != 'unclassified' else WalletTypeEnum.UNKNOWN
+                wallet_obj = WalletAnalysis(
+                    wallet_address=w['wallet_address'],
+                    wallet_type=wallet_type,
+                    balance=w['balance'],
+                    percentage_of_supply=w['percentage_of_supply'],
+                    transaction_count=w['transaction_count'],
+                    risk_score=w['risk_score']
+                )
+                classified_wallet_objs.append(wallet_obj)
             
-            # Step 5: Build result with new structure
+            score_result = self._calculate_token_score(token_data, classified_wallet_objs)
+            
+            # Step 5: Build frontend-compatible result
             result = {
                 'token_info': {
                     'address': token_data.address,
@@ -255,40 +272,7 @@ class TokenAnalyzer:
                 'score': score_result['total_score'],
                 'metrics': score_result['metrics'],
                 'risk_flags': score_result['risk_flags'],
-                'wallet_analysis': {
-                    'wallet_source': wallet_source,
-                    'recent_hours': recent_hours if wallet_source == 'recent_traders' else None,
-                    'total_wallets': wallet_results['total'],
-                    'classified_count': len(wallet_results['classified']),
-                    'unclassified_count': len(wallet_results['unclassified']),
-                    
-                    # ✅ Classified wallets (TOP 50 with full analysis)
-                    'classified': [
-                        {
-                            'address': w.wallet_address,
-                            'balance': w.balance,
-                            'percentage': w.percentage_of_supply,
-                            'type': w.wallet_type.value,
-                            'risk_score': w.risk_score,
-                            'transaction_count': w.transaction_count,
-                            'first_transaction': w.first_transaction.isoformat() if w.first_transaction else None,
-                            'last_transaction': w.last_transaction.isoformat() if w.last_transaction else None
-                        }
-                        for w in wallet_results['classified'][:10]  # Top 10 in response
-                    ],
-                    
-                    # ✅ Unclassified wallets (Remaining 150 with basic info only)
-                    'unclassified': wallet_results['unclassified'][:20],  # Sample in response
-                    
-                    # Summary stats
-                    'summary': {
-                        'dust_sweepers': len([w for w in wallet_results['classified'] if w.wallet_type == WalletTypeEnum.DUST_SWEEPER]),
-                        'hodlers': len([w for w in wallet_results['classified'] if w.wallet_type == WalletTypeEnum.HODLER]),
-                        'mixers': len([w for w in wallet_results['classified'] if w.wallet_type == WalletTypeEnum.MIXER]),
-                        'traders': len([w for w in wallet_results['classified'] if w.wallet_type == WalletTypeEnum.TRADER]),
-                        'whales': len([w for w in wallet_results['classified'] if w.wallet_type == WalletTypeEnum.WHALE])
-                    }
-                }
+                'wallet_analysis': wallet_results  # ✅ This now contains classified/unclassified in correct format
             }
             
             # Cache
@@ -311,7 +295,6 @@ class TokenAnalyzer:
         try:
             self.logger.debug(f"Fetching holders for {token_address} on {chain}")
             
-            # ✅ FIX: Übergebe chain Parameter
             if chain in ['ethereum', 'bsc']:
                 holders = await ethereum_get_holders(token_address, chain)
             elif chain == 'solana':
@@ -329,228 +312,139 @@ class TokenAnalyzer:
             self.logger.error(f"Error fetching holders: {e}")
             return []
 
-    async def _analyze_wallets_3stage(
-        self, 
-        token_data: Token, 
-        holders: List[Dict[str, Any]], 
-        chain: str
-    ) -> List[WalletAnalysis]:
-        """
-        НОВАЯ МЕТОД: 3-Stage Wallet Analysis Pipeline
-        Stage 1: Raw Metrics -> Stage 2: Derived Metrics -> Stage 3: Context -> Classification
-        """
-        wallet_analyses = []
-        
-        total_supply = sum(float(h.get('balance', 0)) for h in holders)
-        holders_to_analyze = holders[:self.config.max_holders_to_analyze]
-        
-        for holder in holders_to_analyze:
-            try:
-                balance = float(holder.get('balance', 0))
-                wallet_address = holder.get('address', '')
-                percentage = (balance / total_supply) * 100 if total_supply > 0 else 0
-                
-                # Cache check
-                cache_key = f"wallet_3stage_{wallet_address}_{token_data.address}"
-                if self.cache:
-                    cached = await self.cache.get(cache_key)
-                    if cached:
-                        wallet_analyses.append(cached)
-                        continue
-                
-                # Get blockchain data for this wallet
-                blockchain_data = await self._get_wallet_blockchain_data(wallet_address, chain, token_data.address)
-                
-                # === 3-STAGE PIPELINE ===
-                # Stage 1: Raw Metrics
-                stage1_executor = Stage1_RawMetrics()
-                raw_metrics = stage1_executor.execute(
-                    blockchain_data,
-                    config={'chain': chain},
-                    blockchain=chain
-                )
-                
-                # Stage 2: Derived Metrics
-                stage2_executor = Stage2_DerivedMetrics()
-                derived_metrics = stage2_executor.execute(
-                    raw_metrics,
-                    config={'btc_price': self.config.btc_price}
-                )
-                
-                # Stage 3: Context (ohne DB erstmal)
-                stage3_executor = Stage3_ContextAnalysis()
-                context_metrics = stage3_executor.execute(
-                    derived_metrics,
-                    wallet_address,
-                    context_db=None  # TODO: Add context DB later
-                )
-                
-                # Combine all metrics
-                all_metrics = {**raw_metrics, **derived_metrics, **context_metrics}
-                
-                # Classify wallet with all analyzers
-                wallet_type, classification_score = self._classify_wallet_multistage(all_metrics)
-                
-                # ✅ FIX: Sichere datetime Konvertierung
-                first_tx = raw_metrics.get('first_seen')
-                last_tx = raw_metrics.get('last_seen')
-                
-                # Konvertiere zu datetime wenn nötig
-                if isinstance(first_tx, (int, float)) and first_tx > 0:
-                    first_transaction = datetime.fromtimestamp(first_tx)
-                elif isinstance(first_tx, datetime):
-                    first_transaction = first_tx
-                else:
-                    first_transaction = None
-                
-                if isinstance(last_tx, (int, float)) and last_tx > 0:
-                    last_transaction = datetime.fromtimestamp(last_tx)
-                elif isinstance(last_tx, datetime):
-                    last_transaction = last_tx
-                else:
-                    last_transaction = None
-                
-                # Create WalletAnalysis
-                wallet_analysis = WalletAnalysis(
-                    wallet_address=wallet_address,
-                    wallet_type=wallet_type,
-                    balance=balance,
-                    percentage_of_supply=percentage,
-                    transaction_count=raw_metrics.get('tx_count', 0),
-                    first_transaction=first_transaction,
-                    last_transaction=last_transaction,
-                    risk_score=classification_score * 100  # Convert to 0-100 scale
-                )
-                
-                wallet_analyses.append(wallet_analysis)
-                
-                # Cache
-                if self.cache:
-                    await self.cache.set(wallet_analysis, self.cache_ttl, cache_key)
-                
-            except Exception as e:
-                self.logger.error(f"Error analyzing wallet {holder.get('address')}: {e}")
-                continue
-        
-        return wallet_analyses
-
-    async def _analyze_wallets_split(
+    async def _analyze_wallets(
         self,
-        token_data: Token,
         holders: List[Dict[str, Any]],
         chain: str,
-        wallet_source: str,
+        token_address: str,
+        wallet_source: str = "top_holders",
         traders_data: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        ✅ NEW: Split wallet analysis into classified (50) and unclassified (150)
-        """
+        ✅ COMPLETELY REWRITTEN: Analyze wallets and return frontend-compatible format
         
-        total_supply = sum(float(h.get('balance', 0)) for h in holders)
+        Returns:
+            {
+                'classified': [Frontend-ready wallet objects with all fields],
+                'unclassified': [Frontend-ready wallet objects with basic fields],
+                'total': int
+            }
+        """
+        if not holders:
+            return {'classified': [], 'unclassified': [], 'total': 0}
+        
+        self.logger.info(f"Analyzing {len(holders)} wallets (source: {wallet_source})")
         
         # Calculate percentages
+        total_supply = sum(float(h.get('balance', 0)) for h in holders)
         for holder in holders:
             balance = float(holder.get('balance', 0))
             holder['percentage'] = (balance / total_supply * 100) if total_supply > 0 else 0
         
-        # ✅ Split: TOP 50 for classification, rest for basic info
-        holders_to_classify = holders[:50]
-        holders_basic = holders[50:200]  # Max 150 more
+        # ✅ Split: Top 50 for classification, rest unclassified
+        max_to_classify = 50
+        holders_to_classify = holders[:max_to_classify]
+        holders_unclassified = holders[max_to_classify:]
         
-        self.logger.info(f"📊 Wallets: {len(holders_to_classify)} to classify, {len(holders_basic)} basic only")
+        self.logger.info(f"Will classify: {len(holders_to_classify)}, Will skip: {len(holders_unclassified)}")
         
-        # ===== CLASSIFIED WALLETS (TOP 50) =====
-        classified_wallets = []
+        # Classification results storage
+        classification_results = {}
         
-        for holder in holders_to_classify:
+        # ✅ Classify Top 50 with 3-Stage Pipeline
+        for idx, holder in enumerate(holders_to_classify, 1):
+            wallet_address = holder.get('address', '').lower()
+            
             try:
-                balance = float(holder.get('balance', 0))
-                wallet_address = holder.get('address', '')
-                percentage = holder.get('percentage', 0)
+                self.logger.info(f"Classifying wallet {idx}/{len(holders_to_classify)}: {wallet_address}")
                 
-                # Cache check
-                cache_key = f"wallet_3stage_{wallet_address}_{token_data.address}"
-                if self.cache:
-                    cached = await self.cache.get(cache_key)
-                    if cached:
-                        classified_wallets.append(cached)
-                        continue
-                
-                # ✅ Get blockchain data (with LIMIT=15 for performance)
+                # Get blockchain data with reduced limit
                 blockchain_data = await self._get_wallet_blockchain_data(
                     wallet_address, 
                     chain, 
-                    token_data.address,
-                    limit=15  # ✅ Reduced from 25
+                    token_address,
+                    limit=10
                 )
                 
-                # 3-Stage Pipeline
-                from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.stages_blockchain import Stage1_RawMetrics
-                from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.stages import Stage2_DerivedMetrics, Stage3_ContextAnalysis
-                
+                # Stage 1: Raw metrics
                 stage1 = Stage1_RawMetrics()
-                raw_metrics = stage1.execute(blockchain_data, config={'chain': chain}, blockchain=chain)
+                raw_metrics = stage1.execute(blockchain_data, config={})
                 
+                # Stage 2: Derived metrics
                 stage2 = Stage2_DerivedMetrics()
-                derived_metrics = stage2.execute(raw_metrics, config={'btc_price': self.config.btc_price})
+                derived_metrics = stage2.execute(raw_metrics, config={})
                 
+                # Stage 3: Context analysis
                 stage3 = Stage3_ContextAnalysis()
                 context_metrics = stage3.execute(derived_metrics, wallet_address, context_db=None)
                 
+                # Combine all metrics
                 all_metrics = {**raw_metrics, **derived_metrics, **context_metrics}
                 
-                # Classify
-                wallet_type, classification_score = self._classify_wallet_multistage(all_metrics)
+                # Classify wallet
+                wallet_type, confidence_score = self._classify_wallet_multistage(all_metrics)
                 
-                wallet_analysis = WalletAnalysis(
-                    wallet_address=wallet_address,
-                    wallet_type=wallet_type,
-                    balance=balance,
-                    percentage_of_supply=percentage,
-                    transaction_count=raw_metrics.get('tx_count', 0),
-                    first_transaction=datetime.fromtimestamp(raw_metrics.get('first_seen', 0)) if raw_metrics.get('first_seen') else None,
-                    last_transaction=datetime.fromtimestamp(raw_metrics.get('last_seen', 0)) if raw_metrics.get('last_seen') else None,
-                    risk_score=classification_score * 100
-                )
+                # Calculate risk score
+                risk_score, risk_flags = self._calculate_wallet_risk(all_metrics, wallet_type)
                 
-                classified_wallets.append(wallet_analysis)
+                # Store classification result
+                classification_results[wallet_address] = {
+                    'wallet_type': wallet_type.value,
+                    'confidence_score': confidence_score,
+                    'risk_score': risk_score,
+                    'risk_flags': risk_flags,
+                    'metrics': all_metrics,
+                    'classified': True
+                }
                 
-                if self.cache:
-                    await self.cache.set(wallet_analysis, self.cache_ttl, cache_key)
+                self.logger.info(f"✅ {wallet_address}: {wallet_type.value} (confidence: {confidence_score:.2f})")
+                
+                # Rate limiting
+                await asyncio.sleep(0.5)
                 
             except Exception as e:
-                self.logger.error(f"Error analyzing wallet {holder.get('address')}: {e}")
-                continue
+                self.logger.error(f"Error classifying wallet {wallet_address}: {e}")
+                classification_results[wallet_address] = {
+                    'wallet_type': 'unknown',
+                    'confidence_score': 0.0,
+                    'risk_score': 0,
+                    'risk_flags': ['classification_error'],
+                    'classified': False
+                }
         
-        # ===== UNCLASSIFIED WALLETS (151-200) =====
+        # ✅ Transform wallets to frontend format using WalletDataTransformer
+        classified_wallets = []
         unclassified_wallets = []
         
-        for holder in holders_basic:
-            wallet_address = holder.get('address', '')
-            balance = float(holder.get('balance', 0))
-            percentage = holder.get('percentage', 0)
+        # Process classified wallets
+        for holder in holders_to_classify:
+            wallet_addr = holder.get('address', '').lower()
+            classification = classification_results.get(wallet_addr)
             
-            # Basic info only (no classification)
-            basic_info = {
-                'address': wallet_address,
-                'balance': balance,
-                'percentage': percentage
-            }
+            if classification and classification.get('classified'):
+                # Prepare wallet data
+                wallet_data = self._prepare_wallet_data(holder, traders_data)
+                
+                # Transform to frontend format
+                transformed = self.wallet_transformer.transform_classified_wallet(
+                    wallet_data=wallet_data,
+                    token_address=token_address,
+                    chain=chain,
+                    classification_result=classification
+                )
+                classified_wallets.append(transformed)
+        
+        # Process unclassified wallets
+        for holder in holders_unclassified:
+            wallet_data = self._prepare_wallet_data(holder, traders_data)
             
-            # ✅ Add trader-specific data if available
-            if wallet_source == 'recent_traders' and traders_data:
-                trader_info = next((t for t in traders_data.get('traders', []) if t['address'].lower() == wallet_address.lower()), None)
-                if trader_info:
-                    basic_info.update({
-                        'buy_count': trader_info.get('buy_count', 0),
-                        'sell_count': trader_info.get('sell_count', 0),
-                        'total_bought': trader_info.get('total_bought', 0),
-                        'total_sold': trader_info.get('total_sold', 0),
-                        'tx_count': trader_info.get('tx_count', 0),
-                        'last_tx': trader_info.get('last_tx', 0)
-                    })
-            
-            unclassified_wallets.append(basic_info)
+            # Transform to frontend format (unclassified)
+            transformed = self.wallet_transformer.transform_unclassified_wallet(
+                wallet_data=wallet_data,
+                token_address=token_address,
+                chain=chain
+            )
+            unclassified_wallets.append(transformed)
         
         self.logger.info(f"✅ Classified: {len(classified_wallets)}, Unclassified: {len(unclassified_wallets)}")
         
@@ -560,13 +454,98 @@ class TokenAnalyzer:
             'total': len(classified_wallets) + len(unclassified_wallets)
         }
 
+    def _prepare_wallet_data(
+        self, 
+        holder: Dict[str, Any], 
+        traders_data: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Prepare wallet data for transformation.
+        Combines holder data with trader data if available.
+        """
+        wallet_address = holder.get('address', '')
+        
+        wallet_data = {
+            'address': wallet_address,
+            'balance': holder.get('balance', 0),
+            'percentage_of_supply': holder.get('percentage', 0),
+            'transaction_count': holder.get('tx_count', 0),
+            'first_transaction': holder.get('first_tx'),
+            'last_transaction': holder.get('last_tx')
+        }
+        
+        # Add trader-specific data if available
+        if traders_data:
+            trader_info = next(
+                (t for t in traders_data.get('traders', []) 
+                 if t['address'].lower() == wallet_address.lower()), 
+                None
+            )
+            if trader_info:
+                wallet_data.update({
+                    'buy_count': trader_info.get('buy_count', 0),
+                    'sell_count': trader_info.get('sell_count', 0),
+                    'total_bought': trader_info.get('total_bought', 0),
+                    'total_sold': trader_info.get('total_sold', 0),
+                    'tx_count': trader_info.get('tx_count', 0),
+                    'last_tx': trader_info.get('last_tx', 0)
+                })
+        
+        return wallet_data
+
+    def _calculate_wallet_risk(
+        self, 
+        metrics: Dict[str, Any], 
+        wallet_type
+    ) -> tuple:
+        """
+        Calculate risk score and flags for a wallet.
+        
+        Returns:
+            (risk_score: int 0-100, risk_flags: List[str])
+        """
+        risk_score = 0
+        risk_flags = []
+        
+        # Mixer wallets = high risk
+        if wallet_type.value == 'MIXER':
+            risk_score += 50
+            risk_flags.append('Potential Mixer Activity')
+        
+        # Dust sweeper = medium risk
+        if wallet_type.value == 'DUST_SWEEPER':
+            risk_score += 30
+            risk_flags.append('Dust Sweeper Pattern')
+        
+        # High transaction frequency
+        tx_per_month = metrics.get('tx_per_month', 0)
+        if tx_per_month > 100:
+            risk_score += 20
+            risk_flags.append('High Volume Trading')
+        
+        # Many exchange interactions
+        exchange_count = metrics.get('exchange_interaction_count', 0)
+        if exchange_count > 10:
+            risk_score += 15
+            risk_flags.append('Multiple Exchanges')
+        
+        # High turnover rate
+        turnover = metrics.get('turnover_rate', 0)
+        if turnover > 5:
+            risk_score += 10
+            risk_flags.append('High Turnover Rate')
+        
+        # Cap at 100
+        risk_score = min(risk_score, 100)
+        
+        return risk_score, risk_flags
         
     async def _get_wallet_blockchain_data(
         self, 
         wallet_address: str, 
         chain: str, 
         token_address: str,
-        limit: int = 25  # ✅ NEU: Configurable limit
+        limit: int = 10
     ) -> Dict[str, Any]:
         """Get blockchain transaction data for wallet"""
         try:
@@ -574,7 +553,7 @@ class TokenAnalyzer:
                 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_address_transactions import execute_get_address_transactions
                 txs = await execute_get_address_transactions(
                     wallet_address, 
-                    limit=limit  # ✅ Use limit
+                    limit=limit
                 )
             elif chain == 'solana':
                 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.solana.get_transaction_details import execute_get_transaction_details
@@ -704,7 +683,11 @@ class TokenAnalyzer:
             'score': 50.0,
             'metrics': {'total_holders_analyzed': 0},
             'risk_flags': ["limited_data"],
-            'wallet_analysis': {'total_wallets': 0, 'top_holders': []}
+            'wallet_analysis': {
+                'classified': [],
+                'unclassified': [],
+                'total': 0
+            }
         }
         
         if should_cache and self.cache:
