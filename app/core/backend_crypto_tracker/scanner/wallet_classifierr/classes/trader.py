@@ -2,11 +2,9 @@
 # classes/trader.py
 # ============================================================================
 """Trader wallet analyzer."""
-
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.base_analyzer import BaseWalletAnalyzer
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.metric_definitions import TRADER_METRICS
 from typing import Dict, Any
-
 
 class TraderAnalyzer(BaseWalletAnalyzer):
     """Analyzer for Trader wallets."""
@@ -22,13 +20,27 @@ class TraderAnalyzer(BaseWalletAnalyzer):
         high_tx_freq = self._normalize(metrics.get('tx_per_month', 0), 0, 50)
         
         # Bidirectional flow (both sending and receiving)
-        in_out_ratio = min(
-            metrics.get('total_sent', 1) / metrics.get('total_received', 1),
-            metrics.get('total_received', 1) / metrics.get('total_sent', 1)
-        ) if metrics.get('total_received', 0) > 0 else 0
+        total_sent = metrics.get('total_sent', 0)
+        total_received = metrics.get('total_received', 0)
+        
+        # Prevent division by zero
+        if total_received > 0 and total_sent > 0:
+            in_out_ratio = min(
+                total_sent / total_received,
+                total_received / total_sent
+            )
+        else:
+            in_out_ratio = 0
         
         exchange_freq = self._normalize(metrics.get('exchange_interaction_count', 0), 0, 20)
-        avg_tx_value = self._normalize(metrics.get('total_value_usd', 0) / max(metrics.get('tx_count', 1), 1), 0, 10000)
+        
+        # Prevent division by zero for avg_tx_value
+        tx_count = max(metrics.get('tx_count', 0), 1)
+        avg_tx_value = self._normalize(
+            metrics.get('total_value_usd', 0) / tx_count, 
+            0, 
+            10000
+        )
         
         # Short holding time
         short_holding = 1.0 - self._normalize(metrics.get('holding_period_days', 0), 0, 365)
