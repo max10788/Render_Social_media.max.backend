@@ -225,12 +225,6 @@ class AdaptiveClassifier:
     
     @classmethod
     def extract_features(cls, metrics: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Extract and normalize features from metrics.
-        
-        Returns:
-            Dict with normalized feature values [0, 1]
-        """
         features = {}
         
         # All possible features
@@ -238,8 +232,17 @@ class AdaptiveClassifier:
         for class_features in cls.FEATURE_WEIGHTS.values():
             all_features.update(class_features.keys())
         
+        logger.info(f"🔍 Extracting {len(all_features)} features from {len(metrics)} metrics")
+        
+        missing_features = []
+        
         for feature_name in all_features:
             raw_value = metrics.get(feature_name, 0)
+            
+            # Log missing features
+            if feature_name not in metrics:
+                missing_features.append(feature_name)
+                logger.warning(f"❌ Feature {feature_name} not found in metrics")
             
             # Convert boolean to float
             if isinstance(raw_value, bool):
@@ -248,6 +251,12 @@ class AdaptiveClassifier:
             # Normalize
             normalized_value = cls.normalize_feature(feature_name, raw_value)
             features[feature_name] = normalized_value
+            
+            # Log normalized value
+            logger.debug(f"📊 {feature_name}: {raw_value} -> {normalized_value}")
+        
+        if missing_features:
+            logger.error(f"❌ Missing {len(missing_features)} features: {missing_features[:5]}...")
         
         return features
     
