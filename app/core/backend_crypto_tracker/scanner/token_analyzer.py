@@ -554,12 +554,24 @@ class TokenAnalyzer:
         token_address: str,
         limit: int = 40
     ) -> Dict[str, Any]:
-        """Get blockchain transaction data for wallet"""
+        """
+        Enhanced version - collects ALL blockchain data needed for classification
+        
+        Returns complete blockchain data including:
+        - transactions[] with token_transfers[]
+        - token_balances[] 
+        - prices{} for USD conversion
+        - current_balance
+        """
         try:
+            # ========================================
+            # 1. Fetch Transactions (with token transfers)
+            # ========================================
             if chain in ['ethereum', 'bsc']:
                 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_address_transactions import execute_get_address_transactions
                 txs = await execute_get_address_transactions(
                     wallet_address, 
+                    chain=chain,
                     limit=limit
                 )
             elif chain == 'solana':
@@ -569,19 +581,166 @@ class TokenAnalyzer:
                 from app.core.backend_crypto_tracker.blockchain.blockchain_specific.sui.get_transaction import execute_get_transaction_details
                 txs = await execute_get_transaction_details(wallet_address)
             else:
-                return {'txs': [], 'balance': 0, 'address': wallet_address}
+                self.logger.warning(f"Unsupported chain: {chain}")
+                txs = []
             
-            return {
+            # ========================================
+            # 2. 🆕 Fetch Token Balances (for portfolio metrics)
+            # ========================================
+            token_balances = []
+            if chain in ['ethereum', 'bsc']:
+                try:
+                    from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_wallet_token_balances import execute_get_wallet_token_balances
+                    
+                    self.logger.info(f"📊 Fetching token balances for {wallet_address}")
+                    token_balances = await execute_get_wallet_token_balances(
+                        wallet_address,
+                        chain=chain
+                    )
+                    self.logger.info(f"✅ Found {len(token_balances)} token balances")
+                    
+                except Exception as e:
+                    self.logger.warning(f"Could not fetch token balances: {e}")
+                    token_balances = []
+            
+            # ========================================
+            # 3. 🆕 Fetch Token Prices (for USD conversion)
+            # ========================================
+            prices = {}
+            if chain in ['ethereum', 'bsc']:
+                try:
+                    from app.core.backend_crypto_tracker.blockchain.blockchain_specific.ethereum.get_token_prices_bulk import execute_get_token_prices_bulk
+                    
+                    # Collect all unique token addresses from:
+                    # - token_balances
+                    # - token_transfers in transactions
+                    token_addresses_set = set()
+                    
+                    # From balances
+                    for balance in token_balances:
+                        token_addr = balance.get('token_address', '').lower()
+                        if token_addr:
+                            token_addresses_set.add(token_addr)
+                    
+                    # From transaction token transfers
+                    for tx in txs:
+                        for transfer in tx.get('token_transfers', []):
+                            token_addr = transfer.get('token_address', '').lower()
+                            if token_addr:
+                                token_addresses_set.add(token_addr)
+                    
+                    # Also add the token being analyzed
+                    if token_address:
+                        token_addresses_set.add(token_address.lower())
+                    
+                    token_addresses_list = list(token_addresses_set)
+                    
+                    if token_addresses_list:
+                        self.logger.info(f"💰 Fetching prices for {len(token_addresses_list)} unique tokens")
+                        prices = await execute_get_token_prices_bulk(
+                            token_addresses_list,
+                            chain=chain
+                        )
+                        self.logger.info(f"✅ Fetched {len(prices)} token prices")
+                    
+                except Exception as e:
+                    self.logger.warning(f"Could not fetch token prices: {e}")
+                    prices = {}
+            
+            # ========================================
+            # 4. 🆕 Enrich transactions with USD values
+            # ========================================
+            for tx in txs:
+                # Add USD value to main transaction value (ETH/BNB)
+                eth_price = prices.get('0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', 3500.0)  # WETH price as proxy
+                bnb_price = prices.get('0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c', 600.0)   # WBNB price as proxy
+                
+                if chain == 'ethereum':
+                    tx['value_usd'] = tx.get('value', 0) * eth_price
+                elif chain == 'bsc':
+                    tx['value_usd'] = tx.get('value', 0) * bnb_price
+                else:
+                    tx['value_usd'] = 0
+                
+                # Add USD values to token transfers
+                for transfer in tx.get('token_transfers', []):
+                    token_addr = transfer.get('token_address', '').lower()
+                    token_value = transfer.get('value', 0)
+                    token_price = prices.get(token_addr, 0)
+                    
+                    transfer['value_usd'] = token_value * token_price
+            
+            # ========================================
+            # 5. 🆕 Calculate total portfolio value
+            # ========================================
+            total_portfolio_value_usd = 0.0
+            
+            for balance in token_balances:
+                token_addr = balance.get('token_address', '').lower()
+                token_amount = balance.get('balance', 0)
+                token_price = prices.get(token_addr, 0)
+                
+                balance['value_usd'] = token_amount * token_price
+                total_portfolio_value_usd += balance['value_usd']
+            
+            # ========================================
+            # 6. Get current native balance (ETH/BNB)
+            # ========================================
+            current_balance = 0
+            if txs:
+                # Estimate from transactions (simplified)
+                # In production, you might want to make a separate balance call
+                try:
+                    if chain == 'ethereum' and self.w3_eth and self.w3_eth.is_connected():
+                        balance_wei = self.w3_eth.eth.get_balance(wallet_address)
+                        current_balance = float(balance_wei) / 1e18
+                    elif chain == 'bsc' and self.w3_bsc and self.w3_bsc.is_connected():
+                        balance_wei = self.w3_bsc.eth.get_balance(wallet_address)
+                        current_balance = float(balance_wei) / 1e18
+                except Exception as e:
+                    self.logger.debug(f"Could not fetch native balance: {e}")
+                    current_balance = 0
+            
+            # ========================================
+            # 7. Build complete blockchain data
+            # ========================================
+            blockchain_data = {
                 'address': wallet_address,
-                'txs': txs or [],
-                'balance': 0,
+                'transactions': txs,  # ✅ With token_transfers[] for each tx
+                'token_balances': token_balances,  # 🆕
+                'prices': prices,  # 🆕
+                'current_balance': current_balance,
+                'total_portfolio_value_usd': total_portfolio_value_usd,  # 🆕
+                
+                # Legacy fields for backwards compatibility
+                'txs': txs,
+                'balance': current_balance,
                 'inputs': [],
                 'outputs': []
             }
             
+            self.logger.info(f"✅ Complete blockchain data fetched:")
+            self.logger.info(f"   - Transactions: {len(txs)}")
+            self.logger.info(f"   - Token balances: {len(token_balances)}")
+            self.logger.info(f"   - Token prices: {len(prices)}")
+            self.logger.info(f"   - Portfolio value: ${total_portfolio_value_usd:,.2f}")
+            
+            return blockchain_data
+            
         except Exception as e:
-            self.logger.error(f"Error fetching wallet data: {e}")
-            return {'txs': [], 'balance': 0, 'address': wallet_address}
+            self.logger.error(f"Error fetching wallet data: {e}", exc_info=True)
+            return {
+                'address': wallet_address,
+                'transactions': [],
+                'token_balances': [],
+                'prices': {},
+                'current_balance': 0,
+                'total_portfolio_value_usd': 0,
+                'txs': [],
+                'balance': 0,
+                'inputs': [],
+                'outputs': []
+            }
 
     def _classify_wallet_multistage(self, all_metrics: Dict[str, Any]) -> tuple:
         """
