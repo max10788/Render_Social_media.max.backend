@@ -163,8 +163,11 @@ class Stage1_RawMetrics:
             transactions, gas_prices, timestamps
         )
         raw_metrics.update(bot_metrics)
-        
-        return raw_metrics
+        logger.info(f"✅ Raw metrics calculated: {list(raw_metrics.keys())}")
+        for key, value in raw_metrics.items():
+            logger.debug(f"  {key}: {value}")
+    
+    return raw_metrics
     
     # ========================================================================
     # 🆕 NEW: PORTFOLIO METRICS
