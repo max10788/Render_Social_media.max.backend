@@ -1,7 +1,8 @@
 """
-Wallet Token Balances Fetcher - ULTIMATE FALLBACK VERSION
+Wallet Token Balances Fetcher - ULTIMATE FALLBACK VERSION v2
 ✅ Primary Moralis Key
-✅ Fallback Moralis Key (neu!)
+✅ Fallback Moralis Key #1
+✅ Fallback Moralis Key #2 (🆕 THIRD KEY)
 ✅ Etherscan as final fallback
 """
 
@@ -30,7 +31,7 @@ async def get_token_balances_moralis(
     Get wallet token balances via Moralis API
     
     Args:
-        key_label: "Primary" or "Fallback" for logging
+        key_label: "Primary", "Fallback-1", or "Fallback-2" for logging
     """
     global _last_moralis_request
     
@@ -229,14 +230,15 @@ async def execute_get_wallet_token_balances(
     chain: str = 'ethereum'
 ) -> List[Dict[str, Any]]:
     """
-    Get all ERC20 token balances with TRIPLE FALLBACK system
+    Get all ERC20 token balances with QUADRUPLE FALLBACK system
     
     Strategy:
     1. Try Moralis with PRIMARY key
-    2. Try Moralis with FALLBACK key (🆕)
-    3. Try Etherscan as final fallback
+    2. Try Moralis with FALLBACK key #1
+    3. Try Moralis with FALLBACK key #2 (🆕 THIRD KEY)
+    4. Try Etherscan as final fallback
     
-    ✅ Maximum reliability with dual Moralis keys
+    ✅ Maximum reliability with TRIPLE Moralis keys
     """
     try:
         logger.info(f"📊 Fetching token balances for wallet {wallet_address[:10]}... on {chain}")
@@ -252,7 +254,8 @@ async def execute_get_wallet_token_balances(
         
         # Load API keys
         moralis_key_primary = os.getenv('MORALIS_API_KEY')
-        moralis_key_fallback = os.getenv('MORALIS_API_KEY_FALLBACK')  # 🆕
+        moralis_key_fallback1 = os.getenv('MORALIS_API_KEY_FALLBACK')
+        moralis_key_fallback2 = os.getenv('MORALIS_API_KEY_FALLBACK2')  # 🆕 THIRD KEY
         
         if chain.lower() in ['ethereum', 'eth']:
             etherscan_key = os.getenv('ETHERSCAN_API_KEY')
@@ -276,29 +279,47 @@ async def execute_get_wallet_token_balances(
                 logger.info(f"✅ Primary Moralis succeeded with {len(result)} token balances")
                 return result
             
-            logger.info(f"⚠️ Primary Moralis failed, trying fallback key...")
+            logger.info(f"⚠️ Primary Moralis failed, trying fallback key #1...")
         else:
             logger.warning(f"⚠️ No primary Moralis API key found")
         
-        # ===== STRATEGY 2: Try FALLBACK Moralis Key 🆕 =====
-        if moralis_key_fallback:
-            logger.info(f"🔄 Trying Moralis API (Fallback Key)...")
+        # ===== STRATEGY 2: Try FALLBACK Moralis Key #1 =====
+        if moralis_key_fallback1:
+            logger.info(f"🔄 Trying Moralis API (Fallback Key #1)...")
             result = await get_token_balances_moralis(
                 wallet_address, 
-                moralis_key_fallback, 
+                moralis_key_fallback1, 
                 moralis_chain,
-                key_label="Fallback"
+                key_label="Fallback-1"
             )
             
             if result is not None and len(result) > 0:
-                logger.info(f"✅ Fallback Moralis succeeded with {len(result)} token balances")
+                logger.info(f"✅ Fallback-1 Moralis succeeded with {len(result)} token balances")
                 return result
             
-            logger.info(f"⚠️ Fallback Moralis also failed, trying Etherscan...")
+            logger.info(f"⚠️ Fallback-1 Moralis also failed, trying fallback key #2...")
         else:
-            logger.warning(f"⚠️ No fallback Moralis API key found")
+            logger.warning(f"⚠️ No fallback-1 Moralis API key found")
         
-        # ===== STRATEGY 3: Try Etherscan (Final Fallback) =====
+        # ===== STRATEGY 3: Try FALLBACK Moralis Key #2 🆕 =====
+        if moralis_key_fallback2:
+            logger.info(f"🔄 Trying Moralis API (Fallback Key #2)...")
+            result = await get_token_balances_moralis(
+                wallet_address, 
+                moralis_key_fallback2, 
+                moralis_chain,
+                key_label="Fallback-2"
+            )
+            
+            if result is not None and len(result) > 0:
+                logger.info(f"✅ Fallback-2 Moralis succeeded with {len(result)} token balances")
+                return result
+            
+            logger.info(f"⚠️ All Moralis keys exhausted, trying Etherscan...")
+        else:
+            logger.warning(f"⚠️ No fallback-2 Moralis API key found")
+        
+        # ===== STRATEGY 4: Try Etherscan (Final Fallback) =====
         if etherscan_key:
             logger.info(f"🔄 Trying Etherscan API (final fallback)...")
             result = await get_token_balances_etherscan(wallet_address, chain, etherscan_key)
@@ -310,7 +331,7 @@ async def execute_get_wallet_token_balances(
                     logger.info(f"ℹ️ Etherscan succeeded but no token balances found")
                 return result
             
-            logger.warning(f"⚠️ All three providers failed")
+            logger.warning(f"⚠️ All four providers failed")
         else:
             logger.error(f"❌ No Etherscan API key found")
         
