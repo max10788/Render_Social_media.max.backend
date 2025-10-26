@@ -585,46 +585,59 @@ class TokenAnalyzer:
 
     def _classify_wallet_multistage(self, all_metrics: Dict[str, Any]) -> tuple:
         """
-        Classify wallet using all 5 analyzers and return best match
-        Returns: (WalletTypeEnum, confidence_score)
-        """
-        scores = {}
+        ✅ OPTIMIZED VERSION - Calls AdaptiveClassifier once instead of 5 times
         
-        # Run all classifiers
-        for name, analyzer in self.wallet_analyzers.items():
-            try:
-                score = analyzer.compute_score(all_metrics)
-                scores[name] = score
-                # ✅ DEBUG: Log each analyzer score
-                self.logger.debug(f"    {name}: {score:.4f} (threshold: {analyzer.THRESHOLD})")
-            except Exception as e:
-                self.logger.warning(f"Error in {name} analyzer: {e}")
-                scores[name] = 0.0
+        This is more efficient because:
+        - AdaptiveClassifier.classify() returns ALL probabilities at once
+        - No need to call each analyzer separately
+        - Same result, less computation
+        """
+        from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.adaptive_classifier import AdaptiveClassifier
+        
+        # Get all probabilities at once
+        probabilities = AdaptiveClassifier.classify(all_metrics)
+        
+        # Log probabilities
+        for class_name, prob in probabilities.items():
+            self.logger.debug(f"    {class_name}: {prob:.4f}")
         
         # Find best match
-        best_class = max(scores, key=scores.get)
-        best_score = scores[best_class]
+        best_class_name = max(probabilities, key=probabilities.get)
+        best_probability = probabilities[best_class_name]
         
-        # ✅ DEBUG: Log best result
-        self.logger.info(f"  Best match: {best_class} with score {best_score:.4f}")
+        self.logger.info(f"  Best match: {best_class_name} with probability {best_probability:.4f}")
         
         # Map to WalletTypeEnum
         class_mapping = {
-            'dust_sweeper': WalletTypeEnum.DUST_SWEEPER,
-            'hodler': WalletTypeEnum.HODLER,
-            'mixer': WalletTypeEnum.MIXER,
-            'trader': WalletTypeEnum.TRADER,
-            'whale': WalletTypeEnum.WHALE
+            'Dust Sweeper': WalletTypeEnum.DUST_SWEEPER,
+            'Hodler': WalletTypeEnum.HODLER,
+            'Mixer': WalletTypeEnum.MIXER,
+            'Trader': WalletTypeEnum.TRADER,
+            'Whale': WalletTypeEnum.WHALE
         }
         
-        # Check if score meets threshold
-        analyzer = self.wallet_analyzers[best_class]
-        if best_score >= analyzer.THRESHOLD:
-            self.logger.info(f"  ✅ CLASSIFIED as {best_class.upper()}")
-            return class_mapping[best_class], best_score
+        # Get threshold for this class
+        analyzer_mapping = {
+            'Dust Sweeper': 'dust_sweeper',
+            'Hodler': 'hodler',
+            'Mixer': 'mixer',
+            'Trader': 'trader',
+            'Whale': 'whale'
+        }
         
-        self.logger.warning(f"  ❌ Score {best_score:.4f} below threshold {analyzer.THRESHOLD} → UNKNOWN")
-        return WalletTypeEnum.UNKNOWN, best_score
+        analyzer_key = analyzer_mapping.get(best_class_name)
+        if analyzer_key:
+            analyzer = self.wallet_analyzers[analyzer_key]
+            threshold = analyzer.THRESHOLD
+            
+            # Check if probability meets threshold
+            if best_probability >= threshold:
+                self.logger.info(f"  ✅ CLASSIFIED as {best_class_name.upper()}")
+                return class_mapping[best_class_name], best_probability
+            else:
+                self.logger.warning(f"  ❌ Probability {best_probability:.4f} below threshold {threshold} → UNKNOWN")
+        
+        return WalletTypeEnum.UNKNOWN, best_probability
 
     def _calculate_token_score(self, token_data: Token, wallet_analyses: List[WalletAnalysis]) -> Dict[str, Any]:
         """Calculate token risk score"""
