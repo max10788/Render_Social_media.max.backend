@@ -38,10 +38,23 @@ class Stage1_RawMetrics:
         
         if not txs:
             logger.warning("⚠️ No transactions found - all metrics will be default values")
+            return self._get_default_metrics()
         
-        # Log first transaction as sample
-        if txs:
-            logger.info(f"📝 Sample transaction: {txs[0]}")
+        # Log sample transaction data
+        sample_tx = txs[0]
+        logger.info(f"📝 Sample transaction keys: {list(sample_tx.keys())}")
+        logger.info(f"📝 Sample transaction: {sample_tx}")
+        
+        # Log which metrics will be calculated
+        metrics_to_calculate = [
+            'total_tx_count', 'sent_tx_count', 'received_tx_count',
+            'total_value_sent', 'total_value_received', 'current_balance',
+            'unique_senders', 'unique_receivers', 'age_days',
+            'last_active_days', 'avg_inputs_per_tx', 'avg_outputs_per_tx',
+            'avg_gas_price', 'total_gas_used'
+        ]
+        
+        logger.info(f"🧮 Will calculate {len(metrics_to_calculate)} raw metrics: {metrics_to_calculate}")
         """
         Execute Stage 1 analysis with enhanced Phase 1 metrics.
         
