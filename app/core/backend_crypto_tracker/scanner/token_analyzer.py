@@ -742,6 +742,7 @@ class TokenAnalyzer:
                 'outputs': []
             }
 
+
     def _classify_wallet_multistage(self, all_metrics: Dict[str, Any]) -> tuple:
         """
         ✅ OPTIMIZED VERSION - Calls AdaptiveClassifier once instead of 5 times
