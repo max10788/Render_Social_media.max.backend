@@ -1,7 +1,9 @@
 """
-Token Price Fetcher (Bulk)
-✅ Get USD prices for multiple tokens at once
-✅ Moralis (Primary) + CoinGecko (Fallback)
+Token Price Fetcher (Bulk) - ULTIMATE FALLBACK VERSION
+✅ Primary Moralis Key
+✅ Fallback Moralis Key (neu!)
+✅ CoinGecko as final fallback
+✅ Hardcoded stablecoin prices
 """
 
 from typing import List, Dict, Any, Optional
@@ -22,18 +24,20 @@ _coingecko_delay = 1.5    # 1.5s for free tier
 async def get_token_prices_moralis(
     token_addresses: List[str],
     api_key: str,
-    chain: str = 'eth'
+    chain: str = 'eth',
+    key_label: str = "Primary"
 ) -> Dict[str, float]:
     """
-    ✅ Get token prices via Moralis (supports bulk)
+    Get token prices via Moralis
+    
+    Args:
+        key_label: "Primary" or "Fallback" for logging
     """
     global _last_moralis_request
     
     prices = {}
     
     try:
-        # Moralis can handle multiple tokens, but we'll do them individually
-        # for better error handling
         for token_address in token_addresses:
             try:
                 # Rate limiting
@@ -45,7 +49,6 @@ async def get_token_prices_moralis(
                 
                 _last_moralis_request = asyncio.get_event_loop().time()
                 
-                # Moralis Token Price API
                 url = f"https://deep-index.moralis.io/api/v2/erc20/{token_address}/price"
                 
                 headers = {
@@ -53,9 +56,7 @@ async def get_token_prices_moralis(
                     'X-API-Key': api_key
                 }
                 
-                params = {
-                    'chain': chain,
-                }
+                params = {'chain': chain}
                 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
@@ -65,23 +66,28 @@ async def get_token_prices_moralis(
                             
                             if price > 0:
                                 prices[token_address.lower()] = price
-                                logger.debug(f"✅ Moralis: {token_address} = ${price}")
+                                logger.debug(f"✅ Moralis ({key_label}): {token_address[:10]}... = ${price}")
                         elif response.status == 404:
-                            # Token not found, skip
-                            logger.debug(f"⚠️ Moralis: Token {token_address} not found")
-                        else:
-                            error_text = await response.text()
-                            logger.warning(f"Moralis HTTP Error {response.status} for {token_address}: {error_text}")
+                            logger.debug(f"⚠️ Moralis ({key_label}): Token {token_address[:10]}... not found")
+                        elif response.status in [502, 503]:
+                            logger.warning(f"⚠️ Moralis ({key_label}): Server error {response.status}")
+                            return prices  # Return what we have so far
+                        elif response.status == 429:
+                            logger.warning(f"⚠️ Moralis ({key_label}): Rate limit exceeded")
+                            return prices
+                        elif response.status == 401:
+                            logger.error(f"❌ Moralis ({key_label}): Authentication failed")
+                            return prices
                 
             except Exception as e:
-                logger.warning(f"Error fetching price for {token_address} via Moralis: {e}")
+                logger.debug(f"⚠️ Error fetching price for {token_address[:10]}...: {e}")
                 continue
         
-        logger.info(f"✅ Moralis: Fetched {len(prices)}/{len(token_addresses)} token prices")
+        logger.info(f"✅ Moralis ({key_label}): Fetched {len(prices)}/{len(token_addresses)} token prices")
         return prices
         
     except Exception as e:
-        logger.error(f"Moralis bulk price API error: {e}")
+        logger.error(f"❌ Moralis ({key_label}) bulk price API error: {e}")
         return prices
 
 
@@ -90,7 +96,7 @@ async def get_token_prices_coingecko(
     chain: str = 'ethereum'
 ) -> Dict[str, float]:
     """
-    CoinGecko fallback - free tier, supports bulk (up to 250 tokens)
+    CoinGecko fallback - free tier, supports bulk
     """
     global _last_coingecko_request
     
@@ -118,10 +124,8 @@ async def get_token_prices_coingecko(
         
         platform = platform_map.get(chain.lower(), 'ethereum')
         
-        # CoinGecko simple price endpoint
         url = "https://api.coingecko.com/api/v3/simple/token_price/" + platform
         
-        # Join addresses
         addresses_param = ','.join([addr.lower() for addr in token_addresses])
         
         params = {
@@ -135,12 +139,11 @@ async def get_token_prices_coingecko(
             async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    logger.error(f"CoinGecko HTTP Error {response.status}: {error_text}")
+                    logger.error(f"❌ CoinGecko HTTP Error {response.status}: {error_text[:200]}")
                     return prices
                 
                 data = await response.json()
                 
-                # Parse response
                 for token_addr, price_data in data.items():
                     if isinstance(price_data, dict) and 'usd' in price_data:
                         price = float(price_data['usd'])
@@ -150,8 +153,11 @@ async def get_token_prices_coingecko(
                 logger.info(f"✅ CoinGecko: Fetched {len(prices)}/{len(token_addresses)} token prices")
                 return prices
         
+    except asyncio.TimeoutError:
+        logger.error(f"⏱️ CoinGecko API timeout")
+        return prices
     except Exception as e:
-        logger.error(f"CoinGecko API error: {e}")
+        logger.error(f"❌ CoinGecko API error: {e}")
         return prices
 
 
@@ -170,7 +176,7 @@ async def get_hardcoded_prices() -> Dict[str, float]:
         '0xe9e7cea3dedca5984780bafc599bd69add087d56': 1.0,  # BUSD (BSC)
         '0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3': 1.0,  # DAI (BSC)
         
-        # Major tokens (fallback approximations - should be updated dynamically)
+        # Major tokens (approximations - updated 2025)
         '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 3500.0,  # WETH
         '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599': 65000.0, # WBTC
     }
@@ -181,38 +187,27 @@ async def execute_get_token_prices_bulk(
     chain: str = 'ethereum'
 ) -> Dict[str, float]:
     """
-    Get USD prices for multiple tokens at once
+    Get USD prices for multiple tokens with QUADRUPLE FALLBACK system
     
     Strategy:
-    1. Start with hardcoded prices for stablecoins
-    2. Try Moralis for remaining tokens
-    3. Fallback to CoinGecko for missing prices
+    1. Start with hardcoded stablecoin prices
+    2. Try Moralis with PRIMARY key
+    3. Try Moralis with FALLBACK key (🆕)
+    4. Try CoinGecko for any remaining
     
-    ✅ Auto-loads API keys from environment
-    
-    Args:
-        token_addresses: List of token contract addresses
-        chain: Blockchain name ('ethereum', 'bsc', etc.)
-    
-    Returns:
-        Dict mapping token address (lowercase) to USD price
-        {
-            '0xdac17f958d2ee523a2206206994597c13d831ec7': 1.0,  # USDT
-            '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 1.0,  # USDC
-            ...
-        }
+    ✅ Maximum reliability with dual Moralis keys
     """
     try:
         if not token_addresses:
-            logger.warning("No token addresses provided")
+            logger.warning("⚠️ No token addresses provided")
             return {}
         
-        logger.info(f"Fetching prices for {len(token_addresses)} tokens on {chain}")
+        logger.info(f"💰 Fetching prices for {len(token_addresses)} tokens on {chain}")
         
         # Normalize addresses
         token_addresses = [addr.lower() for addr in token_addresses]
         
-        # Start with hardcoded prices
+        # STEP 1: Start with hardcoded prices
         prices = await get_hardcoded_prices()
         
         # Find missing prices
@@ -234,22 +229,54 @@ async def execute_get_token_prices_bulk(
         moralis_chain = chain_map.get(chain.lower(), 'eth')
         
         # Load API keys
-        moralis_key = os.getenv('MORALIS_API_KEY')
+        moralis_key_primary = os.getenv('MORALIS_API_KEY')
+        moralis_key_fallback = os.getenv('MORALIS_API_KEY_FALLBACK')  # 🆕
         
-        # Strategy 1: Try Moralis
-        if moralis_key:
-            logger.info(f"🚀 Trying Moralis API...")
+        # ===== STRATEGY 2: Try PRIMARY Moralis Key =====
+        if moralis_key_primary:
+            logger.info(f"🚀 Trying Moralis API (Primary Key)...")
             moralis_prices = await get_token_prices_moralis(
                 missing_addresses, 
-                moralis_key, 
-                moralis_chain
+                moralis_key_primary, 
+                moralis_chain,
+                key_label="Primary"
             )
             prices.update(moralis_prices)
             
             # Update missing list
             missing_addresses = [addr for addr in missing_addresses if addr not in prices]
+            
+            if not missing_addresses:
+                logger.info(f"✅ All prices fetched with Primary Moralis")
+                return {addr: prices[addr] for addr in token_addresses if addr in prices}
+            
+            logger.info(f"⚠️ {len(missing_addresses)} prices still missing, trying fallback key...")
+        else:
+            logger.warning(f"⚠️ No primary Moralis API key found")
         
-        # Strategy 2: Try CoinGecko for remaining
+        # ===== STRATEGY 3: Try FALLBACK Moralis Key 🆕 =====
+        if moralis_key_fallback and missing_addresses:
+            logger.info(f"🔄 Trying Moralis API (Fallback Key)...")
+            moralis_prices = await get_token_prices_moralis(
+                missing_addresses, 
+                moralis_key_fallback, 
+                moralis_chain,
+                key_label="Fallback"
+            )
+            prices.update(moralis_prices)
+            
+            # Update missing list
+            missing_addresses = [addr for addr in missing_addresses if addr not in prices]
+            
+            if not missing_addresses:
+                logger.info(f"✅ All prices fetched with Fallback Moralis")
+                return {addr: prices[addr] for addr in token_addresses if addr in prices}
+            
+            logger.info(f"⚠️ {len(missing_addresses)} prices still missing, trying CoinGecko...")
+        else:
+            logger.warning(f"⚠️ No fallback Moralis API key found")
+        
+        # ===== STRATEGY 4: Try CoinGecko (Final Fallback) =====
         if missing_addresses:
             logger.info(f"🦎 Trying CoinGecko for {len(missing_addresses)} remaining tokens...")
             coingecko_prices = await get_token_prices_coingecko(
@@ -267,14 +294,14 @@ async def execute_get_token_prices_bulk(
         
         if missing_addresses:
             logger.warning(f"⚠️ Missing prices for {len(missing_addresses)} tokens")
-            for addr in missing_addresses[:5]:  # Show first 5
+            for addr in missing_addresses[:5]:
                 logger.debug(f"   - {addr}")
         
         # Return only requested tokens
         return {addr: prices[addr] for addr in token_addresses if addr in prices}
         
     except Exception as e:
-        logger.error(f"Error fetching token prices: {e}", exc_info=True)
+        logger.error(f"❌ Critical error fetching token prices: {e}", exc_info=True)
         return {}
 
 
