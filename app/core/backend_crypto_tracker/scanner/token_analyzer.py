@@ -342,7 +342,7 @@ class TokenAnalyzer:
             holder['percentage'] = (balance / total_supply * 100) if total_supply > 0 else 0
         
         # ✅ Split: Top 30 for classification, rest unclassified
-        max_to_classify = 30
+        max_to_classify = 10
         holders_to_classify = holders[:max_to_classify]
         holders_unclassified = holders[max_to_classify:]
         
