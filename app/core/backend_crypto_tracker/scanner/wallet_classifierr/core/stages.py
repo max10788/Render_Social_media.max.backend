@@ -137,7 +137,8 @@ class Stage2_DerivedMetrics:
         else:
             derived['is_dex_active'] = False
             derived['dex_activity_level'] = 'none'
-        
+    
+        logger.info(f"✅ Computed {len(derived)} derived metrics")
         return derived
 
 
