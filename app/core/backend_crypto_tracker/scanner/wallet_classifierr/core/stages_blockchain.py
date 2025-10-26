@@ -1,11 +1,12 @@
 # ============================================================================
-# core/stages_blockchain.py - COMPLETE WITH ALL METRICS
+# core/stages_blockchain.py - ENHANCED VERSION WITH NEW DATA
 # ============================================================================
 """
 Stage 1: Raw Metrics Extraction from Blockchain Data
 
 ✅ ALL REQUIRED OUTPUTS for Stage2
-✅ PLUS 10 New Phase 1 Metrics
+✅ NOW PROCESSES: token_balances, token_transfers, prices
+✅ Calculates USD values for all metrics
 """
 
 from typing import Dict, Any, List, Optional
@@ -22,16 +23,7 @@ class Stage1_RawMetrics:
     """
     Extract raw metrics from blockchain transaction data.
     
-    Output Format (for Stage2 compatibility):
-    - tx_count
-    - total_received, total_sent, current_balance
-    - first_seen, last_seen, age_days
-    - timestamps[]
-    - input_values[], output_values[]
-    - inputs_per_tx{}, outputs_per_tx{}
-    - incoming_tx_count, outgoing_tx_count
-    - blockchain
-    + 10 new Phase 1 metrics
+    ✅ ENHANCED: Now processes token balances, transfers, and prices
     """
     
     @staticmethod
@@ -41,10 +33,14 @@ class Stage1_RawMetrics:
         blockchain: str = 'ethereum'
     ) -> Dict[str, Any]:
         """
-        Execute Stage 1 analysis.
+        Execute Stage 1 analysis with enhanced data processing
         
         Args:
-            blockchain_data: Raw transaction data
+            blockchain_data: Complete blockchain data including:
+                - transactions[] (with token_transfers[])
+                - token_balances[]
+                - prices{}
+                - total_portfolio_value_usd
             config: Optional configuration
             blockchain: Blockchain name
             
@@ -55,6 +51,11 @@ class Stage1_RawMetrics:
         address = blockchain_data.get('address', '')
         current_balance = blockchain_data.get('current_balance', 0)
         
+        # 🆕 NEW DATA SOURCES
+        token_balances = blockchain_data.get('token_balances', [])
+        prices = blockchain_data.get('prices', {})
+        total_portfolio_value = blockchain_data.get('total_portfolio_value_usd', 0)
+        
         if not transactions:
             logger.warning("⚠️ No transactions - returning defaults")
             return Stage1_RawMetrics._get_default_metrics(blockchain)
@@ -64,11 +65,15 @@ class Stage1_RawMetrics:
         timestamps = []
         input_values = []
         output_values = []
+        input_values_usd = []  # 🆕 USD values
+        output_values_usd = []  # 🆕 USD values
         inputs_per_tx = {}
         outputs_per_tx = {}
         
         total_received = 0
         total_sent = 0
+        total_received_usd = 0  # 🆕
+        total_sent_usd = 0  # 🆕
         incoming_tx_count = 0
         outgoing_tx_count = 0
         
@@ -80,6 +85,7 @@ class Stage1_RawMetrics:
             tx_from = tx.get('from', '').lower()
             tx_to = tx.get('to', '').lower()
             tx_value = float(tx.get('value', 0))
+            tx_value_usd = float(tx.get('value_usd', 0))  # 🆕
             tx_timestamp = tx.get('timestamp', 0)
             
             # Timestamps
@@ -93,10 +99,12 @@ class Stage1_RawMetrics:
             if is_incoming:
                 incoming_tx_count += 1
                 total_received += tx_value
+                total_received_usd += tx_value_usd  # 🆕
                 input_values.append(tx_value)
+                input_values_usd.append(tx_value_usd)  # 🆕
                 received_tx.append(tx)
                 
-                # Input count (for consolidation detection)
+                # Input/output counts
                 input_count = tx.get('input_count', 1)
                 inputs_per_tx[tx_hash] = input_count
                 outputs_per_tx[tx_hash] = tx.get('output_count', 1)
@@ -104,7 +112,9 @@ class Stage1_RawMetrics:
             elif is_outgoing:
                 outgoing_tx_count += 1
                 total_sent += tx_value
+                total_sent_usd += tx_value_usd  # 🆕
                 output_values.append(tx_value)
+                output_values_usd.append(tx_value_usd)  # 🆕
                 sent_tx.append(tx)
                 
                 # Output count
@@ -125,7 +135,7 @@ class Stage1_RawMetrics:
             age_days = 0
             last_active_days = 0
         
-        # ===== BUILD STAGE1 OUTPUT (Required by Stage2) =====
+        # ===== BUILD STAGE1 OUTPUT =====
         
         tx_count = len(transactions)
         
@@ -146,6 +156,15 @@ class Stage1_RawMetrics:
             'incoming_tx_count': incoming_tx_count,
             'outgoing_tx_count': outgoing_tx_count,
             'blockchain': blockchain,
+            
+            # === 🆕 USD VALUES ===
+            'total_received_usd': total_received_usd,
+            'total_sent_usd': total_sent_usd,
+            'input_values_usd': input_values_usd,
+            'output_values_usd': output_values_usd,
+            'avg_input_value_usd': statistics.mean(input_values_usd) if input_values_usd else 0,
+            'avg_output_value_usd': statistics.mean(output_values_usd) if output_values_usd else 0,
+            'total_value_usd': total_portfolio_value,  # 🆕 Total portfolio value
             
             # === ADDITIONAL BASIC METRICS ===
             'total_tx_count': tx_count,
@@ -178,99 +197,41 @@ class Stage1_RawMetrics:
         raw_metrics['in_degree'] = unique_senders
         raw_metrics['out_degree'] = unique_receivers
         
-        # ===== 🆕 PHASE 1 METRICS (10 NEW) =====
-        
-        # Portfolio Metrics (4)
-        portfolio_metrics = Stage1_RawMetrics._compute_portfolio_metrics(
-            blockchain_data, transactions
+        # ===== 🆕 PORTFOLIO METRICS (using token_balances) =====
+        portfolio_metrics = Stage1_RawMetrics._compute_portfolio_metrics_enhanced(
+            token_balances, prices, blockchain_data
         )
         raw_metrics.update(portfolio_metrics)
         
-        # DEX Metrics (3) - KILLER FEATURE
-        dex_metrics = Stage1_RawMetrics._compute_dex_metrics(
-            transactions, blockchain
+        # ===== 🆕 DEX METRICS (using token_transfers in transactions) =====
+        dex_metrics = Stage1_RawMetrics._compute_dex_metrics_enhanced(
+            transactions, blockchain, prices
         )
         raw_metrics.update(dex_metrics)
         
-        # Bot Detection (3)
+        # ===== BOT DETECTION =====
         bot_metrics = Stage1_RawMetrics._compute_bot_detection_metrics(
             transactions, gas_prices, timestamps
         )
         raw_metrics.update(bot_metrics)
         
         logger.info(f"✅ Stage1 complete: {len(raw_metrics)} metrics")
+        logger.info(f"   - Transactions: {tx_count}")
+        logger.info(f"   - Token balances: {len(token_balances)}")
+        logger.info(f"   - Portfolio value: ${total_portfolio_value:,.2f}")
         
         return raw_metrics
     
     @staticmethod
-    def _get_default_metrics(blockchain: str = 'ethereum') -> Dict[str, Any]:
-        """Return default metrics when no transactions."""
-        return {
-            # Required by Stage2
-            'tx_count': 0,
-            'total_received': 0,
-            'total_sent': 0,
-            'current_balance': 0,
-            'first_seen': 0,
-            'last_seen': 0,
-            'age_days': 0,
-            'timestamps': [],
-            'input_values': [],
-            'output_values': [],
-            'inputs_per_tx': {},
-            'outputs_per_tx': {},
-            'incoming_tx_count': 0,
-            'outgoing_tx_count': 0,
-            'blockchain': blockchain,
-            # Additional
-            'total_tx_count': 0,
-            'sent_tx_count': 0,
-            'received_tx_count': 0,
-            'last_active_days': 0,
-            'total_value_transacted': 0,
-            'total_value_sent': 0,
-            'total_value_received': 0,
-            'avg_tx_value': 0,
-            'median_tx_value': 0,
-            'total_inputs': 0,
-            'total_outputs': 0,
-            'avg_inputs_per_tx': 0,
-            'avg_outputs_per_tx': 0,
-            'avg_gas_price': 0,
-            'median_gas_price': 0,
-            'unique_senders': 0,
-            'unique_receivers': 0,
-            'in_degree': 0,
-            'out_degree': 0,
-            'first_tx_timestamp': 0,
-            'last_tx_timestamp': 0,
-            # Phase 1
-            'unique_tokens_held': 0,
-            'token_diversity_score': 0,
-            'stablecoin_ratio': 0,
-            'token_concentration_ratio': 0,
-            'dex_swap_count': 0,
-            'dex_protocols_used': 0,
-            'dex_volume_usd': 0,
-            'tx_timing_precision_score': 0,
-            'gas_price_optimization_score': 0,
-            'automated_pattern_score': 0,
-        }
-    
-    # ========================================================================
-    # PHASE 1 METRICS
-    # ========================================================================
-    
-    @staticmethod
-    def _compute_portfolio_metrics(
-        blockchain_data: Dict[str, Any],
-        transactions: List[Dict[str, Any]]
+    def _compute_portfolio_metrics_enhanced(
+        token_balances: List[Dict[str, Any]],
+        prices: Dict[str, float],
+        blockchain_data: Dict[str, Any]
     ) -> Dict[str, float]:
-        """Compute token portfolio diversity metrics."""
-        token_transfers = blockchain_data.get('token_transfers', [])
-        balances = blockchain_data.get('token_balances', {})
-        
-        if not balances and not token_transfers:
+        """
+        🆕 ENHANCED: Compute portfolio metrics from actual token balances
+        """
+        if not token_balances:
             return {
                 'unique_tokens_held': 0,
                 'token_diversity_score': 0.0,
@@ -278,36 +239,23 @@ class Stage1_RawMetrics:
                 'token_concentration_ratio': 0.0
             }
         
-        # Extract unique tokens
-        if balances:
-            token_holdings = {
-                token: float(balance) 
-                for token, balance in balances.items() 
-                if float(balance) > 0
-            }
-        else:
-            token_holdings = defaultdict(float)
-            for transfer in token_transfers:
-                token = transfer.get('token_address', '').lower()
-                amount = float(transfer.get('value', 0))
-                if transfer.get('to', '').lower() == blockchain_data.get('address', '').lower():
-                    token_holdings[token] += amount
-                elif transfer.get('from', '').lower() == blockchain_data.get('address', '').lower():
-                    token_holdings[token] -= amount
+        # Count unique tokens
+        unique_tokens = len(token_balances)
+        
+        # Calculate USD values for each token
+        token_values = {}
+        total_value = 0.0
+        
+        for balance in token_balances:
+            token_addr = balance.get('token_address', '').lower()
+            token_amount = balance.get('balance', 0)
+            token_price = prices.get(token_addr, 0)
             
-            token_holdings = {k: v for k, v in token_holdings.items() if v > 0}
-        
-        unique_tokens = len(token_holdings)
-        
-        if unique_tokens == 0:
-            return {
-                'unique_tokens_held': 0,
-                'token_diversity_score': 0.0,
-                'stablecoin_ratio': 0.0,
-                'token_concentration_ratio': 0.0
-            }
-        
-        total_value = sum(token_holdings.values())
+            value_usd = token_amount * token_price
+            
+            if value_usd > 0:
+                token_values[token_addr] = value_usd
+                total_value += value_usd
         
         if total_value == 0:
             return {
@@ -317,8 +265,8 @@ class Stage1_RawMetrics:
                 'token_concentration_ratio': 0.0
             }
         
-        # Proportions
-        proportions = [v / total_value for v in token_holdings.values()]
+        # Calculate proportions
+        proportions = [v / total_value for v in token_values.values()]
         
         # Diversity (Shannon Entropy)
         diversity_score = -sum(p * math.log2(p) for p in proportions if p > 0)
@@ -330,16 +278,16 @@ class Stage1_RawMetrics:
         
         # Stablecoin Ratio
         stablecoins = {
-            '0xdac17f958d2ee523a2206206994597c13d831ec7',  # USDT
-            '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',  # USDC
-            '0x6b175474e89094c44da98b954eedeac495271d0f',  # DAI
-            '0x4fabb145d64652a948d72533023f6e7a623c7c53',  # BUSD
+            '0xdac17f958d2ee523a2206206994597c13d831ec7',  # USDT (ETH)
+            '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',  # USDC (ETH)
+            '0x6b175474e89094c44da98b954eedeac495271d0f',  # DAI (ETH)
+            '0x4fabb145d64652a948d72533023f6e7a623c7c53',  # BUSD (ETH)
             '0x55d398326f99059ff775485246999027b3197955',  # USDT (BSC)
             '0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d',  # USDC (BSC)
         }
         
         stablecoin_value = sum(
-            v for k, v in token_holdings.items() 
+            v for k, v in token_values.items() 
             if k.lower() in stablecoins
         )
         stablecoin_ratio = stablecoin_value / total_value if total_value > 0 else 0
@@ -352,11 +300,14 @@ class Stage1_RawMetrics:
         }
     
     @staticmethod
-    def _compute_dex_metrics(
+    def _compute_dex_metrics_enhanced(
         transactions: List[Dict[str, Any]],
-        blockchain: str
+        blockchain: str,
+        prices: Dict[str, float]
     ) -> Dict[str, float]:
-        """Compute DEX trading metrics - KILLER FEATURE."""
+        """
+        🆕 ENHANCED: Compute DEX metrics using token_transfers[] in transactions
+        """
         dex_routers = {
             'ethereum': {
                 '0x7a250d5630b4cf539739df2c5dacb4c659f2488d': 'Uniswap V2',
@@ -378,11 +329,12 @@ class Stage1_RawMetrics:
         
         swap_count = 0
         protocols_used = set()
-        total_volume = 0.0
+        total_volume_usd = 0.0  # 🆕 USD volume
         
         for tx in transactions:
             to_address = tx.get('to', '').lower()
             input_data = tx.get('input', '')
+            token_transfers = tx.get('token_transfers', [])
             
             is_dex_tx = False
             
@@ -397,27 +349,29 @@ class Stage1_RawMetrics:
                 if method_id in swap_signatures:
                     is_dex_tx = True
             
-            # Check token transfers
-            token_transfers = tx.get('token_transfers', [])
+            # Check token transfers (swaps involve 2+ different tokens)
             if len(token_transfers) >= 2:
-                tokens = set(t.get('token_address') for t in token_transfers)
-                if len(tokens) >= 2:
+                unique_tokens = set(t.get('token_address') for t in token_transfers)
+                if len(unique_tokens) >= 2:
                     is_dex_tx = True
             
             if is_dex_tx:
                 swap_count += 1
-                tx_value = float(tx.get('value', 0))
-                if tx_value > 0:
-                    total_volume += tx_value
-                elif token_transfers:
-                    volumes = [float(t.get('value_usd', 0)) for t in token_transfers]
-                    if volumes:
-                        total_volume += max(volumes)
+                
+                # 🆕 Calculate USD volume from token transfers
+                for transfer in token_transfers:
+                    value_usd = transfer.get('value_usd', 0)
+                    total_volume_usd += value_usd
+        
+        # Calculate DEX trading ratio
+        total_txs = len(transactions)
+        dex_trading_ratio = swap_count / total_txs if total_txs > 0 else 0
         
         return {
             'dex_swap_count': swap_count,
             'dex_protocols_used': len(protocols_used),
-            'dex_volume_usd': total_volume
+            'dex_volume_usd': total_volume_usd,  # 🆕 Now has real USD value
+            'dex_trading_ratio': dex_trading_ratio
         }
     
     @staticmethod
@@ -514,4 +468,43 @@ class Stage1_RawMetrics:
             'tx_timing_precision_score': timing_score,
             'gas_price_optimization_score': gas_optimization_score,
             'automated_pattern_score': automated_pattern_score
+        }
+    
+    @staticmethod
+    def _get_default_metrics(blockchain: str) -> Dict[str, Any]:
+        """Return default metrics when no transactions available"""
+        return {
+            'tx_count': 0,
+            'total_received': 0,
+            'total_sent': 0,
+            'current_balance': 0,
+            'first_seen': 0,
+            'last_seen': 0,
+            'age_days': 0,
+            'timestamps': [],
+            'input_values': [],
+            'output_values': [],
+            'inputs_per_tx': {},
+            'outputs_per_tx': {},
+            'incoming_tx_count': 0,
+            'outgoing_tx_count': 0,
+            'blockchain': blockchain,
+            'total_received_usd': 0,
+            'total_sent_usd': 0,
+            'input_values_usd': [],
+            'output_values_usd': [],
+            'avg_input_value_usd': 0,
+            'avg_output_value_usd': 0,
+            'total_value_usd': 0,
+            'unique_tokens_held': 0,
+            'token_diversity_score': 0,
+            'stablecoin_ratio': 0,
+            'token_concentration_ratio': 0,
+            'dex_swap_count': 0,
+            'dex_protocols_used': 0,
+            'dex_volume_usd': 0,
+            'dex_trading_ratio': 0,
+            'tx_timing_precision_score': 0,
+            'gas_price_optimization_score': 0,
+            'automated_pattern_score': 0,
         }
