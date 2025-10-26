@@ -1,7 +1,8 @@
 """
-Token Price Fetcher (Bulk) - ULTIMATE FALLBACK VERSION
+Token Price Fetcher (Bulk) - ULTIMATE FALLBACK VERSION v2
 ✅ Primary Moralis Key
-✅ Fallback Moralis Key (neu!)
+✅ Fallback Moralis Key #1
+✅ Fallback Moralis Key #2 (🆕 THIRD KEY)
 ✅ CoinGecko as final fallback
 ✅ Hardcoded stablecoin prices
 """
@@ -31,7 +32,7 @@ async def get_token_prices_moralis(
     Get token prices via Moralis
     
     Args:
-        key_label: "Primary" or "Fallback" for logging
+        key_label: "Primary", "Fallback-1", or "Fallback-2" for logging
     """
     global _last_moralis_request
     
@@ -187,15 +188,16 @@ async def execute_get_token_prices_bulk(
     chain: str = 'ethereum'
 ) -> Dict[str, float]:
     """
-    Get USD prices for multiple tokens with QUADRUPLE FALLBACK system
+    Get USD prices for multiple tokens with QUINTUPLE FALLBACK system
     
     Strategy:
     1. Start with hardcoded stablecoin prices
     2. Try Moralis with PRIMARY key
-    3. Try Moralis with FALLBACK key (🆕)
-    4. Try CoinGecko for any remaining
+    3. Try Moralis with FALLBACK key #1
+    4. Try Moralis with FALLBACK key #2 (🆕 THIRD KEY)
+    5. Try CoinGecko for any remaining
     
-    ✅ Maximum reliability with dual Moralis keys
+    ✅ Maximum reliability with TRIPLE Moralis keys
     """
     try:
         if not token_addresses:
@@ -230,7 +232,8 @@ async def execute_get_token_prices_bulk(
         
         # Load API keys
         moralis_key_primary = os.getenv('MORALIS_API_KEY')
-        moralis_key_fallback = os.getenv('MORALIS_API_KEY_FALLBACK')  # 🆕
+        moralis_key_fallback1 = os.getenv('MORALIS_API_KEY_FALLBACK')
+        moralis_key_fallback2 = os.getenv('MORALIS_API_KEY_FALLBACK2')  # 🆕 THIRD KEY
         
         # ===== STRATEGY 2: Try PRIMARY Moralis Key =====
         if moralis_key_primary:
@@ -250,18 +253,18 @@ async def execute_get_token_prices_bulk(
                 logger.info(f"✅ All prices fetched with Primary Moralis")
                 return {addr: prices[addr] for addr in token_addresses if addr in prices}
             
-            logger.info(f"⚠️ {len(missing_addresses)} prices still missing, trying fallback key...")
+            logger.info(f"⚠️ {len(missing_addresses)} prices still missing, trying fallback key #1...")
         else:
             logger.warning(f"⚠️ No primary Moralis API key found")
         
-        # ===== STRATEGY 3: Try FALLBACK Moralis Key 🆕 =====
-        if moralis_key_fallback and missing_addresses:
-            logger.info(f"🔄 Trying Moralis API (Fallback Key)...")
+        # ===== STRATEGY 3: Try FALLBACK Moralis Key #1 =====
+        if moralis_key_fallback1 and missing_addresses:
+            logger.info(f"🔄 Trying Moralis API (Fallback Key #1)...")
             moralis_prices = await get_token_prices_moralis(
                 missing_addresses, 
-                moralis_key_fallback, 
+                moralis_key_fallback1, 
                 moralis_chain,
-                key_label="Fallback"
+                key_label="Fallback-1"
             )
             prices.update(moralis_prices)
             
@@ -269,14 +272,36 @@ async def execute_get_token_prices_bulk(
             missing_addresses = [addr for addr in missing_addresses if addr not in prices]
             
             if not missing_addresses:
-                logger.info(f"✅ All prices fetched with Fallback Moralis")
+                logger.info(f"✅ All prices fetched with Fallback-1 Moralis")
+                return {addr: prices[addr] for addr in token_addresses if addr in prices}
+            
+            logger.info(f"⚠️ {len(missing_addresses)} prices still missing, trying fallback key #2...")
+        else:
+            logger.warning(f"⚠️ No fallback-1 Moralis API key found")
+        
+        # ===== STRATEGY 4: Try FALLBACK Moralis Key #2 🆕 =====
+        if moralis_key_fallback2 and missing_addresses:
+            logger.info(f"🔄 Trying Moralis API (Fallback Key #2)...")
+            moralis_prices = await get_token_prices_moralis(
+                missing_addresses, 
+                moralis_key_fallback2, 
+                moralis_chain,
+                key_label="Fallback-2"
+            )
+            prices.update(moralis_prices)
+            
+            # Update missing list
+            missing_addresses = [addr for addr in missing_addresses if addr not in prices]
+            
+            if not missing_addresses:
+                logger.info(f"✅ All prices fetched with Fallback-2 Moralis")
                 return {addr: prices[addr] for addr in token_addresses if addr in prices}
             
             logger.info(f"⚠️ {len(missing_addresses)} prices still missing, trying CoinGecko...")
         else:
-            logger.warning(f"⚠️ No fallback Moralis API key found")
+            logger.warning(f"⚠️ No fallback-2 Moralis API key found")
         
-        # ===== STRATEGY 4: Try CoinGecko (Final Fallback) =====
+        # ===== STRATEGY 5: Try CoinGecko (Final Fallback) =====
         if missing_addresses:
             logger.info(f"🦎 Trying CoinGecko for {len(missing_addresses)} remaining tokens...")
             coingecko_prices = await get_token_prices_coingecko(
