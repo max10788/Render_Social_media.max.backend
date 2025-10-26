@@ -1,86 +1,70 @@
 # ============================================================================
-# classes/hodler.py
+# wallet_classifier/hodler.py - ADAPTIVE VERSION
 # ============================================================================
-"""Hodler wallet analyzer."""
+"""Hodler wallet analyzer with adaptive classification."""
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.base_analyzer import BaseWalletAnalyzer
-from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.metric_definitions import HODLER_METRICS
 from typing import Dict, Any
 
+
 class HodlerAnalyzer(BaseWalletAnalyzer):
-    """Analyzer for Hodler wallets."""
+    """Analyzer for Hodler wallets using adaptive feature-based classification."""
     
     CLASS_NAME = "Hodler"
-    METRICS = HODLER_METRICS
-    THRESHOLD = 0.30
-    WEIGHTS = {"primary": 0.7, "secondary": 0.2, "context": 0.1}
+    THRESHOLD = 0.50  # 50% probability threshold
     
-    def compute_score(self, metrics: Dict[str, Any]) -> float:
-        """Compute Hodler score."""
-        # Primary indicators - Core hodler behavior
-        holding_period = self._normalize(metrics.get('holding_period_days', 0), 0, 730)
-        balance_retention = metrics.get('balance_retention_ratio', 0)
-        low_outgoing = 1.0 - metrics.get('outgoing_tx_ratio', 1.0)
+    # Metrics für Dokumentation und Feature-Extraktion
+    METRICS = {
+        "primary": [
+            "holding_period_days",      # Lange Halteperiode
+            "balance_retention_ratio",  # Hohe Balance-Retention
+            "dormancy_ratio",           # Hohe Dormancy
+            "accumulation_pattern",     # Positive Accumulation
+            "balance_utilization"       # Hohe Balance-Nutzung
+        ],
+        "secondary": [
+            "outgoing_tx_ratio",        # Niedrige Outgoing-TX
+            "tx_per_month",             # Niedrige Aktivität
+            "weekend_trading_ratio",    # Niedrig (kein Trading)
+            "turnover_rate"             # Niedrig (stabil)
+        ],
+        "context": [
+            "exchange_interaction_count",  # Niedrig (keine Exchanges)
+            "smart_contract_calls",        # Niedrig
+            "out_degree"                   # Niedrig (isoliert)
+        ]
+    }
+    
+    def get_key_indicators(self, metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Gibt die wichtigsten Indikatoren für Hodler zurück.
         
-        # NEW: Dormancy ratio (high for hodlers)
-        dormancy = metrics.get('dormancy_ratio', 0)
-        
-        # NEW: Accumulation pattern (positive accumulation is typical for hodlers)
-        accumulation = max(0, metrics.get('accumulation_pattern', 0))
-        accumulation_score = self._normalize(accumulation, 0, 1)
-        
-        # UTXO age (longer is better for hodlers)
-        utxo_age = self._normalize(metrics.get('holding_period_days', 0) * 0.8, 0, 600)
-        
-        # Last outgoing (longer since last tx is better)
-        last_outgoing_age = self._normalize(
-            metrics.get('age_days', 0) - metrics.get('last_seen', 0) / 86400,
-            0,
-            365
-        )
-        
-        primary_score = self._avg([
-            holding_period,
-            balance_retention,
-            low_outgoing,
-            dormancy,
-            accumulation_score,
-            utxo_age,
-            last_outgoing_age
-        ])
-        
-        # Secondary indicators - Activity patterns
-        balance_stable = 1.0 - self._normalize(metrics.get('turnover_rate', 0), 0, 2)
-        inactive_ratio = 1.0 - self._normalize(metrics.get('tx_per_month', 0), 0, 10)
-        
-        # NEW: Balance utilization (high balance/value ratio for hodlers)
-        balance_utilization = metrics.get('balance_utilization', 0)
-        
-        # NEW: Low weekend trading (hodlers don't actively trade)
-        low_weekend = 1.0 - metrics.get('weekend_trading_ratio', 0)
-        
-        # NEW: Low business hours trading (hodlers don't day-trade)
-        low_business_hours = 1.0 - metrics.get('business_hours_ratio', 1.0)
-        
-        secondary_score = self._avg([
-            balance_stable,
-            inactive_ratio,
-            balance_utilization,
-            low_weekend,
-            low_business_hours
-        ])
-        
-        # Context indicators (hodlers avoid exchanges and smart contracts)
-        no_exchange = 1.0 - self._normalize(metrics.get('exchange_interaction_count', 0), 0, 10)
-        no_smart_contracts = 1.0 if metrics.get('smart_contract_calls', 0) == 0 else 0.3
-        low_out_degree = 1.0 - self._normalize(metrics.get('out_degree', 0), 0, 20)
-        
-        context_score = self._avg([no_exchange, no_smart_contracts, low_out_degree])
-        
-        # Weighted combination
-        final_score = (
-            primary_score * self.WEIGHTS["primary"] +
-            secondary_score * self.WEIGHTS["secondary"] +
-            context_score * self.WEIGHTS["context"]
-        )
-        
-        return final_score
+        Returns:
+            Dict mit Key Indicators und ihren Werten
+        """
+        return {
+            "holding_period_days": {
+                "value": metrics.get('holding_period_days', 0),
+                "description": "Average holding period in days",
+                "interpretation": "High = Long-term holder"
+            },
+            "balance_retention_ratio": {
+                "value": metrics.get('balance_retention_ratio', 0),
+                "description": "Ratio of balance retained",
+                "interpretation": "High = Not selling, accumulating"
+            },
+            "dormancy_ratio": {
+                "value": metrics.get('dormancy_ratio', 0),
+                "description": "Ratio of inactive periods",
+                "interpretation": "High = HODL behavior (buy and hold)"
+            },
+            "accumulation_pattern": {
+                "value": metrics.get('accumulation_pattern', 0),
+                "description": "Pattern of accumulation vs distribution",
+                "interpretation": "Positive = Accumulating over time"
+            },
+            "tx_per_month": {
+                "value": metrics.get('tx_per_month', 0),
+                "description": "Transactions per month",
+                "interpretation": "Low = Not actively trading"
+            }
+        }
