@@ -1,7 +1,8 @@
 """
-Wallet Token Balances Fetcher
-✅ Get all ERC20 token holdings for a wallet
-✅ Moralis (Primary) + Etherscan (Fallback)
+Wallet Token Balances Fetcher - ROBUST VERSION
+✅ Better error handling for API failures
+✅ Etherscan as primary when Moralis is down
+✅ Detailed logging for debugging
 """
 
 from typing import List, Dict, Any, Optional
@@ -54,16 +55,22 @@ async def get_token_balances_moralis(
         logger.info(f"🚀 Moralis: Fetching token balances for {wallet_address}")
         
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                if response.status != 200:
+            async with session.get(url, headers=headers, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status == 502 or response.status == 503:
+                    logger.warning(f"⚠️ Moralis server error {response.status} - service temporarily unavailable")
+                    return None
+                elif response.status == 429:
+                    logger.warning(f"⚠️ Moralis rate limit exceeded")
+                    return None
+                elif response.status != 200:
                     error_text = await response.text()
-                    logger.error(f"Moralis HTTP Error {response.status}: {error_text}")
+                    logger.error(f"❌ Moralis HTTP Error {response.status}: {error_text[:200]}")
                     return None
                 
                 data = await response.json()
                 
                 if not data:
-                    logger.warning("No data in Moralis response")
+                    logger.warning("⚠️ No data in Moralis response")
                     return None
                 
                 balances = []
@@ -91,14 +98,20 @@ async def get_token_balances_moralis(
                             'thumbnail': token.get('thumbnail')
                         })
                     except (ValueError, TypeError) as e:
-                        logger.warning(f"Error parsing token balance: {e}")
+                        logger.warning(f"⚠️ Error parsing token balance: {e}")
                         continue
                 
                 logger.info(f"✅ Moralis: Found {len(balances)} token balances")
                 return balances
                 
+    except asyncio.TimeoutError:
+        logger.error(f"⏱️ Moralis API timeout")
+        return None
+    except aiohttp.ClientError as e:
+        logger.error(f"🌐 Moralis network error: {type(e).__name__}")
+        return None
     except Exception as e:
-        logger.error(f"Moralis API error: {e}")
+        logger.error(f"❌ Moralis API error: {e}")
         return None
 
 
@@ -128,7 +141,7 @@ async def get_token_balances_etherscan(
         elif chain == 'bsc':
             base_url = "https://api.bscscan.com/api"
         else:
-            logger.warning(f"Unsupported chain: {chain}")
+            logger.warning(f"⚠️ Unsupported chain: {chain}")
             return None
         
         logger.info(f"🔄 Etherscan: Fetching token transfers for balance calculation...")
@@ -147,7 +160,7 @@ async def get_token_balances_etherscan(
         async with aiohttp.ClientSession() as session:
             async with session.get(base_url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 if response.status != 200:
-                    logger.error(f"Etherscan HTTP Error {response.status}")
+                    logger.error(f"❌ Etherscan HTTP Error {response.status}")
                     return None
                 
                 data = await response.json()
@@ -208,11 +221,14 @@ async def get_token_balances_etherscan(
                     logger.info(f"✅ Etherscan: Found {len(balances)} token balances from transfers")
                     return balances
                 else:
-                    logger.warning(f"Etherscan error: {data.get('message', 'Unknown')}")
+                    logger.warning(f"⚠️ Etherscan error: {data.get('message', 'Unknown')}")
                     return None
                 
+    except asyncio.TimeoutError:
+        logger.error(f"⏱️ Etherscan API timeout")
+        return None
     except Exception as e:
-        logger.error(f"Etherscan API error: {e}")
+        logger.error(f"❌ Etherscan API error: {e}")
         return None
 
 
@@ -223,9 +239,9 @@ async def execute_get_wallet_token_balances(
     """
     Get all ERC20 token balances for a wallet
     
-    Strategy:
-    1. Try Moralis first (cleaner, more accurate)
-    2. Fallback to Etherscan transfer analysis
+    Strategy (UPDATED for Moralis reliability issues):
+    1. Try Etherscan first (more reliable)
+    2. Fallback to Moralis if Etherscan fails
     
     ✅ Auto-loads API keys from environment
     
@@ -245,7 +261,7 @@ async def execute_get_wallet_token_balances(
     ]
     """
     try:
-        logger.info(f"Fetching token balances for wallet {wallet_address} on {chain}")
+        logger.info(f"📊 Fetching token balances for wallet {wallet_address} on {chain}")
         
         # Normalize chain names
         chain_map = {
@@ -264,35 +280,41 @@ async def execute_get_wallet_token_balances(
         elif chain.lower() in ['bsc', 'binance']:
             etherscan_key = os.getenv('BSCSCAN_API_KEY')
         else:
-            logger.warning(f"Unsupported chain: {chain}")
+            logger.warning(f"⚠️ Unsupported chain: {chain}")
             return []
         
-        # Strategy 1: Try Moralis (preferred)
-        if moralis_key:
-            logger.info(f"🚀 Trying Moralis API...")
-            result = await get_token_balances_moralis(wallet_address, moralis_key, moralis_chain)
-            
-            if result is not None and len(result) > 0:
-                return result
-            
-            logger.info(f"⚠️ Moralis failed or returned no balances, trying Etherscan...")
-        else:
-            logger.debug(f"ℹ️ No Moralis key, using Etherscan")
-        
-        # Strategy 2: Fallback to Etherscan
+        # 🔄 STRATEGY CHANGED: Try Etherscan first (more reliable)
         if etherscan_key:
-            logger.info(f"🔄 Trying Etherscan fallback...")
+            logger.info(f"🔄 Trying Etherscan API (primary)...")
             result = await get_token_balances_etherscan(wallet_address, chain, etherscan_key)
             
+            if result is not None and len(result) > 0:
+                logger.info(f"✅ Etherscan succeeded with {len(result)} token balances")
+                return result
+            
+            logger.info(f"⚠️ Etherscan failed or returned no balances, trying Moralis...")
+        else:
+            logger.warning(f"⚠️ No Etherscan API key found")
+        
+        # Fallback to Moralis
+        if moralis_key:
+            logger.info(f"🚀 Trying Moralis API (fallback)...")
+            result = await get_token_balances_moralis(wallet_address, moralis_key, moralis_chain)
+            
             if result is not None:
+                if len(result) > 0:
+                    logger.info(f"✅ Moralis succeeded with {len(result)} token balances")
+                else:
+                    logger.info(f"ℹ️ Moralis succeeded but no token balances found")
                 return result
             
             logger.warning(f"⚠️ Both providers failed")
         else:
-            logger.error(f"❌ No Etherscan API key found")
+            logger.warning(f"⚠️ No Moralis API key found")
         
+        logger.warning(f"⚠️ All providers failed - returning empty list")
         return []
         
     except Exception as e:
-        logger.error(f"Error fetching token balances: {e}", exc_info=True)
+        logger.error(f"❌ Critical error fetching token balances: {e}", exc_info=True)
         return []
