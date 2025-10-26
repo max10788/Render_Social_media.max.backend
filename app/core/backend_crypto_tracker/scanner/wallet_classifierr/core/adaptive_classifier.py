@@ -1,18 +1,13 @@
 # ============================================================================
-# core/adaptive_classifier.py - ENHANCED WITH PHASE 1 FEATURES
+# core/adaptive_classifier.py - WITH EXTENSIVE LOGGING
 # ============================================================================
 """
-Adaptive Feature-Based Wallet Classifier - Phase 1 Enhanced
+Adaptive Classifier with detailed logging to debug metrics and classification.
 
-NEW FEATURES INTEGRATED:
-✅ Portfolio Features (4): Token diversity, concentration, stablecoin ratio
-✅ DEX Features (3): Swap count, protocols, volume - KILLER FEATURE
-✅ Bot Detection (3): Timing, gas optimization, automation patterns
-
-Key Improvements:
-- Trader classification accuracy: +29% (70% → 90%)
-- Overall confidence: +50% (32% → 48%)
-- Hodler vs. Trader distinction: Near-perfect with DEX metrics
+✅ Logs all features used
+✅ Logs missing features
+✅ Logs classification scores
+✅ Detects when using default metrics
 """
 
 from typing import Dict, Any, List, Tuple
@@ -24,17 +19,11 @@ logger = logging.getLogger(__name__)
 
 class AdaptiveClassifier:
     """
-    Adaptive classification based on feature vectors.
-    Computes probabilities for each wallet class using weighted features.
+    Adaptive classification with comprehensive logging.
     """
-    
-    # ========================================================================
-    # FEATURE WEIGHTS - ENHANCED WITH PHASE 1 METRICS
-    # ========================================================================
     
     FEATURE_WEIGHTS = {
         "Dust Sweeper": {
-            # Existing features
             "avg_inputs_per_tx": 0.15,
             "consolidation_rate": 0.15,
             "fan_in_score": 0.12,
@@ -44,13 +33,10 @@ class AdaptiveClassifier:
             "avg_input_value_usd": -0.08,
             "timing_entropy": -0.06,
             "avg_output_value_usd": -0.08,
-            
-            # NEW: Bot detection (dust sweepers often automated)
             "automated_pattern_score": 0.06,
         },
         
         "Hodler": {
-            # Existing features
             "holding_period_days": 0.18,
             "balance_retention_ratio": 0.15,
             "dormancy_ratio": 0.12,
@@ -60,18 +46,13 @@ class AdaptiveClassifier:
             "tx_per_month": -0.10,
             "weekend_trading_ratio": -0.04,
             "exchange_interaction_count": -0.04,
-            
-            # NEW: Portfolio features (hodlers hold diverse portfolios)
-            "token_diversity_score": 0.08,          # NEW ⭐
-            "stablecoin_ratio": -0.05,              # NEW (negative - hodlers avoid stables)
-            
-            # NEW: DEX features (hodlers rarely trade)
-            "dex_swap_count": -0.10,                # NEW ⭐ CRITICAL
-            "dex_trading_ratio": -0.06,             # NEW
+            "token_diversity_score": 0.08,
+            "stablecoin_ratio": -0.05,
+            "dex_swap_count": -0.10,
+            "dex_trading_ratio": -0.06,
         },
         
         "Mixer": {
-            # Existing features
             "equal_output_proportion": 0.18,
             "coinjoin_frequency": 0.15,
             "tx_size_consistency": 0.12,
@@ -81,13 +62,10 @@ class AdaptiveClassifier:
             "out_degree": 0.10,
             "known_mixer_interaction": 0.10,
             "round_amounts_ratio": 0.05,
-            
-            # NEW: Bot detection (mixers often use bots)
-            "automated_pattern_score": 0.08,        # NEW
+            "automated_pattern_score": 0.08,
         },
         
         "Trader": {
-            # Existing features
             "tx_per_month": 0.10,
             "trading_regularity": 0.08,
             "activity_burst_ratio": 0.06,
@@ -99,23 +77,16 @@ class AdaptiveClassifier:
             "smart_contract_ratio": 0.06,
             "exchange_interaction_count": 0.08,
             "dormancy_ratio": -0.06,
-            
-            # NEW: DEX features - KILLER FEATURE FOR TRADERS 🔥
-            "dex_swap_count": 0.15,                 # NEW ⭐⭐⭐ HIGHEST WEIGHT
-            "dex_protocols_used": 0.08,             # NEW ⭐
-            "dex_volume_usd": 0.10,                 # NEW ⭐
-            "dex_trading_ratio": 0.12,              # NEW ⭐
-            
-            # NEW: Portfolio features (traders have diverse portfolios)
-            "unique_tokens_held": 0.08,             # NEW
-            "portfolio_complexity": 0.06,           # NEW
-            
-            # NEW: Bot detection (some traders use bots)
-            "automated_pattern_score": 0.05,        # NEW
+            "dex_swap_count": 0.15,
+            "dex_protocols_used": 0.08,
+            "dex_volume_usd": 0.10,
+            "dex_trading_ratio": 0.12,
+            "unique_tokens_held": 0.08,
+            "portfolio_complexity": 0.06,
+            "automated_pattern_score": 0.05,
         },
         
         "Whale": {
-            # Existing features
             "total_value_usd": 0.25,
             "large_tx_ratio": 0.15,
             "portfolio_concentration": 0.10,
@@ -125,22 +96,13 @@ class AdaptiveClassifier:
             "eigenvector_centrality": 0.08,
             "institutional_wallet": 0.07,
             "tx_per_month": -0.05,
-            
-            # NEW: Portfolio features (whales have concentrated holdings)
-            "token_concentration_ratio": 0.08,      # NEW ⭐
-            "stablecoin_ratio": 0.05,               # NEW (whales hold stables)
-            
-            # NEW: DEX features (whales may use DEX for large swaps)
-            "dex_volume_usd": 0.06,                 # NEW
+            "token_concentration_ratio": 0.08,
+            "stablecoin_ratio": 0.05,
+            "dex_volume_usd": 0.06,
         }
     }
     
-    # ========================================================================
-    # NORMALIZATION PARAMETERS - EXTENDED WITH NEW FEATURES
-    # ========================================================================
-    
     FEATURE_NORMALIZATION = {
-        # Existing normalizations
         "avg_inputs_per_tx": [0, 20],
         "avg_input_value_usd": [0, 500],
         "consolidation_rate": [0, 1],
@@ -182,38 +144,27 @@ class AdaptiveClassifier:
         "net_inflow_usd": [-10_000_000, 10_000_000],
         "eigenvector_centrality": [0, 0.1],
         "institutional_wallet": [0, 1],
-        
-        # NEW: Portfolio metrics
         "unique_tokens_held": [0, 50],
         "token_diversity_score": [0, 1],
         "stablecoin_ratio": [0, 1],
         "token_concentration_ratio": [0, 1],
-        
-        # NEW: DEX metrics
         "dex_swap_count": [0, 100],
         "dex_protocols_used": [0, 10],
         "dex_volume_usd": [0, 1_000_000],
         "dex_trading_ratio": [0, 1],
-        
-        # NEW: Bot detection metrics
         "tx_timing_precision_score": [0, 1],
         "gas_price_optimization_score": [0, 1],
         "automated_pattern_score": [0, 1],
-        
-        # NEW: Derived metrics
         "portfolio_complexity": [0, 1],
         "bot_likelihood_score": [0, 1],
     }
     
-    # ========================================================================
-    # CORE METHODS (UNCHANGED - WORKING PERFECTLY)
-    # ========================================================================
-    
     @classmethod
     def normalize_feature(cls, feature_name: str, value: float) -> float:
-        """Normalize a feature value to [0, 1]."""
+        """Normalize feature value to [0, 1]."""
         if feature_name not in cls.FEATURE_NORMALIZATION:
-            return 0.5  # Default for unknown features
+            logger.debug(f"⚠️ Feature {feature_name} not in normalization table, using 0.5")
+            return 0.5
         
         min_val, max_val = cls.FEATURE_NORMALIZATION[feature_name]
         
@@ -228,9 +179,12 @@ class AdaptiveClassifier:
         """
         Extract and normalize features from metrics.
         
-        Returns:
-            Dict with normalized feature values [0, 1]
+        WITH LOGGING: Shows which features are found/missing
         """
+        logger.info("="*70)
+        logger.info("🔍 FEATURE EXTRACTION START")
+        logger.info("="*70)
+        
         features = {}
         
         # All possible features
@@ -238,18 +192,67 @@ class AdaptiveClassifier:
         for class_features in cls.FEATURE_WEIGHTS.values():
             all_features.update(class_features.keys())
         
-        for feature_name in all_features:
-            raw_value = metrics.get(feature_name, 0)
+        logger.info(f"📊 Total features expected: {len(all_features)}")
+        logger.info(f"📊 Total metrics available: {len(metrics)}")
+        
+        found_features = []
+        missing_features = []
+        
+        for feature_name in sorted(all_features):
+            raw_value = metrics.get(feature_name, None)
             
-            # Convert boolean to float
-            if isinstance(raw_value, bool):
-                raw_value = 1.0 if raw_value else 0.0
-            
-            # Normalize
-            normalized_value = cls.normalize_feature(feature_name, raw_value)
-            features[feature_name] = normalized_value
+            if raw_value is None:
+                missing_features.append(feature_name)
+                logger.warning(f"❌ Feature '{feature_name}' NOT FOUND in metrics")
+                features[feature_name] = 0.5  # Default
+            else:
+                found_features.append(feature_name)
+                
+                # Convert boolean to float
+                if isinstance(raw_value, bool):
+                    raw_value = 1.0 if raw_value else 0.0
+                
+                # Normalize
+                normalized_value = cls.normalize_feature(feature_name, raw_value)
+                features[feature_name] = normalized_value
+                
+                logger.info(f"✅ {feature_name}: {raw_value} → {normalized_value:.4f}")
+        
+        # ===== SUMMARY LOGGING =====
+        logger.info("="*70)
+        logger.info("📈 FEATURE EXTRACTION SUMMARY")
+        logger.info("="*70)
+        logger.info(f"✅ Found: {len(found_features)}/{len(all_features)} features")
+        logger.info(f"❌ Missing: {len(missing_features)}/{len(all_features)} features")
+        
+        if missing_features:
+            logger.warning("❌ Missing features list:")
+            for feature in missing_features:
+                logger.warning(f"   - {feature}")
+        
+        # ===== CHECK IF USING DEFAULTS =====
+        is_all_defaults = cls._check_if_defaults(metrics)
+        if is_all_defaults:
+            logger.error("🚨 WARNING: ALL METRICS ARE DEFAULTS! No real transaction data!")
+            logger.error("🚨 This means Stage1 returned default values (no transactions parsed)")
+        
+        logger.info("="*70)
         
         return features
+    
+    @classmethod
+    def _check_if_defaults(cls, metrics: Dict[str, Any]) -> bool:
+        """Check if metrics are all defaults (indicates no transaction data)."""
+        # Key indicators of default metrics
+        indicators = [
+            metrics.get('tx_count', 1) == 0,
+            metrics.get('total_tx_count', 1) == 0,
+            metrics.get('total_received', 1) == 0,
+            metrics.get('total_sent', 1) == 0,
+            len(metrics.get('timestamps', [1])) == 0,
+        ]
+        
+        return sum(indicators) >= 3  # If 3+ indicators are true, likely all defaults
     
     @classmethod
     def compute_class_score(
@@ -260,15 +263,14 @@ class AdaptiveClassifier:
         """
         Compute score for a specific class.
         
-        Args:
-            class_name: Name of wallet class
-            features: Normalized features [0, 1]
-            
-        Returns:
-            Weighted score [0, 1]
+        WITH LOGGING: Shows contribution of each feature
         """
         if class_name not in cls.FEATURE_WEIGHTS:
             return 0.0
+        
+        logger.info(f"\n{'='*70}")
+        logger.info(f"🎯 COMPUTING SCORE FOR: {class_name}")
+        logger.info(f"{'='*70}")
         
         weights = cls.FEATURE_WEIGHTS[class_name]
         total_weight = sum(abs(w) for w in weights.values())
@@ -277,40 +279,79 @@ class AdaptiveClassifier:
             return 0.0
         
         score = 0.0
+        contributions = []
+        
         for feature_name, weight in weights.items():
             feature_value = features.get(feature_name, 0.5)
             
             # Invert for negative weights
             if weight < 0:
-                feature_value = 1.0 - feature_value
-                weight = abs(weight)
+                effective_value = 1.0 - feature_value
+                effective_weight = abs(weight)
+            else:
+                effective_value = feature_value
+                effective_weight = weight
             
-            score += feature_value * weight
+            contribution = effective_value * effective_weight
+            score += contribution
+            
+            contributions.append((feature_name, feature_value, weight, contribution))
+        
+        # Sort by contribution
+        contributions.sort(key=lambda x: abs(x[3]), reverse=True)
+        
+        # Log top 5 contributors
+        logger.info(f"📊 Top 5 contributors to {class_name} score:")
+        for i, (fname, fval, fweight, contrib) in enumerate(contributions[:5], 1):
+            logger.info(f"  {i}. {fname:30s}: value={fval:.3f}, weight={fweight:+.3f} → contrib={contrib:.4f}")
         
         # Normalize to [0, 1]
-        return score / total_weight
+        normalized_score = score / total_weight
+        logger.info(f"📈 Raw score: {score:.4f}, Normalized: {normalized_score:.4f}")
+        
+        return normalized_score
     
     @classmethod
     def classify(cls, metrics: Dict[str, Any]) -> Dict[str, float]:
         """
-        Classify a wallet and return probabilities.
+        Classify wallet and return probabilities.
         
-        Args:
-            metrics: All metrics from 3 stages
-            
-        Returns:
-            Dict with probabilities per class
+        WITH LOGGING: Shows full classification process
         """
-        # Extract features
+        logger.info("\n" + "="*70)
+        logger.info("🚀 STARTING CLASSIFICATION")
+        logger.info("="*70)
+        
+        # Extract features (with logging)
         features = cls.extract_features(metrics)
         
-        # Compute scores for all classes
+        # Compute scores for all classes (with logging)
         raw_scores = {}
         for class_name in cls.FEATURE_WEIGHTS.keys():
             raw_scores[class_name] = cls.compute_class_score(class_name, features)
         
-        # Apply softmax to get probability distribution
+        # Apply softmax
         probabilities = cls._softmax(raw_scores)
+        
+        # ===== FINAL SUMMARY =====
+        logger.info("\n" + "="*70)
+        logger.info("🏆 CLASSIFICATION RESULTS")
+        logger.info("="*70)
+        
+        sorted_probs = sorted(probabilities.items(), key=lambda x: -x[1])
+        for i, (class_name, prob) in enumerate(sorted_probs, 1):
+            emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "  "
+            logger.info(f"{emoji} {i}. {class_name:15s}: {prob:.4f} ({prob*100:.2f}%)")
+        
+        # Check confidence
+        top_2 = sorted(probabilities.values(), reverse=True)[:2]
+        confidence = top_2[0] - top_2[1] if len(top_2) > 1 else top_2[0]
+        logger.info(f"\n📊 Confidence (gap between top 2): {confidence:.4f} ({confidence*100:.2f}%)")
+        
+        if confidence < 0.1:
+            logger.warning("⚠️ LOW CONFIDENCE! Top classes are very close.")
+        
+        logger.info("="*70 + "\n")
         
         return probabilities
     
@@ -319,18 +360,7 @@ class AdaptiveClassifier:
         cls,
         metrics: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Classification with detailed explanation.
-        
-        Returns:
-            {
-                'probabilities': Dict[str, float],
-                'top_class': str,
-                'confidence': float,
-                'features': Dict[str, float],
-                'reasoning': Dict[str, List[str]]
-            }
-        """
+        """Classification with detailed explanation."""
         # Extract features
         features = cls.extract_features(metrics)
         
@@ -350,7 +380,7 @@ class AdaptiveClassifier:
                 probabilities[class_name]
             )
         
-        # Confidence (distance between top 2)
+        # Confidence
         sorted_probs = sorted(probabilities.values(), reverse=True)
         confidence = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else sorted_probs[0]
         
@@ -375,7 +405,7 @@ class AdaptiveClassifier:
         reasoning = []
         weights = cls.FEATURE_WEIGHTS.get(class_name, {})
         
-        # Top 3 features for this class
+        # Top 3 features
         sorted_features = sorted(
             weights.items(),
             key=lambda x: abs(x[1]),
@@ -389,7 +419,7 @@ class AdaptiveClassifier:
             if abs(weight) < 0.05:
                 continue
             
-            # NEW: Special highlighting for Phase 1 features
+            # Check if Phase 1 feature
             is_new_feature = feature_name in [
                 'unique_tokens_held', 'token_diversity_score', 'stablecoin_ratio',
                 'token_concentration_ratio', 'dex_swap_count', 'dex_protocols_used',
@@ -408,7 +438,7 @@ class AdaptiveClassifier:
                     reasoning.append(
                         f"✗{marker} Low {feature_name}: {raw_value:.2f} (normalized: {feature_value:.2f})"
                     )
-            else:  # Negative weight
+            else:
                 if feature_value < 0.4:
                     reasoning.append(
                         f"✓{marker} Low {feature_name}: {raw_value:.2f} (good for {class_name})"
@@ -425,23 +455,14 @@ class AdaptiveClassifier:
     
     @classmethod
     def _softmax(cls, scores: Dict[str, float]) -> Dict[str, float]:
-        """
-        Convert scores to probability distribution.
-        
-        Args:
-            scores: Raw scores per class
-            
-        Returns:
-            Normalized probabilities (sum = 1.0)
-        """
-        # Exponential of scores
-        exp_scores = {k: math.exp(v * 5) for k, v in scores.items()}  # *5 for stronger differences
+        """Convert scores to probability distribution."""
+        # Exponential
+        exp_scores = {k: math.exp(v * 5) for k, v in scores.items()}
         
         # Sum
         total = sum(exp_scores.values())
         
         if total == 0:
-            # Equal distribution on error
             return {k: 1.0 / len(scores) for k in scores.keys()}
         
         # Normalize
@@ -450,24 +471,15 @@ class AdaptiveClassifier:
         return probabilities
 
 
-# ============================================================================
-# FEATURE IMPORTANCE ANALYZER (UNCHANGED)
-# ============================================================================
-
 class FeatureImportanceAnalyzer:
-    """Analyze feature importance for debugging."""
+    """Analyze feature importance."""
     
     @staticmethod
     def analyze_feature_contribution(
         metrics: Dict[str, Any],
         class_name: str
     ) -> List[Tuple[str, float, float]]:
-        """
-        Analyze each feature's contribution to score.
-        
-        Returns:
-            List[(feature_name, contribution, weight)]
-        """
+        """Analyze contribution of each feature."""
         features = AdaptiveClassifier.extract_features(metrics)
         weights = AdaptiveClassifier.FEATURE_WEIGHTS.get(class_name, {})
         
@@ -475,7 +487,6 @@ class FeatureImportanceAnalyzer:
         for feature_name, weight in weights.items():
             feature_value = features.get(feature_name, 0.5)
             
-            # Invert for negative weights
             if weight < 0:
                 feature_value = 1.0 - feature_value
                 weight = abs(weight)
@@ -483,7 +494,6 @@ class FeatureImportanceAnalyzer:
             contribution = feature_value * weight
             contributions.append((feature_name, contribution, weight))
         
-        # Sort by contribution
         contributions.sort(key=lambda x: x[1], reverse=True)
         
         return contributions
@@ -505,7 +515,6 @@ class FeatureImportanceAnalyzer:
             raw_value = metrics.get(feature_name, 0)
             normalized_value = AdaptiveClassifier.extract_features(metrics).get(feature_name, 0)
             
-            # Check if it's a new Phase 1 feature
             is_new = feature_name in [
                 'unique_tokens_held', 'token_diversity_score', 'stablecoin_ratio',
                 'token_concentration_ratio', 'dex_swap_count', 'dex_protocols_used',
