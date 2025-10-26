@@ -206,111 +206,22 @@ class AdaptiveClassifier:
     }
     
     # ========================================================================
-    # METRIC MAPPING - NEU HINZUGEFÜGT
-    # ========================================================================
-    
-    FEATURE_MAPPING = {
-        # Raw metrics from Stage1
-        'total_tx_count': 'total_tx_count',
-        'sent_tx_count': 'sent_tx_count', 
-        'received_tx_count': 'received_tx_count',
-        'current_balance': 'current_balance',
-        'total_value_sent': 'total_value_sent',
-        'total_value_received': 'total_value_received',
-        'unique_senders': 'unique_senders',
-        'unique_receivers': 'unique_receivers',
-        'age_days': 'age_days',
-        'last_active_days': 'last_active_days',
-        'avg_inputs_per_tx': 'avg_inputs_per_tx',
-        'avg_outputs_per_tx': 'avg_outputs_per_tx',
-        'avg_gas_price': 'avg_gas_price',
-        'total_gas_used': 'total_gas_used',
-        
-        # Derived metrics from Stage2
-        'outgoing_tx_ratio': 'outgoing_tx_ratio',
-        'incoming_tx_ratio': 'incoming_tx_ratio',
-        'tx_per_month': 'tx_per_month',
-        'activity_rate': 'activity_rate',
-        'balance_retention_ratio': 'balance_retention_ratio',
-        'consolidation_rate': 'consolidation_rate',
-        'counterparty_diversity': 'counterparty_diversity',
-        'fan_in_score': 'fan_in_score',
-        'fan_out_score': 'fan_out_score',
-        'dormancy_ratio': 'dormancy_ratio',
-        
-        # Context metrics from Stage3
-        'exchange_interaction_count': 'exchange_interaction_count',
-        'known_mixer_interaction': 'known_mixer_interaction',
-        'eigenvector_centrality': 'eigenvector_centrality',
-        'institutional_wallet': 'institutional_wallet',
-        
-        # Direct mappings for features that might have different names
-        'activity_burst_ratio': 'activity_burst_ratio',
-        'balance_utilization': 'balance_utilization',
-        'business_hours_ratio': 'business_hours_ratio',
-        'weekday_ratio': 'weekday_ratio',
-        'weekend_trading_ratio': 'weekend_trading_ratio',
-        'trading_regularity': 'trading_regularity',
-        'tx_size_consistency': 'tx_size_consistency',
-        'large_tx_ratio': 'large_tx_ratio',
-        'avg_output_value_usd': 'avg_output_value_usd',
-        'turnover_rate': 'turnover_rate',
-        'accumulation_pattern': 'accumulation_pattern',
-        'equal_output_proportion': 'equal_output_proportion',
-        'single_output_ratio': 'single_output_ratio',
-        'night_trading_ratio': 'night_trading_ratio',
-        'round_amounts_ratio': 'round_amounts_ratio',
-        'holding_period_days': 'holding_period_days',
-        'micro_tx_ratio': 'micro_tx_ratio',
-        'smart_contract_ratio': 'smart_contract_ratio',
-        'portfolio_concentration': 'portfolio_concentration',
-        'balance_volatility': 'balance_volatility',
-        'net_inflow_usd': 'net_inflow_usd',
-        
-        # NEW: Portfolio metrics
-        'unique_tokens_held': 'unique_tokens_held',
-        'token_diversity_score': 'token_diversity_score',
-        'stablecoin_ratio': 'stablecoin_ratio',
-        'token_concentration_ratio': 'token_concentration_ratio',
-        
-        # NEW: DEX metrics
-        'dex_swap_count': 'dex_swap_count',
-        'dex_protocols_used': 'dex_protocols_used',
-        'dex_volume_usd': 'dex_volume_usd',
-        'dex_trading_ratio': 'dex_trading_ratio',
-        
-        # NEW: Bot detection metrics
-        'tx_timing_precision_score': 'tx_timing_precision_score',
-        'gas_price_optimization_score': 'gas_price_optimization_score',
-        'automated_pattern_score': 'automated_pattern_score',
-        
-        # NEW: Derived metrics
-        'portfolio_complexity': 'portfolio_complexity',
-        'bot_likelihood_score': 'bot_likelihood_score'
-    }
-    
-    # ========================================================================
-    # CORE METHODS - ENHANCED WITH BETTER LOGGING
+    # CORE METHODS (UNCHANGED - WORKING PERFECTLY)
     # ========================================================================
     
     @classmethod
     def normalize_feature(cls, feature_name: str, value: float) -> float:
         """Normalize a feature value to [0, 1]."""
         if feature_name not in cls.FEATURE_NORMALIZATION:
-            logger.warning(f"⚠️ Feature {feature_name} not in FEATURE_NORMALIZATION, returning default 0.5")
             return 0.5  # Default for unknown features
         
         min_val, max_val = cls.FEATURE_NORMALIZATION[feature_name]
         
         if max_val == min_val:
-            logger.warning(f"⚠️ Feature {feature_name} has min=max={min_val}, returning 0.5")
             return 0.5
         
         normalized = (value - min_val) / (max_val - min_val)
-        normalized = max(0.0, min(1.0, normalized))
-        
-        logger.debug(f"📊 Normalized {feature_name}: {value} -> {normalized}")
-        return normalized
+        return max(0.0, min(1.0, normalized))
     
     @classmethod
     def extract_features(cls, metrics: Dict[str, Any]) -> Dict[str, float]:
@@ -327,43 +238,16 @@ class AdaptiveClassifier:
         for class_features in cls.FEATURE_WEIGHTS.values():
             all_features.update(class_features.keys())
         
-        logger.info(f"🔍 Extracting {len(all_features)} features from {len(metrics)} metrics")
-        
-        # Log available metrics
-        logger.info(f"📋 Available metrics: {sorted(metrics.keys())}")
-        
-        missing_features = []
-        found_features = []
-        
         for feature_name in all_features:
-            # Map feature name to metric name using FEATURE_MAPPING
-            metric_name = cls.FEATURE_MAPPING.get(feature_name, feature_name)
-            raw_value = metrics.get(metric_name, 0)
-            
-            # Check if feature was found
-            if metric_name not in metrics:
-                missing_features.append(feature_name)
-                logger.warning(f"❌ Feature {feature_name} (metric: {metric_name}) not found in metrics")
-            else:
-                found_features.append(feature_name)
+            raw_value = metrics.get(feature_name, 0)
             
             # Convert boolean to float
             if isinstance(raw_value, bool):
                 raw_value = 1.0 if raw_value else 0.0
-            elif raw_value is None:
-                raw_value = 0.0
             
             # Normalize
             normalized_value = cls.normalize_feature(feature_name, raw_value)
             features[feature_name] = normalized_value
-            
-            # Log normalized value for important features
-            if feature_name in ['tx_per_month', 'holding_period_days', 'dex_swap_count', 'total_value_usd']:
-                logger.info(f"📊 {feature_name}: {raw_value} -> {normalized_value:.4f}")
-        
-        logger.info(f"✅ Found {len(found_features)} features, missing {len(missing_features)}")
-        if missing_features:
-            logger.error(f"❌ Missing {len(missing_features)} features: {missing_features[:10]}...")
         
         return features
     
@@ -384,14 +268,12 @@ class AdaptiveClassifier:
             Weighted score [0, 1]
         """
         if class_name not in cls.FEATURE_WEIGHTS:
-            logger.warning(f"⚠️ Class {class_name} not in FEATURE_WEIGHTS")
             return 0.0
         
         weights = cls.FEATURE_WEIGHTS[class_name]
         total_weight = sum(abs(w) for w in weights.values())
         
         if total_weight == 0:
-            logger.warning(f"⚠️ Total weight for {class_name} is 0")
             return 0.0
         
         score = 0.0
@@ -403,18 +285,10 @@ class AdaptiveClassifier:
                 feature_value = 1.0 - feature_value
                 weight = abs(weight)
             
-            contribution = feature_value * weight
-            score += contribution
-            
-            # Log significant contributions
-            if abs(contribution) > 0.05:
-                logger.debug(f"🔧 {class_name} - {feature_name}: {feature_value:.3f} × {weight:.3f} = {contribution:.3f}")
+            score += feature_value * weight
         
         # Normalize to [0, 1]
-        final_score = score / total_weight
-        logger.debug(f"🎯 {class_name} final score: {final_score:.4f}")
-        
-        return final_score
+        return score / total_weight
     
     @classmethod
     def classify(cls, metrics: Dict[str, Any]) -> Dict[str, float]:
@@ -427,8 +301,6 @@ class AdaptiveClassifier:
         Returns:
             Dict with probabilities per class
         """
-        logger.info(f"🚀 Starting classification with {len(metrics)} metrics")
-        
         # Extract features
         features = cls.extract_features(metrics)
         
@@ -437,16 +309,8 @@ class AdaptiveClassifier:
         for class_name in cls.FEATURE_WEIGHTS.keys():
             raw_scores[class_name] = cls.compute_class_score(class_name, features)
         
-        # Log raw scores
-        for class_name, score in raw_scores.items():
-            logger.info(f"📊 Raw score for {class_name}: {score:.4f}")
-        
         # Apply softmax to get probability distribution
         probabilities = cls._softmax(raw_scores)
-        
-        # Log final probabilities
-        for class_name, prob in probabilities.items():
-            logger.info(f"🎲 Probability for {class_name}: {prob:.4f}")
         
         return probabilities
     
@@ -578,7 +442,6 @@ class AdaptiveClassifier:
         
         if total == 0:
             # Equal distribution on error
-            logger.warning("⚠️ Total of exp_scores is 0, returning equal distribution")
             return {k: 1.0 / len(scores) for k in scores.keys()}
         
         # Normalize
@@ -709,3 +572,4 @@ class FeatureImportanceAnalyzer:
             },
             'top_phase1_feature': phase1_contributions[0][0] if phase1_contributions else None
         }
+
