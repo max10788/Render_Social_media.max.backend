@@ -32,11 +32,16 @@ class Stage1_RawMetrics:
     """
     
     @staticmethod
-    def execute(
-        blockchain_data: Dict[str, Any],
-        config: Optional[Dict[str, Any]] = None,
-        blockchain: str = 'ethereum'
-    ) -> Dict[str, Any]:
+    def execute(blockchain_data: Dict[str, Any], config: Optional[Dict[str, Any]] = None, blockchain: str = 'ethereum') -> Dict[str, Any]:
+        txs = blockchain_data.get('txs', [])
+        logger.info(f"🔗 Processing {len(txs)} transactions for raw metrics")
+        
+        if not txs:
+            logger.warning("⚠️ No transactions found - all metrics will be default values")
+        
+        # Log first transaction as sample
+        if txs:
+            logger.info(f"📝 Sample transaction: {txs[0]}")
         """
         Execute Stage 1 analysis with enhanced Phase 1 metrics.
         
