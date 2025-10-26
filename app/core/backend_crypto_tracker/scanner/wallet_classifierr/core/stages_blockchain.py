@@ -167,7 +167,7 @@ class Stage1_RawMetrics:
         for key, value in raw_metrics.items():
             logger.debug(f"  {key}: {value}")
     
-    return raw_metrics
+        return raw_metrics
     
     # ========================================================================
     # 🆕 NEW: PORTFOLIO METRICS
