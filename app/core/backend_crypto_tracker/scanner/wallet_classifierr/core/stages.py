@@ -32,38 +32,32 @@ class Stage2_DerivedMetrics:
     Output: Calculated indicators and ratios
     """
     
+    # In stages.py - Stage2_DerivedMetrics.execute()
     def execute(self, raw_metrics: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         logger.info(f"🧮 Computing derived metrics from {len(raw_metrics)} raw metrics")
         
-        # Log some key raw metrics
+        # Log input raw metrics
         key_metrics = ['total_tx_count', 'sent_tx_count', 'received_tx_count', 'current_balance']
         for metric in key_metrics:
             if metric in raw_metrics:
                 logger.info(f"📈 Raw {metric}: {raw_metrics[metric]}")
+            else:
+                logger.warning(f"❌ Raw {metric} NOT FOUND")
         
         derived = {}
-        """
-        Execute Stage 2 analysis with Phase 1 enhancements.
-        
-        Args:
-            raw_metrics: Output from Stage 1 (stages_blockchain.py)
-            config: Optional configuration
-            
-        Returns:
-            Dictionary of derived metrics
-        """
-        derived = {}
-        
-        # ===== EXISTING DERIVED METRICS =====
         
         # Transaction ratios
         total_tx = raw_metrics.get('total_tx_count', 0)
+        logger.info(f"🔄 Computing ratios with total_tx: {total_tx}")
+        
         if total_tx > 0:
             derived['outgoing_tx_ratio'] = raw_metrics.get('sent_tx_count', 0) / total_tx
             derived['incoming_tx_ratio'] = raw_metrics.get('received_tx_count', 0) / total_tx
+            logger.info(f"✅ Computed tx ratios: outgoing={derived['outgoing_tx_ratio']:.3f}, incoming={derived['incoming_tx_ratio']:.3f}")
         else:
             derived['outgoing_tx_ratio'] = 0
             derived['incoming_tx_ratio'] = 0
+            logger.warning("⚠️ total_tx is 0, setting ratios to 0")
         
         # Activity metrics
         age_days = raw_metrics.get('age_days', 0)
