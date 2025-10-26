@@ -32,11 +32,16 @@ class Stage2_DerivedMetrics:
     Output: Calculated indicators and ratios
     """
     
-    def execute(
-        self,
-        raw_metrics: Dict[str, Any],
-        config: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    def execute(self, raw_metrics: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        logger.info(f"🧮 Computing derived metrics from {len(raw_metrics)} raw metrics")
+        
+        # Log some key raw metrics
+        key_metrics = ['total_tx_count', 'sent_tx_count', 'received_tx_count', 'current_balance']
+        for metric in key_metrics:
+            if metric in raw_metrics:
+                logger.info(f"📈 Raw {metric}: {raw_metrics[metric]}")
+        
+        derived = {}
         """
         Execute Stage 2 analysis with Phase 1 enhancements.
         
