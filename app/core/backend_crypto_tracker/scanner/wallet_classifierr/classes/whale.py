@@ -1,90 +1,77 @@
 # ============================================================================
-# classes/whale.py
+# wallet_classifier/whale.py - ADAPTIVE VERSION
 # ============================================================================
-"""Whale wallet analyzer."""
+"""Whale wallet analyzer with adaptive classification."""
 from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.base_analyzer import BaseWalletAnalyzer
-from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.metric_definitions import WHALE_METRICS
 from typing import Dict, Any
 
+
 class WhaleAnalyzer(BaseWalletAnalyzer):
-    """Analyzer for Whale wallets."""
+    """Analyzer for Whale wallets using adaptive feature-based classification."""
     
     CLASS_NAME = "Whale"
-    METRICS = WHALE_METRICS
-    THRESHOLD = 0.55
-    WEIGHTS = {"primary": 0.7, "secondary": 0.2, "context": 0.1}
+    THRESHOLD = 0.55  # 55% probability threshold
     
-    def compute_score(self, metrics: Dict[str, Any]) -> float:
-        """Compute Whale score."""
-        # Primary indicators - Value and transaction size
+    # Metrics für Dokumentation und Feature-Extraktion
+    METRICS = {
+        "primary": [
+            "total_value_usd",          # Sehr hoher Gesamtwert
+            "large_tx_ratio",           # Hoher Anteil großer TXs
+            "portfolio_concentration",  # Konzentriertes Portfolio
+            "net_inflow_usd",           # Große Kapitalströme
+            "age_days"                  # Etabliertes Alter
+        ],
+        "secondary": [
+            "holding_period_days",      # Lange Halteperioden
+            "tx_per_month",             # Niedrige Aktivität
+            "whale_cluster_member",     # Teil von Whale-Cluster
+            "institutional_wallet"      # Institutionelles Wallet
+        ],
+        "context": [
+            "eigenvector_centrality",   # Wichtige Netzwerkposition
+            "governance_participation", # Governance-Teilnahme
+            "cross_chain_presence"      # Multi-Chain Präsenz
+        ]
+    }
+    
+    def get_key_indicators(self, metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Gibt die wichtigsten Indikatoren für Whale zurück.
+        
+        Returns:
+            Dict mit Key Indicators und ihren Werten
+        """
         total_value = metrics.get('total_value_usd', 0)
         
-        # Top 1% threshold (simplified: >$10M)
-        value_score = 1.0 if total_value > 10_000_000 else self._normalize(total_value, 0, 10_000_000)
-        
-        # NEW: Large transaction ratio
-        large_tx_ratio = metrics.get('large_tx_ratio', 0)
-        
-        # Count of large transactions (legacy metric)
-        large_tx_count = sum(
-            1 for val in metrics.get('output_values', [])
-            if val * 50000 > 1_000_000  # Assuming BTC price
-        )
-        large_tx_score = self._normalize(large_tx_count, 0, 10)
-        
-        # Portfolio concentration
-        concentration = metrics.get('portfolio_concentration', 0)
-        
-        # Net inflow
-        net_inflow_score = self._normalize(abs(metrics.get('net_inflow_usd', 0)), 0, 5_000_000)
-        
-        # Address age (older is more established)
-        age_score = self._normalize(metrics.get('age_days', 0), 0, 1825)  # 5 years
-        
-        primary_score = self._avg([
-            value_score,
-            large_tx_ratio,
-            large_tx_score,
-            concentration,
-            net_inflow_score,
-            age_score
-        ])
-        
-        # Secondary indicators - Activity and connections
-        # Low transaction frequency (whales don't trade frequently)
-        low_tx_freq = 1.0 - self._normalize(metrics.get('tx_per_month', 0), 0, 20)
-        
-        # Whale cluster membership
-        whale_cluster = 1.0 if metrics.get('whale_cluster_member', False) else 0
-        
-        # NEW: Holding pattern (whales tend to hold)
-        holding_score = self._normalize(metrics.get('holding_period_days', 0), 0, 730)
-        
-        secondary_score = self._avg([
-            low_tx_freq,
-            whale_cluster,
-            holding_score,
-            value_score * 0.5
-        ])
-        
-        # Context indicators - Institutional and network position
-        institutional = 1.0 if metrics.get('institutional_wallet', False) else 0
-        high_eigenvector = self._normalize(metrics.get('eigenvector_centrality', 0), 0, 0.1)
-        
-        # NEW: Strategic behavior (low activity but high value)
-        strategic_behavior = value_score * (1.0 - self._normalize(metrics.get('tx_per_month', 0), 0, 10))
-        
-        context_score = self._avg([
-            institutional,
-            high_eigenvector,
-            strategic_behavior
-        ])
-        
-        # Weighted combination
-        final_score = (
-            primary_score * self.WEIGHTS["primary"] +
-            secondary_score * self.WEIGHTS["secondary"] +
-            context_score * self.WEIGHTS["context"]
-        )
-        
-        return final_score
+        return {
+            "total_value_usd": {
+                "value": total_value,
+                "description": "Total wallet value in USD",
+                "interpretation": f"${total_value:,.0f} - {'WHALE (>$10M)' if total_value > 10_000_000 else 'Large holder' if total_value > 1_000_000 else 'Regular holder'}"
+            },
+            "large_tx_ratio": {
+                "value": metrics.get('large_tx_ratio', 0),
+                "description": "Ratio of large transactions (>$1M)",
+                "interpretation": "High = Moving significant capital"
+            },
+            "portfolio_concentration": {
+                "value": metrics.get('portfolio_concentration', 0),
+                "description": "Concentration of holdings",
+                "interpretation": "High = Focused strategy"
+            },
+            "age_days": {
+                "value": metrics.get('age_days', 0),
+                "description": "Wallet age in days",
+                "interpretation": "High = Established player"
+            },
+            "institutional_wallet": {
+                "value": metrics.get('institutional_wallet', False),
+                "description": "Identified as institutional",
+                "interpretation": "True = Likely exchange/institution"
+            },
+            "eigenvector_centrality": {
+                "value": metrics.get('eigenvector_centrality', 0),
+                "description": "Network influence score",
+                "interpretation": "High = Connected to important addresses"
+            }
+        }
