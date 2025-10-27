@@ -1,23 +1,27 @@
 """
-API Package
+API Schemas Package
 
-API Layer mit Schemas und Endpoints
+Pydantic Models für Request/Response Validation
 """
 
-from .schemas import (
-    # Request Models
+from .request import (
     AnalysisRequest,
     QuickAnalysisRequest,
     HistoricalAnalysisRequest,
     WalletLookupRequest,
     CompareExchangesRequest,
-    
-    # Response Models
+)
+
+from .response import (
     AnalysisResponse,
     HistoricalAnalysisResponse,
     WalletDetailResponse,
     ExchangeComparison,
     HealthCheckResponse,
+    CandleData,
+    WalletMover,
+    TradeData,
+    AnalysisMetadata,
     ErrorResponse,
     SuccessResponse,
 )
@@ -36,6 +40,10 @@ __all__ = [
     "WalletDetailResponse",
     "ExchangeComparison",
     "HealthCheckResponse",
+    "CandleData",
+    "WalletMover",
+    "TradeData",
+    "AnalysisMetadata",
     "ErrorResponse",
     "SuccessResponse",
 ]
