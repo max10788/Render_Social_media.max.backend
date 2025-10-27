@@ -72,81 +72,66 @@ class WalletType(str, Enum):
 
 
 # Thresholds für Wallet-Klassifizierung (in USD)
-WHALE_THRESHOLD_USD: float = 100_000.0  # 100k USD per Trade
-SMART_MONEY_THRESHOLD_USD: float = 50_000.0  # 50k USD per Trade
-BOT_MIN_TRADES: int = 10  # Mindestanzahl Trades für Bot-Erkennung
+WHALE_THRESHOLD_USD: float = 100_000.0
+SMART_MONEY_THRESHOLD_USD: float = 50_000.0
+BOT_MIN_TRADES: int = 10
 
 
 # ==================== IMPACT SCORE WEIGHTS ====================
 
-# Gewichtung der verschiedenen Faktoren für Impact Score (Summe = 1.0)
 IMPACT_SCORE_WEIGHTS: Dict[str, float] = {
-    "volume_ratio": 0.30,        # Anteil am Gesamt-Volume
-    "timing_score": 0.25,        # Timing vor Preisbewegungen
-    "size_impact": 0.20,         # Order-Größe vs Orderbook
-    "price_correlation": 0.15,   # Korrelation mit Preisbewegung
-    "slippage_caused": 0.10,     # Verursachter Slippage
+    "volume_ratio": 0.30,
+    "timing_score": 0.25,
+    "size_impact": 0.20,
+    "price_correlation": 0.15,
+    "slippage_caused": 0.10,
 }
 
 
 # ==================== ANALYSIS THRESHOLDS ====================
 
-# Minimale Preisbewegung für Analyse (in %)
-MIN_PRICE_MOVEMENT_PCT: float = 0.1  # 0.1% Minimum
-
-# Minimaler Impact Score für Inclusion (0-1)
-MIN_IMPACT_SCORE: float = 0.05  # 5% Impact
-
-# Standard Anzahl Top Wallets im Response
+MIN_PRICE_MOVEMENT_PCT: float = 0.1
+MIN_IMPACT_SCORE: float = 0.05
 DEFAULT_TOP_N_WALLETS: int = 10
 MAX_TOP_N_WALLETS: int = 100
-
-# Minimales Trade Volume für Berücksichtigung (USD)
-MIN_TRADE_VOLUME_USD: float = 1000.0  # 1k USD
+MIN_TRADE_VOLUME_USD: float = 1000.0
 
 
 # ==================== TIMING CORRELATION ====================
 
-# Zeitfenster für Timing-Analyse (in Sekunden)
-TIMING_WINDOW_BEFORE_MOVE: int = 60  # 60 Sekunden vor Bewegung
-TIMING_WINDOW_AFTER_MOVE: int = 30   # 30 Sekunden nach Bewegung
-
-# Threshold für signifikante Preisbewegung (in %)
-SIGNIFICANT_PRICE_MOVE_PCT: float = 0.5  # 0.5%
+TIMING_WINDOW_BEFORE_MOVE: int = 60
+TIMING_WINDOW_AFTER_MOVE: int = 30
+SIGNIFICANT_PRICE_MOVE_PCT: float = 0.5
 
 
 # ==================== PATTERN DETECTION ====================
 
-# Bot-Erkennung Parameter
 BOT_DETECTION: Dict[str, any] = {
-    "min_trades": 10,                    # Min. Trades für Bot-Pattern
-    "max_time_variance_seconds": 5,      # Max. Zeitabweichung zwischen Trades
-    "min_size_consistency": 0.85,        # Min. Konsistenz der Trade-Größen (85%)
-    "round_number_threshold": 0.70,      # % Trades mit runden Zahlen
+    "min_trades": 10,
+    "max_time_variance_seconds": 5,
+    "min_size_consistency": 0.85,
+    "round_number_threshold": 0.70,
 }
 
-# Market Maker Erkennung
 MARKET_MAKER_DETECTION: Dict[str, any] = {
-    "min_bid_ask_trades": 5,             # Min. Trades auf beiden Seiten
-    "max_spread_pct": 0.1,               # Max. Spread zwischen Bid/Ask (0.1%)
-    "min_volume_both_sides": 10_000,     # Min. Volume auf beiden Seiten (USD)
+    "min_bid_ask_trades": 5,
+    "max_spread_pct": 0.1,
+    "min_volume_both_sides": 10_000,
 }
 
 
 # ==================== CACHE SETTINGS ====================
 
-# Cache TTL in Sekunden
 CACHE_TTL: Dict[str, int] = {
-    "candle_data": 300,          # 5 Minuten
-    "trade_data": 180,           # 3 Minuten
-    "analysis_result": 600,      # 10 Minuten
-    "known_wallets": 3600,       # 1 Stunde
+    "candle_data": 300,
+    "trade_data": 180,
+    "analysis_result": 600,
+    "known_wallets": 3600,
 }
 
 
 # ==================== API RATE LIMITS ====================
 
-# Rate Limits pro Exchange (Requests pro Minute)
 EXCHANGE_RATE_LIMITS: Dict[str, int] = {
     SupportedExchange.BITGET: 20,
     SupportedExchange.BINANCE: 20,
@@ -156,10 +141,7 @@ EXCHANGE_RATE_LIMITS: Dict[str, int] = {
 
 # ==================== DATA VALIDATION ====================
 
-# Maximale Zeitspanne für Analyse (in Stunden)
 MAX_ANALYSIS_TIMESPAN_HOURS: int = 24
-
-# Maximale Anzahl Trades für Verarbeitung
 MAX_TRADES_PER_REQUEST: int = 100_000
 
 
@@ -170,21 +152,21 @@ EXCHANGE_CONFIGS: Dict[str, Dict[str, any]] = {
         "name": "Bitget",
         "has_trade_history": True,
         "has_orderbook": True,
-        "min_trade_amount": 10.0,  # USD
+        "min_trade_amount": 10.0,
         "rate_limit": 20,
     },
     SupportedExchange.BINANCE: {
         "name": "Binance",
         "has_trade_history": True,
         "has_orderbook": True,
-        "min_trade_amount": 10.0,  # USD
+        "min_trade_amount": 10.0,
         "rate_limit": 20,
     },
     SupportedExchange.KRAKEN: {
         "name": "Kraken",
         "has_trade_history": True,
         "has_orderbook": True,
-        "min_trade_amount": 10.0,  # USD
+        "min_trade_amount": 10.0,
         "rate_limit": 15,
     },
 }
@@ -201,9 +183,6 @@ ERROR_MESSAGES: Dict[str, str] = {
     "no_data_available": "Keine Daten verfügbar für den angegebenen Zeitraum",
     "rate_limit_exceeded": "Rate Limit für {exchange} überschritten. Bitte warten Sie {wait_seconds}s",
 }
-
-
-# ==================== LOGGING ====================
 
 LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOG_LEVEL: str = "INFO"
