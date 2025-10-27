@@ -1,164 +1,157 @@
 """
-Pydantic Request Schemas für Price-Movers API
+Request Schemas für Price Movers API
+
+Pydantic Models für Request Validation
 """
+
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field, field_validator, model_validator
-from ..utils.constants import (
-    SupportedExchange,
-    Timeframe,
-    DEFAULT_TOP_N_WALLETS,
-    DEFAULT_MIN_IMPACT_THRESHOLD,
-    MAX_TOP_N_WALLETS,
+from pydantic import BaseModel, Field, validator, root_validator
+
+from ...utils.constants import (
     SUPPORTED_EXCHANGES,
     SUPPORTED_TIMEFRAMES,
-    MAX_ANALYSIS_TIMESPAN_HOURS
+    MIN_PRICE_MOVEMENT_PCT,
+    DEFAULT_TOP_N_WALLETS,
+    MAX_TOP_N_WALLETS,
+    MIN_IMPACT_SCORE,
+    MAX_ANALYSIS_TIMESPAN_HOURS,
+    ERROR_MESSAGES,
 )
 
 
 class AnalysisRequest(BaseModel):
     """
-    Request Schema für Price-Mover Analyse
+    Request Model für Price Movers Analyse
     
-    Example:
-        {
-            "exchange": "binance",
-            "symbol": "BTC/USDT",
-            "timeframe": "5m",
-            "start_time": "2024-10-27T10:00:00Z",
-            "end_time": "2024-10-27T10:05:00Z",
-            "min_impact_threshold": 0.1,
-            "top_n_wallets": 10
-        }
+    Attributes:
+        exchange: Exchange für Analyse (bitget, binance, kraken)
+        symbol: Trading Pair (z.B. BTC/USDT)
+        timeframe: Candle Timeframe (z.B. 5m, 1h)
+        start_time: Start-Zeitpunkt der Analyse
+        end_time: End-Zeitpunkt der Analyse
+        min_impact_threshold: Minimaler Impact Score (0-1)
+        top_n_wallets: Anzahl Top Wallets im Response
+        include_trades: Trades in Response inkludieren
     """
     
     exchange: str = Field(
         ...,
-        description="Exchange Name (bitget, binance, kraken)",
-        examples=["binance"]
+        description="Exchange für Analyse",
+        example="binance"
     )
     
     symbol: str = Field(
         ...,
-        description="Trading Pair Symbol (z.B. BTC/USDT, ETH/USDT)",
-        examples=["BTC/USDT", "ETH/USDT"],
-        min_length=3,
-        max_length=20
+        description="Trading Pair (Format: BASE/QUOTE)",
+        example="BTC/USDT"
     )
     
     timeframe: str = Field(
         ...,
-        description="Candle Timeframe (1m, 5m, 15m, 30m, 1h, 4h, 1d)",
-        examples=["5m"]
+        description="Candle Timeframe",
+        example="5m"
     )
     
     start_time: datetime = Field(
         ...,
-        description="Start-Zeitpunkt der Analyse (ISO 8601 Format)"
+        description="Start-Zeitpunkt der Analyse (ISO 8601)",
+        example="2024-10-27T10:00:00Z"
     )
     
     end_time: datetime = Field(
         ...,
-        description="End-Zeitpunkt der Analyse (ISO 8601 Format)"
+        description="End-Zeitpunkt der Analyse (ISO 8601)",
+        example="2024-10-27T10:05:00Z"
     )
     
     min_impact_threshold: float = Field(
-        default=DEFAULT_MIN_IMPACT_THRESHOLD,
-        description="Minimaler Impact Score (0.0 - 1.0) für Wallet-Filterung",
+        default=MIN_IMPACT_SCORE,
         ge=0.0,
-        le=1.0
+        le=1.0,
+        description="Minimaler Impact Score für Inclusion (0-1)",
+        example=0.1
     )
     
     top_n_wallets: int = Field(
         default=DEFAULT_TOP_N_WALLETS,
-        description="Anzahl der Top Wallets im Result",
         ge=1,
-        le=MAX_TOP_N_WALLETS
+        le=MAX_TOP_N_WALLETS,
+        description="Anzahl Top Wallets im Response",
+        example=10
     )
     
-    # Optional: Erweiterte Filter
-    include_bot_wallets: bool = Field(
-        default=True,
-        description="Bot-Wallets in Ergebnissen einbeziehen"
+    include_trades: bool = Field(
+        default=False,
+        description="Einzelne Trades in Response inkludieren"
     )
     
-    include_small_traders: bool = Field(
-        default=True,
-        description="Kleine Trader (<2 BTC Volumen) einbeziehen"
-    )
-    
-    @field_validator("exchange")
-    @classmethod
-    def validate_exchange(cls, v: str) -> str:
-        """Validiere dass Exchange unterstützt wird"""
-        v_lower = v.lower()
-        if v_lower not in SUPPORTED_EXCHANGES:
+    @validator("exchange")
+    def validate_exchange(cls, v):
+        """Validiere Exchange"""
+        if v.lower() not in SUPPORTED_EXCHANGES:
             raise ValueError(
-                f"Exchange '{v}' wird nicht unterstützt. "
-                f"Verfügbare: {', '.join(SUPPORTED_EXCHANGES)}"
+                ERROR_MESSAGES["unsupported_exchange"].format(
+                    exchange=v,
+                    exchanges=", ".join(SUPPORTED_EXCHANGES)
+                )
             )
-        return v_lower
+        return v.lower()
     
-    @field_validator("timeframe")
-    @classmethod
-    def validate_timeframe(cls, v: str) -> str:
-        """Validiere dass Timeframe unterstützt wird"""
-        v_lower = v.lower()
-        if v_lower not in SUPPORTED_TIMEFRAMES:
+    @validator("timeframe")
+    def validate_timeframe(cls, v):
+        """Validiere Timeframe"""
+        if v.lower() not in SUPPORTED_TIMEFRAMES:
             raise ValueError(
-                f"Timeframe '{v}' wird nicht unterstützt. "
-                f"Verfügbare: {', '.join(SUPPORTED_TIMEFRAMES)}"
+                ERROR_MESSAGES["unsupported_timeframe"].format(
+                    timeframe=v,
+                    timeframes=", ".join(SUPPORTED_TIMEFRAMES)
+                )
             )
-        return v_lower
+        return v.lower()
     
-    @field_validator("symbol")
-    @classmethod
-    def validate_symbol(cls, v: str) -> str:
-        """Validiere Symbol Format"""
-        v_upper = v.upper()
-        
-        # Prüfe ob Symbol ein "/" enthält
-        if "/" not in v_upper:
+    @validator("symbol")
+    def validate_symbol(cls, v):
+        """Validiere Trading Pair Format"""
+        if "/" not in v:
             raise ValueError(
-                f"Symbol '{v}' muss Format 'BASE/QUOTE' haben (z.B. BTC/USDT)"
+                ERROR_MESSAGES["invalid_symbol"].format(symbol=v)
             )
         
-        # Prüfe ob beide Teile existieren
-        parts = v_upper.split("/")
+        parts = v.split("/")
         if len(parts) != 2 or not all(parts):
             raise ValueError(
-                f"Ungültiges Symbol Format: '{v}'. Erwartet: 'BASE/QUOTE'"
+                ERROR_MESSAGES["invalid_symbol"].format(symbol=v)
             )
         
-        return v_upper
+        return v.upper()
     
-    @model_validator(mode='after')
-    def validate_time_range(self):
-        """Validiere dass start_time vor end_time liegt und Zeitspanne sinnvoll ist"""
-        if self.start_time >= self.end_time:
-            raise ValueError(
-                "start_time muss vor end_time liegen"
-            )
+    @root_validator
+    def validate_time_range(cls, values):
+        """Validiere Zeitspanne"""
+        start_time = values.get("start_time")
+        end_time = values.get("end_time")
         
-        # Prüfe maximale Zeitspanne
-        time_diff = self.end_time - self.start_time
-        max_hours = MAX_ANALYSIS_TIMESPAN_HOURS
+        if start_time and end_time:
+            # Prüfe ob end_time nach start_time liegt
+            if end_time <= start_time:
+                raise ValueError(ERROR_MESSAGES["invalid_time_range"])
+            
+            # Prüfe maximale Zeitspanne
+            time_diff = end_time - start_time
+            hours_diff = time_diff.total_seconds() / 3600
+            
+            if hours_diff > MAX_ANALYSIS_TIMESPAN_HOURS:
+                raise ValueError(
+                    ERROR_MESSAGES["time_range_too_large"].format(
+                        max_hours=MAX_ANALYSIS_TIMESPAN_HOURS
+                    )
+                )
         
-        if time_diff.total_seconds() > max_hours * 3600:
-            raise ValueError(
-                f"Zeitspanne zu groß. Maximum: {max_hours} Stunden"
-            )
-        
-        # Prüfe Minimum Zeitspanne (z.B. mindestens 1 Minute)
-        if time_diff.total_seconds() < 60:
-            raise ValueError(
-                "Zeitspanne muss mindestens 1 Minute betragen"
-            )
-        
-        return self
+        return values
     
     class Config:
-        json_schema_extra = {
+        schema_extra = {
             "example": {
                 "exchange": "binance",
                 "symbol": "BTC/USDT",
@@ -167,57 +160,82 @@ class AnalysisRequest(BaseModel):
                 "end_time": "2024-10-27T10:05:00Z",
                 "min_impact_threshold": 0.1,
                 "top_n_wallets": 10,
-                "include_bot_wallets": True,
-                "include_small_traders": True
+                "include_trades": False
             }
         }
 
 
-class WalletDetailRequest(BaseModel):
+class QuickAnalysisRequest(BaseModel):
     """
-    Request für Detail-Infos zu einem spezifischen Wallet
-    (Für späteren /wallets/{address} Endpoint)
+    Vereinfachter Request für Quick Analysis
+    
+    Analysiert die letzte Candle für ein Symbol
     """
     
-    wallet_address: str = Field(
+    exchange: str = Field(
         ...,
-        description="Wallet Adresse oder Virtual Wallet ID",
-        min_length=8,
-        max_length=100
+        description="Exchange für Analyse",
+        example="binance"
     )
     
-    exchange: Optional[str] = Field(
-        None,
-        description="Optional: Exchange für CEX-spezifische Daten"
+    symbol: str = Field(
+        ...,
+        description="Trading Pair (Format: BASE/QUOTE)",
+        example="BTC/USDT"
     )
     
-    include_history: bool = Field(
-        default=False,
-        description="Historische Aktivitäten einbeziehen"
+    timeframe: str = Field(
+        default="5m",
+        description="Candle Timeframe",
+        example="5m"
     )
     
-    history_days: int = Field(
-        default=7,
-        description="Anzahl Tage für historische Daten",
+    top_n_wallets: int = Field(
+        default=DEFAULT_TOP_N_WALLETS,
         ge=1,
-        le=90
-    )
-
-
-class BatchAnalysisRequest(BaseModel):
-    """
-    Batch-Request für mehrere Analysen gleichzeitig
-    (Für zukünftige Erweiterung)
-    """
-    
-    requests: list[AnalysisRequest] = Field(
-        ...,
-        description="Liste von Analyse-Requests",
-        min_length=1,
-        max_length=10
+        le=MAX_TOP_N_WALLETS,
+        description="Anzahl Top Wallets im Response"
     )
     
-    parallel_execution: bool = Field(
-        default=True,
-        description="Requests parallel ausführen"
-    )
+    @validator("exchange")
+    def validate_exchange(cls, v):
+        """Validiere Exchange"""
+        if v.lower() not in SUPPORTED_EXCHANGES:
+            raise ValueError(
+                ERROR_MESSAGES["unsupported_exchange"].format(
+                    exchange=v,
+                    exchanges=", ".join(SUPPORTED_EXCHANGES)
+                )
+            )
+        return v.lower()
+    
+    @validator("timeframe")
+    def validate_timeframe(cls, v):
+        """Validiere Timeframe"""
+        if v.lower() not in SUPPORTED_TIMEFRAMES:
+            raise ValueError(
+                ERROR_MESSAGES["unsupported_timeframe"].format(
+                    timeframe=v,
+                    timeframes=", ".join(SUPPORTED_TIMEFRAMES)
+                )
+            )
+        return v.lower()
+    
+    @validator("symbol")
+    def validate_symbol(cls, v):
+        """Validiere Trading Pair Format"""
+        if "/" not in v:
+            raise ValueError(
+                ERROR_MESSAGES["invalid_symbol"].format(symbol=v)
+            )
+        return v.upper()
+    
+    class Config:
+        schema_extra = {
+            "example": {
+                "exchange": "binance",
+                "symbol": "BTC/USDT",
+                "timeframe": "5m",
+                "top_n_wallets": 10
+            }
+        }
