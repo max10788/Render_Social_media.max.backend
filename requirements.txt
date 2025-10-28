@@ -65,3 +65,4 @@ attrs>=21.2.0
 black==23.3.0
 flake8==6.0.0
 mypy==1.4.1
+ccxt
