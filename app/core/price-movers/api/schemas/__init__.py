@@ -1,7 +1,7 @@
 """
 API Schemas Package
 
-Pydantic Models für Request/Response Validation
+Exportiert alle Request und Response Schemas
 """
 
 from .request import (
@@ -13,37 +13,40 @@ from .request import (
 )
 
 from .response import (
+    CandleData,
+    TradeData,
+    ImpactComponents,
+    WalletMover,
+    AnalysisMetadata,
     AnalysisResponse,
     HistoricalAnalysisResponse,
     WalletDetailResponse,
     ExchangeComparison,
     HealthCheckResponse,
-    CandleData,
-    WalletMover,
-    TradeData,
-    AnalysisMetadata,
     ErrorResponse,
     SuccessResponse,
 )
 
+
 __all__ = [
-    # Request Models
+    # Request Schemas
     "AnalysisRequest",
     "QuickAnalysisRequest",
     "HistoricalAnalysisRequest",
     "WalletLookupRequest",
     "CompareExchangesRequest",
     
-    # Response Models
+    # Response Schemas
+    "CandleData",
+    "TradeData",
+    "ImpactComponents",
+    "WalletMover",
+    "AnalysisMetadata",
     "AnalysisResponse",
     "HistoricalAnalysisResponse",
     "WalletDetailResponse",
     "ExchangeComparison",
     "HealthCheckResponse",
-    "CandleData",
-    "WalletMover",
-    "TradeData",
-    "AnalysisMetadata",
     "ErrorResponse",
     "SuccessResponse",
 ]
