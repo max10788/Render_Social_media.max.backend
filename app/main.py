@@ -26,7 +26,7 @@ from app.core.backend_crypto_tracker.api.routes import transaction_routes
 from app.core.backend_crypto_tracker.api.routes import scanner_routes
 from app.core.backend_crypto_tracker.api.routes.frontend_routes import router as frontend_router
 from app.core.backend_crypto_tracker.api.routes.wallet_routes import router as wallet_router
-from app.core.price_movers.api.routes import router as price_movers_router
+from app.core.price-movers.api.routes import router as price_movers_router
 
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
