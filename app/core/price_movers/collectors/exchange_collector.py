@@ -1,5 +1,5 @@
 """
-Exchange Collector - CCXT Integration
+Exchange Collector - CCXT Integration (FIXED)
 
 Sammelt Daten von Centralized Exchanges:
 - Bitget
@@ -66,14 +66,20 @@ class ExchangeCollector(BaseCollector):
             )
         
         self.exchange_name = exchange_name.lower()
-        self.exchange_config = EXCHANGE_CONFIGS[self.exchange_name]
+        self.exchange_config = EXCHANGE_CONFIGS.get(self.exchange_name, {})
         
-        # Initialisiere CCXT Exchange
-        self.exchange = self._init_exchange(api_key, api_secret)
-        
-        # Rate Limiting
-        self.rate_limit = EXCHANGE_RATE_LIMITS[self.exchange_name]
+        # Rate Limiting - SETZE DEFAULTS ZUERST!
+        self.rate_limit = EXCHANGE_RATE_LIMITS.get(self.exchange_name, 20)  # Default: 20
         self._last_request_time = None
+        
+        # Exchange initialisieren (kann fehlschlagen)
+        try:
+            self.exchange = self._init_exchange(api_key, api_secret)
+        except Exception as e:
+            logger.error(f"Fehler beim Initialisieren von {exchange_name}: {e}")
+            # Setze Dummy-Exchange für Fallback
+            self.exchange = None
+            raise
         
         logger.info(
             f"ExchangeCollector initialisiert für {self.exchange_name.upper()}"
@@ -90,7 +96,10 @@ class ExchangeCollector(BaseCollector):
         Returns:
             CCXT Exchange Object
         """
-        exchange_class = getattr(ccxt, self.exchange_name)
+        try:
+            exchange_class = getattr(ccxt, self.exchange_name)
+        except AttributeError:
+            raise ValueError(f"Exchange '{self.exchange_name}' not found in ccxt")
         
         config = {
             'enableRateLimit': True,
@@ -125,6 +134,9 @@ class ExchangeCollector(BaseCollector):
         Returns:
             Dictionary mit Candle-Daten
         """
+        if not self.exchange:
+            raise RuntimeError(f"Exchange {self.exchange_name} not initialized")
+        
         await self._rate_limit_wait()
         
         try:
@@ -186,6 +198,9 @@ class ExchangeCollector(BaseCollector):
         Returns:
             Liste von Trades
         """
+        if not self.exchange:
+            raise RuntimeError(f"Exchange {self.exchange_name} not initialized")
+        
         await self._rate_limit_wait()
         
         try:
@@ -248,31 +263,33 @@ class ExchangeCollector(BaseCollector):
         """
         return {
             'id': raw_trade.get('id'),
-            'timestamp': datetime.fromtimestamp(raw_trade['timestamp'] / 1000),
-            'symbol': raw_trade['symbol'],
-            'type': raw_trade.get('type', 'limit'),
-            'side': raw_trade['side'],  # 'buy' oder 'sell'
-            'price': float(raw_trade['price']),
-            'amount': float(raw_trade['amount']),
-            'cost': float(raw_trade['cost']),  # price * amount
-            'fee': raw_trade.get('fee'),
+            'timestamp': datetime.fromtimestamp(
+                raw_trade['timestamp'] / 1000
+            ) if raw_trade.get('timestamp') else datetime.now(),
+            'trade_type': raw_trade.get('side', 'unknown'),  # 'buy' oder 'sell'
+            'amount': float(raw_trade.get('amount', 0.0)),
+            'price': float(raw_trade.get('price', 0.0)),
+            'value_usd': float(raw_trade.get('cost', 0.0)),  # In Quote Currency
         }
     
     async def fetch_orderbook(
         self,
         symbol: str,
-        limit: Optional[int] = 20
+        limit: int = 20
     ) -> Dict[str, Any]:
         """
-        Fetcht aktuelles Orderbook
+        Fetcht Orderbook
         
         Args:
             symbol: Trading Pair
-            limit: Anzahl Levels pro Seite
+            limit: Anzahl Bids/Asks
             
         Returns:
-            Dictionary mit Orderbook
+            Dictionary mit Orderbook-Daten
         """
+        if not self.exchange:
+            raise RuntimeError(f"Exchange {self.exchange_name} not initialized")
+        
         await self._rate_limit_wait()
         
         try:
@@ -318,6 +335,9 @@ class ExchangeCollector(BaseCollector):
         Returns:
             Dictionary mit Ticker-Daten
         """
+        if not self.exchange:
+            raise RuntimeError(f"Exchange {self.exchange_name} not initialized")
+        
         await self._rate_limit_wait()
         
         try:
@@ -364,6 +384,9 @@ class ExchangeCollector(BaseCollector):
         Returns:
             Liste von Candles
         """
+        if not self.exchange:
+            raise RuntimeError(f"Exchange {self.exchange_name} not initialized")
+        
         await self._rate_limit_wait()
         
         try:
@@ -423,6 +446,10 @@ class ExchangeCollector(BaseCollector):
         Returns:
             True wenn erreichbar
         """
+        if not self.exchange:
+            logger.error(f"Exchange {self.exchange_name} not initialized")
+            return False
+        
         try:
             await self.exchange.load_markets()
             logger.info(f"Health Check OK: {self.exchange_name}")
@@ -515,17 +542,21 @@ class ExchangeCollectorFactory:
         for exchange in SupportedExchange:
             creds = credentials.get(exchange.value, {})
             
-            collector = ExchangeCollectorFactory.create(
-                exchange_name=exchange.value,
-                api_key=creds.get('api_key'),
-                api_secret=creds.get('api_secret')
-            )
-            
-            collectors[exchange.value] = collector
+            try:
+                collector = ExchangeCollectorFactory.create(
+                    exchange_name=exchange.value,
+                    api_key=creds.get('api_key'),
+                    api_secret=creds.get('api_secret')
+                )
+                collectors[exchange.value] = collector
+                logger.info(f"✓ {exchange.value} collector created")
+            except Exception as e:
+                logger.error(f"✗ Failed to create {exchange.value} collector: {e}")
+                # Continue with other exchanges
+                continue
         
         logger.info(
-            f"Alle Exchange Collectors erstellt: "
-            f"{', '.join(collectors.keys())}"
+            f"Exchange Collectors erstellt: {', '.join(collectors.keys())}"
         )
         
         return collectors
