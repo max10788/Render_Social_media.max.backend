@@ -163,29 +163,21 @@ async def analyze_price_movers(
 )
 async def quick_analysis(
     request: QuickAnalysisRequest,
-    analyzer: PriceMoverAnalyzer = Depends(get_analyzer),
     request_id: str = Depends(log_request)
 ) -> AnalysisResponse:
     """
     ## Schnellanalyse
     
     Analysiert die aktuelle oder letzte abgeschlossene Candle.
-    
-    ### Parameter:
-    - **exchange**: Exchange (bitget, binance, kraken)
-    - **symbol**: Trading Pair (z.B. BTC/USDT)
-    - **timeframe**: Candle Timeframe (default: 5m)
-    - **top_n_wallets**: Anzahl Top Wallets (default: 10)
-    
-    ### Returns:
-    - Candle-Daten der aktuellen/letzten Candle
-    - Top Movers
     """
     try:
         logger.info(
             f"[{request_id}] Quick analysis: {request.exchange} "
             f"{request.symbol} {request.timeframe}"
         )
+        
+        # Hole Analyzer mit dem richtigen Exchange
+        analyzer = await get_analyzer(exchange=request.exchange)
         
         # Berechne Zeitfenster für letzte Candle
         now = datetime.now()
