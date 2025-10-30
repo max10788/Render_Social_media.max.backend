@@ -20,7 +20,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 # ✅ RICHTIG - Importiere von utils.constants
-from app.core.price_movers.utils.constants import (
+from app.core.price_movers.api.test_schemas import (
     AnalysisRequest,
     AnalysisResponse,
     QuickAnalysisRequest,
