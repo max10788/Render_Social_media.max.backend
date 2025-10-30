@@ -103,14 +103,20 @@ async def get_all_exchange_collectors() -> Dict[str, ExchangeCollector]:
 # ==================== ANALYZER DEPENDENCY ====================
 
 async def get_analyzer(
-    collector: ExchangeCollector = Depends(get_exchange_collector)
+    exchange: str  # <-- Füge exchange Parameter hinzu
 ) -> PriceMoverAnalyzer:
     """
     Dependency für PriceMoverAnalyzer
     
+    Args:
+        exchange: Exchange name (wird automatisch aus Query/Body extrahiert)
+    
     Returns:
         PriceMoverAnalyzer Instance
     """
+    # Hole den passenden Collector
+    collector = await get_exchange_collector(exchange)
+    
     global _analyzer_instance
     
     # Erstelle oder verwende gecachte Analyzer-Instance
@@ -119,6 +125,9 @@ async def get_analyzer(
         _analyzer_instance = PriceMoverAnalyzer(
             exchange_collector=collector
         )
+    else:
+        # Update den Collector für den aktuellen Request
+        _analyzer_instance.exchange_collector = collector
     
     return _analyzer_instance
 
