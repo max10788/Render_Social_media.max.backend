@@ -1,362 +1,597 @@
 """
-Test-Script für API Schemas
+Price Movers API Schemas
+========================
 
-Testet Validation und Serialization der Pydantic Models
+Pydantic models for request/response validation and documentation.
 """
 
-from datetime import datetime, timedelta
-import json
-import sys
-import os
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
-
-from app.core.price_movers.api.schemas import (
-    AnalysisRequest,
-    QuickAnalysisRequest,
-    HistoricalAnalysisRequest,
-    WalletLookupRequest,
-    CompareExchangesRequest,
-    AnalysisResponse,
-    CandleData,
-    WalletMover,
-    AnalysisMetadata,
-    ErrorResponse,
-    SuccessResponse,
-)
+from typing import List, Optional, Dict, Any
+from datetime import datetime
+from enum import Enum
+from pydantic import BaseModel, Field, validator
 
 
-def test_analysis_request():
-    """Test AnalysisRequest Validation"""
-    print("\n" + "=" * 60)
-    print("TEST 1: AnalysisRequest Validation")
-    print("=" * 60)
-    
-    # Valid Request
-    print("\n✓ Valid Request:")
-    request = AnalysisRequest(
-        exchange="binance",
-        symbol="BTC/USDT",
-        timeframe="5m",
-        start_time=datetime.now() - timedelta(minutes=5),
-        end_time=datetime.now(),
-        min_impact_threshold=0.1,
-        top_n_wallets=10,
-        include_trades=False
-    )
-    print(f"   Exchange: {request.exchange}")
-    print(f"   Symbol: {request.symbol}")
-    print(f"   Timeframe: {request.timeframe}")
-    print(f"   Valid: ✅")
-    
-    # Test JSON Serialization
-    print("\n✓ JSON Serialization:")
-    json_data = request.json(indent=2)
-    print(f"   {json_data[:200]}...")
-    
-    # Invalid Exchange
-    print("\n✗ Invalid Exchange:")
-    try:
-        invalid_request = AnalysisRequest(
-            exchange="invalid_exchange",
-            symbol="BTC/USDT",
-            timeframe="5m",
-            start_time=datetime.now() - timedelta(minutes=5),
-            end_time=datetime.now()
-        )
-    except ValueError as e:
-        print(f"   Expected Error: {e}")
-    
-    # Invalid Timeframe
-    print("\n✗ Invalid Timeframe:")
-    try:
-        invalid_request = AnalysisRequest(
-            exchange="binance",
-            symbol="BTC/USDT",
-            timeframe="10m",  # Not supported
-            start_time=datetime.now() - timedelta(minutes=5),
-            end_time=datetime.now()
-        )
-    except ValueError as e:
-        print(f"   Expected Error: {e}")
-    
-    # Invalid Time Range
-    print("\n✗ Invalid Time Range (end before start):")
-    try:
-        invalid_request = AnalysisRequest(
-            exchange="binance",
-            symbol="BTC/USDT",
-            timeframe="5m",
-            start_time=datetime.now(),
-            end_time=datetime.now() - timedelta(minutes=5)  # Before start
-        )
-    except ValueError as e:
-        print(f"   Expected Error: {e}")
-    
-    # Invalid Symbol
-    print("\n✗ Invalid Symbol (no slash):")
-    try:
-        invalid_request = AnalysisRequest(
-            exchange="binance",
-            symbol="BTCUSDT",  # Missing slash
-            timeframe="5m",
-            start_time=datetime.now() - timedelta(minutes=5),
-            end_time=datetime.now()
-        )
-    except ValueError as e:
-        print(f"   Expected Error: {e}")
+# ============================================
+# Enums
+# ============================================
+
+class ExchangeEnum(str, Enum):
+    """Supported exchanges"""
+    BINANCE = "binance"
+    BITGET = "bitget"
+    KRAKEN = "kraken"
 
 
-def test_quick_analysis_request():
-    """Test QuickAnalysisRequest"""
-    print("\n" + "=" * 60)
-    print("TEST 2: QuickAnalysisRequest Validation")
-    print("=" * 60)
-    
-    request = QuickAnalysisRequest(
-        exchange="bitget",
-        symbol="ETH/USDT",
-        timeframe="15m",
-        top_n_wallets=5
-    )
-    
-    print(f"\n✓ Valid Request:")
-    print(f"   Exchange: {request.exchange}")
-    print(f"   Symbol: {request.symbol}")
-    print(f"   Timeframe: {request.timeframe}")
-    print(f"   Top N: {request.top_n_wallets}")
+class TimeframeEnum(str, Enum):
+    """Supported timeframes"""
+    ONE_MIN = "1m"
+    FIVE_MIN = "5m"
+    FIFTEEN_MIN = "15m"
+    THIRTY_MIN = "30m"
+    ONE_HOUR = "1h"
+    FOUR_HOUR = "4h"
+    ONE_DAY = "1d"
 
 
-def test_compare_exchanges_request():
-    """Test CompareExchangesRequest"""
-    print("\n" + "=" * 60)
-    print("TEST 3: CompareExchangesRequest Validation")
-    print("=" * 60)
-    
-    request = CompareExchangesRequest(
-        exchanges=["binance", "bitget", "kraken"],
-        symbol="BTC/USDT",
-        timeframe="5m"
-    )
-    
-    print(f"\n✓ Valid Request:")
-    print(f"   Exchanges: {', '.join(request.exchanges)}")
-    print(f"   Symbol: {request.symbol}")
-    
-    # Invalid: Empty list
-    print("\n✗ Invalid: Empty exchanges list")
-    try:
-        invalid_request = CompareExchangesRequest(
-            exchanges=[],
-            symbol="BTC/USDT",
-            timeframe="5m"
-        )
-    except ValueError as e:
-        print(f"   Expected Error: {e}")
+class WalletTypeEnum(str, Enum):
+    """Wallet classification types"""
+    WHALE = "whale"
+    MARKET_MAKER = "market_maker"
+    BOT = "bot"
+    UNKNOWN = "unknown"
 
 
-def test_analysis_response():
-    """Test AnalysisResponse"""
-    print("\n" + "=" * 60)
-    print("TEST 4: AnalysisResponse Serialization")
-    print("=" * 60)
-    
-    # Create Response
-    response = AnalysisResponse(
-        candle=CandleData(
-            timestamp=datetime.now(),
-            open=67500.00,
-            high=67800.00,
-            low=67450.00,
-            close=67750.00,
-            volume=1234.56,
-            price_change_pct=0.37
-        ),
-        top_movers=[
-            WalletMover(
-                wallet_id="whale_0x742d35",
-                wallet_type="whale",
-                impact_score=0.85,
-                total_volume=50.5,
-                total_value_usd=3408750.00,
-                trade_count=12,
-                avg_trade_size=4.21,
-                timing_score=0.92,
-                volume_ratio=0.041,
-                trades=None
-            ),
-            WalletMover(
-                wallet_id="smart_money_5",
-                wallet_type="smart_money",
-                impact_score=0.72,
-                total_volume=35.2,
-                total_value_usd=2376400.00,
-                trade_count=8,
-                avg_trade_size=4.40,
-                timing_score=0.85,
-                volume_ratio=0.029,
-                trades=None
-            )
-        ],
-        analysis_metadata=AnalysisMetadata(
-            total_unique_wallets=1523,
-            total_volume=1234.56,
-            total_trades=8432,
-            analysis_duration_ms=450,
-            data_sources=["binance_trades", "binance_candles"],
-            timestamp=datetime.now()
-        )
-    )
-    
-    print("\n✓ Response Created:")
-    print(f"   Candle Price Change: {response.candle.price_change_pct}%")
-    print(f"   Top Movers: {len(response.top_movers)}")
-    print(f"   Total Wallets: {response.analysis_metadata.total_unique_wallets}")
-    
-    # JSON Serialization
-    print("\n✓ JSON Output:")
-    json_output = json.loads(response.json())
-    print(f"   Top Mover #1: {json_output['top_movers'][0]['wallet_id']}")
-    print(f"   Impact Score: {json_output['top_movers'][0]['impact_score']}")
-    
-    # Pretty Print
-    print("\n✓ Full JSON (first 500 chars):")
-    pretty_json = json.dumps(json_output, indent=2)
-    print(f"   {pretty_json[:500]}...")
+# ============================================
+# Base Models
+# ============================================
 
-
-def test_error_response():
-    """Test ErrorResponse"""
-    print("\n" + "=" * 60)
-    print("TEST 5: ErrorResponse")
-    print("=" * 60)
+class CandleData(BaseModel):
+    """OHLCV Candle data"""
+    timestamp: datetime
+    open: float = Field(..., description="Opening price")
+    high: float = Field(..., description="Highest price")
+    low: float = Field(..., description="Lowest price")
+    close: float = Field(..., description="Closing price")
+    volume: float = Field(..., description="Trading volume")
     
-    error = ErrorResponse(
-        error="ValidationError",
-        message="Exchange 'invalid' wird nicht unterstützt",
-        details={
-            "field": "exchange",
-            "supported_exchanges": ["bitget", "binance", "kraken"]
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "timestamp": "2025-10-30T12:00:00Z",
+                "open": 68500.50,
+                "high": 68750.25,
+                "low": 68400.00,
+                "close": 68650.75,
+                "volume": 1250.5
+            }
         }
-    )
-    
-    print("\n✓ Error Response:")
-    print(f"   Error Type: {error.error}")
-    print(f"   Message: {error.message}")
-    print(f"   Details: {error.details}")
-    print(f"   Timestamp: {error.timestamp}")
 
 
-def test_success_response():
-    """Test SuccessResponse"""
-    print("\n" + "=" * 60)
-    print("TEST 6: SuccessResponse")
-    print("=" * 60)
+class WalletMover(BaseModel):
+    """Wallet with impact on price movement"""
+    wallet_id: str = Field(..., description="Unique wallet identifier")
+    wallet_type: WalletTypeEnum = Field(..., description="Classification of wallet")
+    impact_score: float = Field(..., ge=0, le=1, description="Impact score (0-1)")
+    total_volume: float = Field(..., description="Total trading volume")
+    trade_count: int = Field(..., description="Number of trades")
+    avg_trade_size: float = Field(..., description="Average trade size")
+    first_trade: Optional[datetime] = Field(None, description="First trade timestamp")
+    last_trade: Optional[datetime] = Field(None, description="Last trade timestamp")
     
-    success = SuccessResponse(
-        message="Analyse erfolgreich gestartet",
-        data={
-            "job_id": "abc123",
-            "estimated_duration_seconds": 5
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "wallet_id": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+                "wallet_type": "whale",
+                "impact_score": 0.85,
+                "total_volume": 2400000.50,
+                "trade_count": 127,
+                "avg_trade_size": 18897.64,
+                "first_trade": "2025-10-30T12:00:00Z",
+                "last_trade": "2025-10-30T12:05:00Z"
+            }
         }
-    )
-    
-    print("\n✓ Success Response:")
-    print(f"   Success: {success.success}")
-    print(f"   Message: {success.message}")
-    print(f"   Data: {success.data}")
 
 
-def test_wallet_lookup_request():
-    """Test WalletLookupRequest"""
-    print("\n" + "=" * 60)
-    print("TEST 7: WalletLookupRequest")
-    print("=" * 60)
+class AnalysisMetadata(BaseModel):
+    """Metadata about the analysis process"""
+    analysis_timestamp: datetime = Field(..., description="When analysis was performed")
+    processing_duration_ms: int = Field(..., description="Processing time in milliseconds")
+    total_trades_analyzed: int = Field(..., description="Total number of trades analyzed")
+    unique_wallets_found: int = Field(..., description="Number of unique wallets identified")
+    exchange: str = Field(..., description="Exchange used")
+    symbol: str = Field(..., description="Trading pair")
+    timeframe: str = Field(..., description="Candle timeframe")
     
-    request = WalletLookupRequest(
-        wallet_id="whale_0x742d35",
-        exchange="binance",
-        symbol="BTC/USDT",
-        time_range_hours=24
-    )
-    
-    print("\n✓ Valid Request:")
-    print(f"   Wallet ID: {request.wallet_id}")
-    print(f"   Exchange: {request.exchange}")
-    print(f"   Symbol: {request.symbol}")
-    print(f"   Time Range: {request.time_range_hours}h")
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "analysis_timestamp": "2025-10-30T12:05:30Z",
+                "processing_duration_ms": 1250,
+                "total_trades_analyzed": 5420,
+                "unique_wallets_found": 342,
+                "exchange": "binance",
+                "symbol": "BTC/USDT",
+                "timeframe": "5m"
+            }
+        }
 
 
-def test_schema_documentation():
-    """Test Schema Documentation (OpenAPI)"""
-    print("\n" + "=" * 60)
-    print("TEST 8: Schema Documentation")
-    print("=" * 60)
+# ============================================
+# Request Models
+# ============================================
+
+class QuickAnalysisRequest(BaseModel):
+    """Request for quick analysis of latest candle"""
+    exchange: ExchangeEnum = Field(..., description="Exchange to analyze")
+    symbol: str = Field(..., description="Trading pair (e.g., BTC/USDT)")
+    timeframe: TimeframeEnum = Field(default=TimeframeEnum.FIVE_MIN, description="Candle timeframe")
+    top_n_wallets: int = Field(default=10, ge=1, le=100, description="Number of top wallets to return")
     
-    # Get JSON Schema
-    schema = AnalysisRequest.schema()
+    @validator('symbol')
+    def validate_symbol(cls, v):
+        """Ensure symbol is in correct format"""
+        if '/' not in v:
+            raise ValueError("Symbol must be in format 'BASE/QUOTE' (e.g., BTC/USDT)")
+        return v.upper()
     
-    print("\n✓ AnalysisRequest Schema:")
-    print(f"   Title: {schema.get('title')}")
-    print(f"   Properties: {len(schema.get('properties', {}))} fields")
-    print(f"   Required: {schema.get('required', [])}")
-    
-    print("\n✓ Field Details:")
-    for field_name, field_info in schema.get('properties', {}).items():
-        print(f"   - {field_name}: {field_info.get('type', 'unknown')}")
-        if 'description' in field_info:
-            print(f"     Description: {field_info['description']}")
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "exchange": "binance",
+                "symbol": "BTC/USDT",
+                "timeframe": "5m",
+                "top_n_wallets": 10
+            }
+        }
 
 
-def test_all_exchanges():
-    """Test all supported exchanges"""
-    print("\n" + "=" * 60)
-    print("TEST 9: All Supported Exchanges")
-    print("=" * 60)
+class AnalysisRequest(BaseModel):
+    """Request for detailed analysis with custom parameters"""
+    exchange: ExchangeEnum = Field(..., description="Exchange to analyze")
+    symbol: str = Field(..., description="Trading pair (e.g., BTC/USDT)")
+    timeframe: TimeframeEnum = Field(..., description="Candle timeframe")
+    start_time: datetime = Field(..., description="Start of analysis period")
+    end_time: datetime = Field(..., description="End of analysis period")
+    min_impact_threshold: float = Field(default=0.1, ge=0, le=1, description="Minimum impact score to include")
+    top_n_wallets: int = Field(default=10, ge=1, le=100, description="Number of top wallets to return")
+    include_trades: bool = Field(default=False, description="Include individual trade data")
     
-    exchanges = ["bitget", "binance", "kraken"]
+    @validator('symbol')
+    def validate_symbol(cls, v):
+        """Ensure symbol is in correct format"""
+        if '/' not in v:
+            raise ValueError("Symbol must be in format 'BASE/QUOTE' (e.g., BTC/USDT)")
+        return v.upper()
     
-    for exchange in exchanges:
-        try:
-            request = AnalysisRequest(
-                exchange=exchange,
-                symbol="BTC/USDT",
-                timeframe="5m",
-                start_time=datetime.now() - timedelta(minutes=5),
-                end_time=datetime.now()
-            )
-            print(f"\n✓ {exchange.upper()}: Valid")
-        except Exception as e:
-            print(f"\n✗ {exchange.upper()}: {e}")
+    @validator('end_time')
+    def validate_time_range(cls, v, values):
+        """Ensure end_time is after start_time"""
+        if 'start_time' in values and v <= values['start_time']:
+            raise ValueError("end_time must be after start_time")
+        return v
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "exchange": "binance",
+                "symbol": "BTC/USDT",
+                "timeframe": "5m",
+                "start_time": "2025-10-30T12:00:00Z",
+                "end_time": "2025-10-30T12:05:00Z",
+                "min_impact_threshold": 0.1,
+                "top_n_wallets": 10,
+                "include_trades": False
+            }
+        }
 
 
-def main():
-    """Run all tests"""
+class HistoricalAnalysisRequest(BaseModel):
+    """Request for historical analysis across multiple candles"""
+    exchange: ExchangeEnum = Field(..., description="Exchange to analyze")
+    symbol: str = Field(..., description="Trading pair (e.g., BTC/USDT)")
+    timeframe: TimeframeEnum = Field(..., description="Candle timeframe")
+    start_time: datetime = Field(..., description="Start of analysis period")
+    end_time: datetime = Field(..., description="End of analysis period")
+    min_impact_threshold: float = Field(default=0.1, ge=0, le=1, description="Minimum impact score to include")
     
-    print("\n" + "🧪 " * 30)
-    print("API SCHEMAS - VALIDATION TESTS")
-    print("🧪 " * 30)
+    @validator('symbol')
+    def validate_symbol(cls, v):
+        """Ensure symbol is in correct format"""
+        if '/' not in v:
+            raise ValueError("Symbol must be in format 'BASE/QUOTE' (e.g., BTC/USDT)")
+        return v.upper()
     
-    try:
-        test_analysis_request()
-        test_quick_analysis_request()
-        test_compare_exchanges_request()
-        test_analysis_response()
-        test_error_response()
-        test_success_response()
-        test_wallet_lookup_request()
-        test_schema_documentation()
-        test_all_exchanges()
+    @validator('end_time')
+    def validate_time_range(cls, v, values):
+        """Ensure end_time is after start_time"""
+        if 'start_time' in values and v <= values['start_time']:
+            raise ValueError("end_time must be after start_time")
+        return v
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "exchange": "binance",
+                "symbol": "BTC/USDT",
+                "timeframe": "5m",
+                "start_time": "2025-10-30T10:00:00Z",
+                "end_time": "2025-10-30T12:00:00Z",
+                "min_impact_threshold": 0.1
+            }
+        }
+
+
+class WalletLookupRequest(BaseModel):
+    """Request for detailed wallet information"""
+    wallet_id: str = Field(..., description="Wallet address to lookup")
+    exchange: ExchangeEnum = Field(..., description="Exchange to query")
+    symbol: str = Field(..., description="Trading pair (e.g., BTC/USDT)")
+    lookback_hours: int = Field(default=24, ge=1, le=720, description="Hours of history to include")
+    
+    @validator('symbol')
+    def validate_symbol(cls, v):
+        """Ensure symbol is in correct format"""
+        if '/' not in v:
+            raise ValueError("Symbol must be in format 'BASE/QUOTE' (e.g., BTC/USDT)")
+        return v.upper()
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "wallet_id": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+                "exchange": "binance",
+                "symbol": "BTC/USDT",
+                "lookback_hours": 24
+            }
+        }
+
+
+class CompareExchangesRequest(BaseModel):
+    """Request to compare data across multiple exchanges"""
+    exchanges: List[ExchangeEnum] = Field(..., min_items=2, max_items=5, description="Exchanges to compare")
+    symbol: str = Field(..., description="Trading pair (e.g., BTC/USDT)")
+    timeframe: TimeframeEnum = Field(default=TimeframeEnum.FIVE_MIN, description="Candle timeframe")
+    
+    @validator('symbol')
+    def validate_symbol(cls, v):
+        """Ensure symbol is in correct format"""
+        if '/' not in v:
+            raise ValueError("Symbol must be in format 'BASE/QUOTE' (e.g., BTC/USDT)")
+        return v.upper()
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "exchanges": ["binance", "bitget", "kraken"],
+                "symbol": "BTC/USDT",
+                "timeframe": "5m"
+            }
+        }
+
+
+# ============================================
+# Response Models
+# ============================================
+
+class AnalysisResponse(BaseModel):
+    """Response with analysis results"""
+    success: bool = Field(default=True, description="Whether analysis succeeded")
+    candle: CandleData = Field(..., description="Candle data that was analyzed")
+    top_movers: List[WalletMover] = Field(..., description="Top wallets by impact")
+    analysis_metadata: AnalysisMetadata = Field(..., description="Analysis metadata")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "candle": {
+                    "timestamp": "2025-10-30T12:00:00Z",
+                    "open": 68500.50,
+                    "high": 68750.25,
+                    "low": 68400.00,
+                    "close": 68650.75,
+                    "volume": 1250.5
+                },
+                "top_movers": [
+                    {
+                        "wallet_id": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+                        "wallet_type": "whale",
+                        "impact_score": 0.85,
+                        "total_volume": 2400000.50,
+                        "trade_count": 127,
+                        "avg_trade_size": 18897.64,
+                        "first_trade": "2025-10-30T12:00:00Z",
+                        "last_trade": "2025-10-30T12:05:00Z"
+                    }
+                ],
+                "analysis_metadata": {
+                    "analysis_timestamp": "2025-10-30T12:05:30Z",
+                    "processing_duration_ms": 1250,
+                    "total_trades_analyzed": 5420,
+                    "unique_wallets_found": 342,
+                    "exchange": "binance",
+                    "symbol": "BTC/USDT",
+                    "timeframe": "5m"
+                }
+            }
+        }
+
+
+class HistoricalCandle(BaseModel):
+    """Historical candle with top movers"""
+    candle: CandleData = Field(..., description="Candle data")
+    top_movers: List[WalletMover] = Field(..., description="Top wallets for this candle")
+
+
+class HistoricalAnalysisResponse(BaseModel):
+    """Response with historical analysis results"""
+    success: bool = Field(default=True, description="Whether analysis succeeded")
+    candles: List[HistoricalCandle] = Field(..., description="Historical candles with movers")
+    total_candles: int = Field(..., description="Total number of candles analyzed")
+    unique_wallets: int = Field(..., description="Total unique wallets found")
+    analysis_metadata: AnalysisMetadata = Field(..., description="Analysis metadata")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "candles": [
+                    {
+                        "candle": {
+                            "timestamp": "2025-10-30T12:00:00Z",
+                            "open": 68500.50,
+                            "high": 68750.25,
+                            "low": 68400.00,
+                            "close": 68650.75,
+                            "volume": 1250.5
+                        },
+                        "top_movers": []
+                    }
+                ],
+                "total_candles": 24,
+                "unique_wallets": 850,
+                "analysis_metadata": {
+                    "analysis_timestamp": "2025-10-30T12:05:30Z",
+                    "processing_duration_ms": 5250,
+                    "total_trades_analyzed": 45420,
+                    "unique_wallets_found": 850,
+                    "exchange": "binance",
+                    "symbol": "BTC/USDT",
+                    "timeframe": "5m"
+                }
+            }
+        }
+
+
+class WalletDetailResponse(BaseModel):
+    """Detailed information about a specific wallet"""
+    success: bool = Field(default=True, description="Whether lookup succeeded")
+    wallet_id: str = Field(..., description="Wallet address")
+    wallet_type: WalletTypeEnum = Field(..., description="Classification of wallet")
+    first_seen: datetime = Field(..., description="First trade timestamp")
+    last_seen: datetime = Field(..., description="Last trade timestamp")
+    total_trades: int = Field(..., description="Total number of trades")
+    total_volume: float = Field(..., description="Total trading volume")
+    total_value_usd: float = Field(..., description="Total value in USD")
+    avg_impact_score: float = Field(..., description="Average impact score")
+    exchange: str = Field(..., description="Exchange")
+    symbol: str = Field(..., description="Trading pair")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "wallet_id": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
+                "wallet_type": "whale",
+                "first_seen": "2025-10-29T08:30:00Z",
+                "last_seen": "2025-10-30T12:05:00Z",
+                "total_trades": 342,
+                "total_volume": 12500000.75,
+                "total_value_usd": 12500000.75,
+                "avg_impact_score": 0.72,
+                "exchange": "binance",
+                "symbol": "BTC/USDT"
+            }
+        }
+
+
+class ExchangeData(BaseModel):
+    """Data for a single exchange"""
+    price: Optional[float] = Field(None, description="Current price")
+    volume: Optional[float] = Field(None, description="24h volume")
+    spread: Optional[float] = Field(None, description="Bid-ask spread")
+    error: Optional[str] = Field(None, description="Error message if failed")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "price": 68650.75,
+                "volume": 125000.50,
+                "spread": 0.25,
+                "error": None
+            }
+        }
+
+
+class ExchangeComparison(BaseModel):
+    """Comparison data across multiple exchanges"""
+    success: bool = Field(default=True, description="Whether comparison succeeded")
+    symbol: str = Field(..., description="Trading pair")
+    timeframe: str = Field(..., description="Timeframe")
+    timestamp: datetime = Field(..., description="Comparison timestamp")
+    exchanges: Dict[str, ExchangeData] = Field(..., description="Data per exchange")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "symbol": "BTC/USDT",
+                "timeframe": "5m",
+                "timestamp": "2025-10-30T12:05:30Z",
+                "exchanges": {
+                    "binance": {
+                        "price": 68650.75,
+                        "volume": 125000.50,
+                        "spread": 0.25,
+                        "error": None
+                    },
+                    "bitget": {
+                        "price": 68655.25,
+                        "volume": 95000.30,
+                        "spread": 0.35,
+                        "error": None
+                    }
+                }
+            }
+        }
+
+
+class HealthCheckResponse(BaseModel):
+    """Health check response"""
+    status: str = Field(default="healthy", description="Service status")
+    timestamp: datetime = Field(..., description="Check timestamp")
+    version: str = Field(..., description="API version")
+    uptime_seconds: int = Field(..., description="Service uptime in seconds")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "healthy",
+                "timestamp": "2025-10-30T12:05:30Z",
+                "version": "1.0.0",
+                "uptime_seconds": 86400
+            }
+        }
+
+
+class ErrorResponse(BaseModel):
+    """Error response"""
+    success: bool = Field(default=False, description="Always false for errors")
+    error: str = Field(..., description="Error message")
+    error_code: Optional[str] = Field(None, description="Error code")
+    details: Optional[Dict[str, Any]] = Field(None, description="Additional error details")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Error timestamp")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": False,
+                "error": "Invalid symbol format",
+                "error_code": "VALIDATION_ERROR",
+                "details": {"field": "symbol", "expected": "BASE/QUOTE"},
+                "timestamp": "2025-10-30T12:05:30Z"
+            }
+        }
+
+
+class SuccessResponse(BaseModel):
+    """Generic success response"""
+    success: bool = Field(default=True, description="Operation success")
+    message: str = Field(..., description="Success message")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Response timestamp")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Operation completed successfully",
+                "timestamp": "2025-10-30T12:05:30Z"
+            }
+        }
+
+
+# ============================================
+# Utility Functions
+# ============================================
+
+def validate_trading_pair(symbol: str) -> bool:
+    """
+    Validate trading pair format
+    
+    Args:
+        symbol: Trading pair string (e.g., "BTC/USDT")
         
-        print("\n" + "✅ " * 30)
-        print("ALLE SCHEMA TESTS ERFOLGREICH!")
-        print("✅ " * 30 + "\n")
+    Returns:
+        True if valid, False otherwise
+    """
+    if not symbol or '/' not in symbol:
+        return False
+    
+    parts = symbol.split('/')
+    if len(parts) != 2:
+        return False
+    
+    base, quote = parts
+    if not base or not quote:
+        return False
+    
+    return True
+
+
+def parse_timeframe_to_seconds(timeframe: str) -> int:
+    """
+    Convert timeframe string to seconds
+    
+    Args:
+        timeframe: Timeframe string (e.g., "5m", "1h", "1d")
         
-    except Exception as e:
-        print(f"\n❌ Test Failed: {e}")
-        import traceback
-        traceback.print_exc()
+    Returns:
+        Number of seconds
+        
+    Raises:
+        ValueError: If timeframe format is invalid
+    """
+    timeframe_map = {
+        "1m": 60,
+        "5m": 300,
+        "15m": 900,
+        "30m": 1800,
+        "1h": 3600,
+        "4h": 14400,
+        "1d": 86400,
+    }
+    
+    if timeframe not in timeframe_map:
+        raise ValueError(f"Invalid timeframe: {timeframe}")
+    
+    return timeframe_map[timeframe]
 
 
-if __name__ == "__main__":
-    main()
+# ============================================
+# Export All
+# ============================================
+
+__all__ = [
+    # Enums
+    "ExchangeEnum",
+    "TimeframeEnum",
+    "WalletTypeEnum",
+    
+    # Base Models
+    "CandleData",
+    "WalletMover",
+    "AnalysisMetadata",
+    
+    # Requests
+    "QuickAnalysisRequest",
+    "AnalysisRequest",
+    "HistoricalAnalysisRequest",
+    "WalletLookupRequest",
+    "CompareExchangesRequest",
+    
+    # Responses
+    "AnalysisResponse",
+    "HistoricalAnalysisResponse",
+    "HistoricalCandle",
+    "WalletDetailResponse",
+    "ExchangeData",
+    "ExchangeComparison",
+    "HealthCheckResponse",
+    "ErrorResponse",
+    "SuccessResponse",
+    
+    # Utilities
+    "validate_trading_pair",
+    "parse_timeframe_to_seconds",
+]
