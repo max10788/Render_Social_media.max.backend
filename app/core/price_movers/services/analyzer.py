@@ -504,7 +504,7 @@ class PriceMoverAnalyzer:
             
             # Smart Money Pattern? -> map to market_maker
             if detect_smart_money_pattern(trades_dict):
-                return "market_maker"  # <-- GEÄNDERT von "smart_money"
+                return "market_maker"
             
             # Market Maker: Beide Seiten handeln
             if activity.buy_trades > 0 and activity.sell_trades > 0:
@@ -518,11 +518,11 @@ class PriceMoverAnalyzer:
             if avg_value > 100_000:
                 return "whale"
             elif avg_value > 50_000:
-                return "market_maker"  # <-- GEÄNDERT von "smart_money"
+                return "market_maker"
             elif activity.trade_count > 10:
                 return "bot"
             else:
-                return "unknown"  # <-- GEÄNDERT von "retail"
+                return "unknown"
     
     def _rank_and_filter(
         self,
