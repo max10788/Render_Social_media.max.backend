@@ -188,7 +188,7 @@ class PriceMoverAnalyzer:
             
             if not trades:
                 logger.warning("Keine Trades gefunden")
-                return self._empty_response(candle)
+                return self._empty_response(candle, exchange, symbol, timeframe)
             
             logger.info(f"✓ {len(trades)} Trades von {exchange} gefetcht")
             
@@ -216,11 +216,12 @@ class PriceMoverAnalyzer:
             )
             logger.info(f"✓ Top {len(top_movers)} Movers gefiltert")
             
+            # Build Response
             duration_ms = int((datetime.now() - start).total_seconds() * 1000)
             
             response = {
                 "candle": {
-                    "timestamp": candle.timestamp,  # <-- datetime Objekt, nicht isoformat()
+                    "timestamp": candle.timestamp,  # datetime Objekt
                     "open": candle.open,
                     "high": candle.high,
                     "low": candle.low,
@@ -229,13 +230,13 @@ class PriceMoverAnalyzer:
                 },
                 "top_movers": top_movers,
                 "analysis_metadata": {
-                    "analysis_timestamp": datetime.now(),           # <-- NEU: Required field
-                    "processing_duration_ms": duration_ms,          # <-- NEU: Required field
-                    "total_trades_analyzed": len(trades),           # <-- NEU: Required field
-                    "unique_wallets_found": len(wallet_activities), # <-- NEU: Required field
-                    "exchange": str(exchange),                      # <-- NEU: Required field
-                    "symbol": symbol,                               # <-- NEU: Required field
-                    "timeframe": str(timeframe)                     # <-- NEU: Required field
+                    "analysis_timestamp": datetime.now(),
+                    "processing_duration_ms": duration_ms,
+                    "total_trades_analyzed": len(trades),
+                    "unique_wallets_found": len(wallet_activities),
+                    "exchange": str(exchange),
+                    "symbol": symbol,
+                    "timeframe": str(timeframe)
                 }
             }
             
