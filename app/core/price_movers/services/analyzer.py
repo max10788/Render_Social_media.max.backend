@@ -580,25 +580,25 @@ class PriceMoverAnalyzer:
         
         return result
     
-    def _empty_response(self, candle: Candle) -> Dict:
-        """Leere Response wenn keine Daten"""
-        return {
-            "candle": {
-                "timestamp": candle.timestamp.isoformat(),
-                "open": candle.open,
-                "high": candle.high,
-                "low": candle.low,
-                "close": candle.close,
-                "volume": candle.volume,
-                "price_change_pct": round(candle.price_change_pct, 2)
-            },
-            "top_movers": [],
-            "analysis_metadata": {
-                "total_unique_wallets": 0,
-                "total_volume": candle.volume,
-                "total_trades": 0,
-                "analysis_duration_ms": 0,
-                "data_sources": [],
-                "timestamp": datetime.now().isoformat()
+    def _empty_response(self, candle: Candle, exchange: str, symbol: str, timeframe: str) -> Dict:
+            """Leere Response wenn keine Daten"""
+            return {
+                "candle": {
+                    "timestamp": candle.timestamp,  # datetime Objekt
+                    "open": candle.open,
+                    "high": candle.high,
+                    "low": candle.low,
+                    "close": candle.close,
+                    "volume": candle.volume
+                },
+                "top_movers": [],
+                "analysis_metadata": {
+                    "analysis_timestamp": datetime.now(),
+                    "processing_duration_ms": 0,
+                    "total_trades_analyzed": 0,
+                    "unique_wallets_found": 0,
+                    "exchange": str(exchange),
+                    "symbol": symbol,
+                    "timeframe": str(timeframe)
+                }
             }
-        }
