@@ -115,14 +115,22 @@ class ExchangeCollector(BaseCollector):
         if self.exchange_name == SupportedExchange.KRAKEN:
             config['options'] = {'adjustForTimeDifference': True}
         
-        # Binance Geo-Blocking Fix
+        # Binance Geo-Blocking Fix - Vollständige URL-Konfiguration
         if self.exchange_name == 'binance':
+            config['hostname'] = 'data-api.binance.vision'  # Haupt-Hostname
             config['urls'] = {
                 'api': {
-                    'public': 'https://data-api.binance.vision',
-                }
+                    'public': 'https://data-api.binance.vision/api/v3',
+                    'private': 'https://api.binance.com/api/v3',  # Falls du API Keys nutzt
+                },
+                'www': 'https://www.binance.com',
             }
-            logger.info("Binance mit data-api.binance.vision konfiguriert")
+            # Deaktiviere Futures/Margin APIs (die verursachen das fapi.binance.com Problem)
+            config['options'] = {
+                'defaultType': 'spot',  # Nur Spot Trading
+                'fetchMarkets': ['spot'],  # Nur Spot Markets laden
+            }
+            logger.info("Binance mit Geo-Blocking Workaround konfiguriert (Spot-only)")
         
         return exchange_class(config)
     
