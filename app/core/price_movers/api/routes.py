@@ -176,8 +176,11 @@ async def quick_analysis(
             f"{request.symbol} {request.timeframe}"
         )
         
-        # Hole Analyzer mit dem richtigen Exchange
-        analyzer = await get_analyzer(exchange=request.exchange)
+        # Hole Analyzer OHNE get_analyzer zu callen, erstelle direkt
+        from app.core.price_movers.api.dependencies import get_exchange_collector
+        
+        collector = await get_exchange_collector(request.exchange)
+        analyzer = PriceMoverAnalyzer(exchange_collector=collector)
         
         # Berechne Zeitfenster für letzte Candle
         now = datetime.now()
