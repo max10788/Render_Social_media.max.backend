@@ -103,7 +103,7 @@ class ExchangeCollector(BaseCollector):
         
         config = {
             'enableRateLimit': True,
-            'rateLimit': 1000 / self.rate_limit,  # Millisekunden pro Request
+            'rateLimit': 1000 / self.rate_limit,
         }
         
         # API Credentials (optional)
@@ -114,6 +114,15 @@ class ExchangeCollector(BaseCollector):
         # Exchange-spezifische Optionen
         if self.exchange_name == SupportedExchange.KRAKEN:
             config['options'] = {'adjustForTimeDifference': True}
+        
+        # Binance Geo-Blocking Fix
+        if self.exchange_name == 'binance':
+            config['urls'] = {
+                'api': {
+                    'public': 'https://data-api.binance.vision',
+                }
+            }
+            logger.info("Binance mit data-api.binance.vision konfiguriert")
         
         return exchange_class(config)
     
