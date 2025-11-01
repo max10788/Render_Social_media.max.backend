@@ -481,45 +481,47 @@ class PriceMoverAnalyzer:
         return scored_wallets
     
     def _classify_wallet_type_advanced(
-        self,
-        activity: WalletActivity,
-        impact_score: float
-    ) -> str:
-        """
-        Erweiterte Wallet-Klassifizierung mit Pattern Detection
-        """
-        # Konvertiere zu Dict-Liste für Pattern Detection
-        trades_dict = activity.to_dict_list()
-        
-        # Bot-Pattern?
-        if detect_bot_pattern(trades_dict):
-            return "bot"
-        
-        # Whale-Pattern?
-        if detect_whale_pattern(trades_dict):
-            return "whale"
-        
-        # Smart Money Pattern?
-        if detect_smart_money_pattern(trades_dict):
-            return "smart_money"
-        
-        # Market Maker: Beide Seiten handeln
-        if activity.buy_trades > 0 and activity.sell_trades > 0:
-            buy_sell_ratio = activity.buy_trades / activity.sell_trades
-            if 0.7 <= buy_sell_ratio <= 1.3:  # Relativ ausgeglichen
-                return "market_maker"
-        
-        # Fallback auf Impact Score
-        avg_value = activity.total_value_usd / activity.trade_count if activity.trade_count > 0 else 0
-        
-        if avg_value > 100_000:
-            return "whale"
-        elif avg_value > 50_000:
-            return "smart_money"
-        elif activity.trade_count > 10:
-            return "bot"
-        else:
-            return "retail"
+            self,
+            activity: WalletActivity,
+            impact_score: float
+        ) -> str:
+            """
+            Erweiterte Wallet-Klassifizierung mit Pattern Detection
+            
+            Returns NUR gültige Enum-Werte: "whale", "market_maker", "bot", "unknown"
+            """
+            # Konvertiere zu Dict-Liste für Pattern Detection
+            trades_dict = activity.to_dict_list()
+            
+            # Bot-Pattern?
+            if detect_bot_pattern(trades_dict):
+                return "bot"
+            
+            # Whale-Pattern?
+            if detect_whale_pattern(trades_dict):
+                return "whale"
+            
+            # Smart Money Pattern? -> map to market_maker
+            if detect_smart_money_pattern(trades_dict):
+                return "market_maker"  # <-- GEÄNDERT von "smart_money"
+            
+            # Market Maker: Beide Seiten handeln
+            if activity.buy_trades > 0 and activity.sell_trades > 0:
+                buy_sell_ratio = activity.buy_trades / activity.sell_trades
+                if 0.7 <= buy_sell_ratio <= 1.3:  # Relativ ausgeglichen
+                    return "market_maker"
+            
+            # Fallback auf Impact Score
+            avg_value = activity.total_value_usd / activity.trade_count if activity.trade_count > 0 else 0
+            
+            if avg_value > 100_000:
+                return "whale"
+            elif avg_value > 50_000:
+                return "market_maker"  # <-- GEÄNDERT von "smart_money"
+            elif activity.trade_count > 10:
+                return "bot"
+            else:
+                return "unknown"  # <-- GEÄNDERT von "retail"
     
     def _rank_and_filter(
         self,
