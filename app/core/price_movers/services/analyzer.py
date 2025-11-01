@@ -216,27 +216,26 @@ class PriceMoverAnalyzer:
             )
             logger.info(f"✓ Top {len(top_movers)} Movers gefiltert")
             
-            # Build Response
             duration_ms = int((datetime.now() - start).total_seconds() * 1000)
             
             response = {
                 "candle": {
-                    "timestamp": candle.timestamp.isoformat(),
+                    "timestamp": candle.timestamp,  # <-- datetime Objekt, nicht isoformat()
                     "open": candle.open,
                     "high": candle.high,
                     "low": candle.low,
                     "close": candle.close,
-                    "volume": candle.volume,
-                    "price_change_pct": round(candle.price_change_pct, 2)
+                    "volume": candle.volume
                 },
                 "top_movers": top_movers,
                 "analysis_metadata": {
-                    "total_unique_wallets": len(wallet_activities),
-                    "total_volume": candle.volume,
-                    "total_trades": len(trades),
-                    "analysis_duration_ms": duration_ms,
-                    "data_sources": [f"{exchange}_trades", f"{exchange}_candles"],
-                    "timestamp": datetime.now().isoformat()
+                    "analysis_timestamp": datetime.now(),           # <-- NEU: Required field
+                    "processing_duration_ms": duration_ms,          # <-- NEU: Required field
+                    "total_trades_analyzed": len(trades),           # <-- NEU: Required field
+                    "unique_wallets_found": len(wallet_activities), # <-- NEU: Required field
+                    "exchange": str(exchange),                      # <-- NEU: Required field
+                    "symbol": symbol,                               # <-- NEU: Required field
+                    "timeframe": str(timeframe)                     # <-- NEU: Required field
                 }
             }
             
