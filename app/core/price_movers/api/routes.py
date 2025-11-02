@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 
 # Router erstellen
-chart_router = APIRouter(
+router = APIRouter(
     prefix="/api/v1/chart",
     tags=["chart"],
     responses={
@@ -175,7 +175,7 @@ class BatchAnalyzeResponse(BaseModel):
 
 # ==================== CHART ENDPOINTS ====================
 
-@chart_router.get(
+@router.get(
     "/candles",
     response_model=ChartCandlesResponse,
     status_code=status.HTTP_200_OK,
@@ -310,7 +310,7 @@ async def get_chart_candles(
         )
 
 
-@chart_router.get(
+@router.get(
     "/candle/{candle_timestamp}/movers",
     response_model=CandleMoversResponse,
     status_code=status.HTTP_200_OK,
@@ -401,7 +401,7 @@ async def get_candle_movers(
         )
 
 
-@chart_router.post(
+@router.post(
     "/batch-analyze",
     response_model=BatchAnalyzeResponse,
     status_code=status.HTTP_200_OK,
@@ -527,7 +527,7 @@ async def batch_analyze_candles(
 
 # ==================== UTILITY ENDPOINTS ====================
 
-@chart_router.get(
+@router.get(
     "/timeframes",
     summary="Get Available Timeframes",
     description="Liste aller verfügbaren Timeframes"
@@ -552,7 +552,7 @@ async def get_available_timeframes():
     }
 
 
-@chart_router.get(
+@router.get(
     "/symbols",
     summary="Get Available Symbols",
     description="Liste verfügbarer Trading Pairs"
@@ -604,4 +604,4 @@ async def get_available_symbols(
 
 
 # Export Router
-__all__ = ['chart_router']
+__all__ = ['router']
