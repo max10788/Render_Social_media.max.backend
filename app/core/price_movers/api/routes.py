@@ -237,7 +237,7 @@ async def get_chart_candles(
     timeframe: TimeframeEnum = Query(..., description="Candle timeframe"),
     start_time: datetime = Query(..., description="Start of time range"),
     end_time: datetime = Query(..., description="End of time range"),
-    include_impact: bool = Query(default=True, description="Include impact indicators"),
+    include_impact: bool = Query(default=False, description="Include impact indicators (WARNING: Very slow! ~3s per candle)"),
     request_id: str = Depends(log_request)
 ) -> ChartCandlesResponse:
     """
@@ -306,8 +306,17 @@ async def get_chart_candles(
                 is_synthetic=is_historical
             )
             
-            # Optional: Berechne Impact-Indikatoren
+            # ⚠️ PERFORMANCE: Impact-Berechnung deaktiviert (zu langsam!)
+            # Impact wird nur beim Click auf eine Candle geladen via /candle/{timestamp}/movers
+            # Grund: 100 Candles × 3 Sekunden = 5+ Minuten → Frontend Timeout!
+            
+            # Optional: Berechne Impact-Indikatoren (NUR wenn explizit angefordert)
             if include_impact:
+                logger.warning(
+                    f"[{request_id}] include_impact=true - Dies ist SEHR langsam! "
+                    f"Erwartete Zeit: {len(candles_raw)} Candles × 3s = "
+                    f"{len(candles_raw) * 3}s"
+                )
                 try:
                     # Quick-Analyse für diese Candle
                     analyzer = PriceMoverAnalyzer(exchange_collector=collector)
