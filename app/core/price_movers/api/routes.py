@@ -1,6 +1,10 @@
 """
-Enhanced FastAPI Routes für Price Movers API mit Chart-Support
-===============================================================
+Enhanced FastAPI Routes für Price Movers API mit Chart-Support (IMPROVED)
+
+WICHTIGE ÄNDERUNG:
+- Warnung hinzugefügt für historische Daten
+- OHLCV-basierte Analyse als Fallback
+- Trades sind nur ~5-10 Minuten verfügbar bei CEX!
 
 Neue Endpoints für interaktiven Candlestick Chart:
 - GET /api/v1/chart/candles - Candlestick-Daten für Chart
@@ -76,6 +80,7 @@ class ChartCandleWithImpact(BaseModel):
     has_high_impact: bool = Field(False, description="Hat diese Candle High-Impact Movers?")
     total_impact_score: float = Field(0.0, description="Gesamter Impact Score aller Movers")
     top_mover_count: int = Field(0, description="Anzahl signifikanter Movers")
+    is_synthetic: bool = Field(False, description="Basiert auf OHLCV-Daten (historisch)?")
 
 
 class ChartCandlesResponse(BaseModel):
@@ -86,6 +91,7 @@ class ChartCandlesResponse(BaseModel):
     timeframe: str
     candles: List[ChartCandleWithImpact]
     total_candles: int
+    warning: Optional[str] = Field(None, description="Warnung bei historischen Daten")
     
     class Config:
         json_schema_extra = {
@@ -104,10 +110,12 @@ class ChartCandlesResponse(BaseModel):
                         "volume": 1250.5,
                         "has_high_impact": True,
                         "total_impact_score": 2.45,
-                        "top_mover_count": 8
+                        "top_mover_count": 8,
+                        "is_synthetic": False
                     }
                 ],
-                "total_candles": 24
+                "total_candles": 24,
+                "warning": None
             }
         }
 
@@ -118,6 +126,8 @@ class CandleMoversResponse(BaseModel):
     candle: CandleData
     top_movers: List[WalletMover]
     analysis_metadata: AnalysisMetadata
+    is_synthetic: bool = Field(False, description="Basiert auf OHLCV-Daten?")
+    warning: Optional[str] = Field(None, description="Warnung bei synthetischen Daten")
     
     class Config:
         json_schema_extra = {
@@ -140,7 +150,9 @@ class CandleMoversResponse(BaseModel):
                     "exchange": "binance",
                     "symbol": "BTC/USDT",
                     "timeframe": "5m"
-                }
+                },
+                "is_synthetic": False,
+                "warning": None
             }
         }
 
@@ -160,6 +172,7 @@ class BatchCandleResult(BaseModel):
     candle: Optional[CandleData]
     top_movers: List[WalletMover]
     error: Optional[str] = None
+    is_synthetic: bool = Field(False, description="Basiert auf OHLCV?")
 
 
 class BatchAnalyzeResponse(BaseModel):
@@ -171,6 +184,29 @@ class BatchAnalyzeResponse(BaseModel):
     results: List[BatchCandleResult]
     successful_analyses: int
     failed_analyses: int
+    warning: Optional[str] = None
+
+
+# ==================== HELPER FUNCTIONS ====================
+
+def check_if_historical(start_time: datetime) -> tuple[bool, Optional[str]]:
+    """
+    Prüft, ob der Zeitbereich historisch ist (> 10 Minuten)
+    
+    Returns:
+        (is_historical, warning_message)
+    """
+    time_diff = datetime.now() - start_time
+    
+    if time_diff > timedelta(minutes=10):
+        warning = (
+            f"⚠️ Historische Daten angefordert ({time_diff.total_seconds() / 60:.1f} min alt). "
+            f"Exchanges speichern Trades nur ~5-10 Minuten. "
+            f"Analyse basiert auf OHLCV-Daten (synthetische Trades)."
+        )
+        return True, warning
+    
+    return False, None
 
 
 # ==================== CHART ENDPOINTS ====================
@@ -196,6 +232,9 @@ async def get_chart_candles(
     
     Lädt OHLCV-Daten für einen Zeitraum mit optionalen Impact-Indikatoren.
     
+    ⚠️ WICHTIG: Für historische Daten (> 10 Minuten) werden synthetische Trades
+    aus OHLCV-Daten verwendet, da Exchanges echte Trades nur kurz speichern!
+    
     ### Query Parameter:
     - **exchange**: Exchange (binance, bitget, kraken)
     - **symbol**: Trading Pair (z.B. BTC/USDT)
@@ -207,11 +246,20 @@ async def get_chart_candles(
     ### Returns:
     - Liste von Candles mit OHLCV-Daten
     - Impact-Indikatoren (wenn aktiviert)
+    - Warnung bei historischen Daten
     
     ### Verwendung:
     Dieser Endpoint wird vom Chart verwendet, um die initialen Candlestick-Daten zu laden.
     """
     try:
+        # Prüfe, ob historisch
+        is_historical, warning = check_if_historical(start_time)
+        
+        if is_historical:
+            logger.warning(
+                f"[{request_id}] Historical data requested: {start_time} - {end_time}"
+            )
+        
         logger.info(
             f"[{request_id}] Chart candles request: {exchange} {symbol} {timeframe} "
             f"({start_time} - {end_time})"
@@ -241,7 +289,8 @@ async def get_chart_candles(
                 volume=candle_raw['volume'],
                 has_high_impact=False,
                 total_impact_score=0.0,
-                top_mover_count=0
+                top_mover_count=0,
+                is_synthetic=is_historical
             )
             
             # Optional: Berechne Impact-Indikatoren
@@ -293,11 +342,13 @@ async def get_chart_candles(
             exchange=exchange,
             timeframe=timeframe,
             candles=chart_candles,
-            total_candles=len(chart_candles)
+            total_candles=len(chart_candles),
+            warning=warning
         )
         
         logger.info(
-            f"[{request_id}] Chart candles loaded: {len(chart_candles)} candles"
+            f"[{request_id}] Chart candles loaded: {len(chart_candles)} candles "
+            f"(synthetic: {is_historical})"
         )
         
         return response
@@ -330,6 +381,9 @@ async def get_candle_movers(
     
     Wird aufgerufen, wenn User auf eine Candle im Chart klickt.
     
+    ⚠️ WICHTIG: Für historische Candles (> 10 Minuten) werden synthetische Trades
+    aus OHLCV-Daten verwendet!
+    
     ### Path Parameter:
     - **candle_timestamp**: Timestamp der Candle (ISO 8601)
     
@@ -343,15 +397,19 @@ async def get_candle_movers(
     - Candle-Daten (OHLCV)
     - Top Movers mit Impact Scores
     - Analyse-Metadaten
+    - Warnung bei synthetischen Daten
     
     ### Verwendung:
     Dieser Endpoint wird aufgerufen, wenn der User im Chart auf eine Candle klickt,
     um die einflussreichsten Wallets für diese spezifische Candle zu sehen.
     """
     try:
+        # Prüfe, ob historisch
+        is_historical, warning = check_if_historical(candle_timestamp)
+        
         logger.info(
             f"[{request_id}] Candle movers request: {exchange} {symbol} "
-            f"@ {candle_timestamp}"
+            f"@ {candle_timestamp} (synthetic: {is_historical})"
         )
         
         # Hole Analyzer
@@ -379,11 +437,12 @@ async def get_candle_movers(
         )
         
         # Konvertiere zu Response
-        from app.core.price_movers.api.test_schemas import AnalysisResponse
         response = CandleMoversResponse(
             candle=CandleData(**result['candle']),
             top_movers=[WalletMover(**m) for m in result['top_movers']],
-            analysis_metadata=AnalysisMetadata(**result['analysis_metadata'])
+            analysis_metadata=AnalysisMetadata(**result['analysis_metadata']),
+            is_synthetic=is_historical,
+            warning=warning
         )
         
         logger.info(
@@ -417,6 +476,8 @@ async def batch_analyze_candles(
     
     Analysiert bis zu 50 Candles in einem Request für bessere Performance.
     
+    ⚠️ WICHTIG: Für historische Candles werden synthetische Trades verwendet!
+    
     ### Request Body:
     - **exchange**: Exchange
     - **symbol**: Trading Pair
@@ -427,15 +488,21 @@ async def batch_analyze_candles(
     ### Returns:
     - Liste von Analyse-Ergebnissen pro Candle
     - Erfolgs-/Fehler-Statistiken
+    - Warnung bei historischen Daten
     
     ### Verwendung:
     Kann verwendet werden, um Impact-Daten für alle sichtbaren Candles
     im Chart auf einmal zu laden (z.B. beim Zoom).
     """
     try:
+        # Prüfe, ob historisch (nimm frühesten Timestamp)
+        earliest_time = min(request.candle_timestamps)
+        is_historical, warning = check_if_historical(earliest_time)
+        
         logger.info(
             f"[{request_id}] Batch analyze request: {request.exchange} "
-            f"{request.symbol} - {len(request.candle_timestamps)} candles"
+            f"{request.symbol} - {len(request.candle_timestamps)} candles "
+            f"(synthetic: {is_historical})"
         )
         
         # Validierung
@@ -465,6 +532,9 @@ async def batch_analyze_candles(
                 start_time = timestamp
                 end_time = timestamp + timedelta(minutes=timeframe_minutes)
                 
+                # Prüfe, ob diese spezifische Candle historisch ist
+                candle_is_historical, _ = check_if_historical(timestamp)
+                
                 result = await analyzer.analyze_candle(
                     exchange=request.exchange,
                     symbol=request.symbol,
@@ -478,7 +548,8 @@ async def batch_analyze_candles(
                 batch_result = BatchCandleResult(
                     timestamp=timestamp,
                     candle=CandleData(**result['candle']),
-                    top_movers=[WalletMover(**m) for m in result['top_movers']]
+                    top_movers=[WalletMover(**m) for m in result['top_movers']],
+                    is_synthetic=candle_is_historical
                 )
                 
                 results.append(batch_result)
@@ -493,7 +564,8 @@ async def batch_analyze_candles(
                     timestamp=timestamp,
                     candle=None,
                     top_movers=[],
-                    error=str(e)
+                    error=str(e),
+                    is_synthetic=False
                 )
                 
                 results.append(batch_result)
@@ -505,7 +577,8 @@ async def batch_analyze_candles(
             timeframe=request.timeframe,
             results=results,
             successful_analyses=successful,
-            failed_analyses=failed
+            failed_analyses=failed,
+            warning=warning
         )
         
         logger.info(
@@ -601,6 +674,51 @@ async def get_available_symbols(
             status_code=500,
             detail=f"Failed to fetch symbols: {str(e)}"
         )
+
+
+@router.get(
+    "/data-availability",
+    summary="Check Data Availability",
+    description="Prüft, ob echte Trade-Daten für einen Zeitraum verfügbar sind"
+)
+async def check_data_availability(
+    exchange: ExchangeEnum = Query(..., description="Exchange"),
+    symbol: str = Query(..., description="Trading pair"),
+    start_time: datetime = Query(..., description="Start time to check")
+):
+    """
+    ## Daten-Verfügbarkeit prüfen
+    
+    Prüft, ob echte Trade-Daten für den angefragten Zeitraum verfügbar sind,
+    oder ob OHLCV-Fallback verwendet werden muss.
+    
+    ### Returns:
+    - `has_real_trades`: Sind echte Trades verfügbar?
+    - `will_use_synthetic`: Wird OHLCV-Fallback verwendet?
+    - `time_since_request`: Wie alt ist der angefragte Zeitraum?
+    - `warning`: Warnung bei synthetischen Daten
+    """
+    time_diff = datetime.now() - start_time
+    is_historical = time_diff > timedelta(minutes=10)
+    
+    warning = None
+    if is_historical:
+        warning = (
+            f"Angeforderter Zeitraum ist {time_diff.total_seconds() / 60:.1f} Minuten alt. "
+            f"Exchanges speichern Trades nur ~5-10 Minuten. "
+            f"Es werden synthetische Trades aus OHLCV-Daten verwendet."
+        )
+    
+    return {
+        "success": True,
+        "exchange": exchange,
+        "symbol": symbol,
+        "start_time": start_time,
+        "has_real_trades": not is_historical,
+        "will_use_synthetic": is_historical,
+        "time_since_request_minutes": time_diff.total_seconds() / 60,
+        "warning": warning
+    }
 
 
 # Export Router
