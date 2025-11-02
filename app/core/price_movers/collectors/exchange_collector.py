@@ -132,6 +132,13 @@ class ExchangeCollector(BaseCollector):
             }
             logger.info("Binance mit Geo-Blocking Workaround konfiguriert (Spot-only)")
         
+        # Bitget-spezifische Konfiguration
+        if self.exchange_name == 'bitget':
+            config['options'] = {
+                'defaultType': 'spot',
+            }
+            logger.info("Bitget mit Spot-Konfiguration initialisiert")
+        
         return exchange_class(config)
     
     async def fetch_candle_data(
@@ -221,43 +228,150 @@ class ExchangeCollector(BaseCollector):
         await self._rate_limit_wait()
         
         try:
-            all_trades = []
+            # Detailliertes Logging für Debugging
+            logger.info(f"=== fetch_trades Debug Info ===")
+            logger.info(f"Exchange: {self.exchange_name}")
+            logger.info(f"Symbol: {symbol}")
+            logger.info(f"Start time: {start_time}")
+            logger.info(f"End time: {end_time}")
+            logger.info(f"Limit: {limit}")
+            
+            # Konvertiere Zeitstempel
             since = int(start_time.timestamp() * 1000)
             end_ms = int(end_time.timestamp() * 1000)
             
-            # Fetch Trades in Batches
-            while since < end_ms:
+            logger.info(f"Since (ms): {since}")
+            logger.info(f"End (ms): {end_ms}")
+            logger.info(f"Time range (ms): {end_ms - since}")
+            
+            # Prüfe, ob Symbol existiert
+            if not hasattr(self.exchange, 'markets') or not self.exchange.markets:
+                await self.exchange.load_markets()
+            
+            if symbol not in self.exchange.markets:
+                logger.error(f"Symbol {symbol} not found in {self.exchange_name} markets")
+                logger.info(f"Available symbols: {list(self.exchange.markets.keys())[:10]}...")
+                return []
+            
+            # Marktinformationen
+            market = self.exchange.markets[symbol]
+            logger.info(f"Market info: {market}")
+            
+            # Prüfe, ob Trades für dieses Symbol verfügbar sind
+            if not market.get('active', True):
+                logger.warning(f"Symbol {symbol} is not active")
+                return []
+            
+            all_trades = []
+            
+            # Versuche 1: Direkter Abruf mit Zeitbereich
+            try:
+                logger.info("Versuche 1: Direkter Abruf mit Zeitbereich")
                 trades = await self.exchange.fetch_trades(
                     symbol=symbol,
                     since=since,
                     limit=limit
                 )
-                
-                if not trades:
-                    break
+                logger.info(f"Versuch 1: {len(trades)} Trades erhalten")
                 
                 # Filtere Trades im Zeitfenster
                 for trade in trades:
                     trade_time = trade['timestamp']
-                    
-                    if trade_time >= since and trade_time <= end_ms:
+                    if since <= trade_time <= end_ms:
                         parsed_trade = self._parse_trade(trade)
                         all_trades.append(parsed_trade)
                 
-                # Update since für nächsten Batch
-                since = trades[-1]['timestamp'] + 1
+                logger.info(f"Versuch 1: {len(all_trades)} Trades im Zeitfenster")
                 
-                # Verhindere Endlosschleife
-                if len(trades) < limit:
-                    break
-                
-                # Rate Limiting
-                await asyncio.sleep(0.1)
+                if len(all_trades) > 0:
+                    return all_trades
+                    
+            except Exception as e:
+                logger.warning(f"Versuch 1 fehlgeschlagen: {e}")
             
-            logger.info(
-                f"{len(all_trades)} Trades gefetcht für {symbol} "
-                f"({start_time} - {end_time})"
-            )
+            # Versuche 2: Abruf ohne Zeitbegrenzung, dann Filter
+            try:
+                logger.info("Versuche 2: Abruf ohne Zeitbegrenzung")
+                recent_trades = await self.exchange.fetch_trades(
+                    symbol=symbol,
+                    limit=limit * 2  # Mehr Trades holen
+                )
+                logger.info(f"Versuch 2: {len(recent_trades)} Trades erhalten")
+                
+                # Filtere Trades im Zeitfenster
+                for trade in recent_trades:
+                    trade_time = trade['timestamp']
+                    if since <= trade_time <= end_ms:
+                        parsed_trade = self._parse_trade(trade)
+                        all_trades.append(parsed_trade)
+                
+                logger.info(f"Versuch 2: {len(all_trades)} Trades im Zeitfenster")
+                
+                if len(all_trades) > 0:
+                    return all_trades
+                    
+                # Debugging: Zeige einige Trade-Zeitstempel
+                if recent_trades:
+                    sample_times = [t['timestamp'] for t in recent_trades[:5]]
+                    logger.info(f"Sample trade timestamps: {sample_times}")
+                    logger.info(f"Sample trade times: {[datetime.fromtimestamp(ts/1000) for ts in sample_times]}")
+                    
+            except Exception as e:
+                logger.warning(f"Versuch 2 fehlgeschlagen: {e}")
+            
+            # Versuche 3: Abruf mit größerem Zeitfenster
+            try:
+                logger.info("Versuche 3: Abruf mit größerem Zeitfenster")
+                extended_start = int((start_time - timedelta(minutes=5)).timestamp() * 1000)
+                extended_end = int((end_time + timedelta(minutes=5)).timestamp() * 1000)
+                
+                extended_trades = await self.exchange.fetch_trades(
+                    symbol=symbol,
+                    since=extended_start,
+                    limit=limit * 3
+                )
+                logger.info(f"Versuch 3: {len(extended_trades)} Trades erhalten")
+                
+                # Filtere Trades im ursprünglichen Zeitfenster
+                for trade in extended_trades:
+                    trade_time = trade['timestamp']
+                    if since <= trade_time <= end_ms:
+                        parsed_trade = self._parse_trade(trade)
+                        all_trades.append(parsed_trade)
+                
+                logger.info(f"Versuch 3: {len(all_trades)} Trades im Zeitfenster")
+                
+            except Exception as e:
+                logger.warning(f"Versuch 3 fehlgeschlagen: {e}")
+            
+            # Versuche 4: Prüfe, ob es überhaupt Trades für dieses Symbol gibt
+            try:
+                logger.info("Versuche 4: Prüfe auf beliebige Trades")
+                any_trades = await self.exchange.fetch_trades(
+                    symbol=symbol,
+                    limit=10
+                )
+                logger.info(f"Versuch 4: {len(any_trades)} beliebige Trades erhalten")
+                
+                if any_trades:
+                    latest_trade_time = datetime.fromtimestamp(any_trades[0]['timestamp'] / 1000)
+                    oldest_trade_time = datetime.fromtimestamp(any_trades[-1]['timestamp'] / 1000)
+                    logger.info(f"Neuester Trade: {latest_trade_time}")
+                    logger.info(f"Ältester Trade: {oldest_trade_time}")
+                    
+                    # Prüfe, ob unser Zeitbereich im Bereich der verfügbaren Trades liegt
+                    if end_time < oldest_trade_time:
+                        logger.warning("Angefragter Zeitbereich liegt vor den verfügbaren Trades")
+                    elif start_time > latest_trade_time:
+                        logger.warning("Angefragter Zeitbereich liegt nach den verfügbaren Trades")
+                else:
+                    logger.warning("Keine Trades für dieses Symbol verfügbar")
+                    
+            except Exception as e:
+                logger.warning(f"Versuch 4 fehlgeschlagen: {e}")
+            
+            logger.info(f"=== End fetch_trades Debug Info ===")
+            logger.info(f"Final result: {len(all_trades)} trades")
             
             return all_trades
             
