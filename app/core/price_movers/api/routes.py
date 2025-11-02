@@ -336,6 +336,8 @@ async def wallet_lookup(
             total_volume=0.0,
             total_value_usd=0.0,
             avg_impact_score=0.0,
+            exchange=exchange,  # NEU: Required field
+            symbol=symbol or "BTC/USDT",  # NEU: Required field
             recent_trades=[],
             statistics={}
         )
