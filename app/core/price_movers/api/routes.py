@@ -13,8 +13,8 @@ Neue Endpoints für interaktiven Candlestick Chart:
 """
 
 import logging
-from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 
 from app.core.price_movers.api.test_schemas import (
@@ -189,14 +189,27 @@ class BatchAnalyzeResponse(BaseModel):
 
 # ==================== HELPER FUNCTIONS ====================
 
-def check_if_historical(start_time: datetime) -> tuple[bool, Optional[str]]:
+def check_if_historical(start_time: datetime) -> Tuple[bool, Optional[str]]:
     """
     Prüft, ob der Zeitbereich historisch ist (> 10 Minuten)
     
+    WICHTIG: Handled timezone-aware und timezone-naive datetimes korrekt!
+    
+    Args:
+        start_time: Zu prüfender Zeitpunkt
+        
     Returns:
         (is_historical, warning_message)
     """
-    time_diff = datetime.now() - start_time
+    # Hole aktuelle Zeit - matche timezone von start_time
+    if start_time.tzinfo is not None:
+        # start_time ist timezone-aware → verwende UTC
+        now = datetime.now(timezone.utc)
+    else:
+        # start_time ist timezone-naive → verwende local time
+        now = datetime.now()
+    
+    time_diff = now - start_time
     
     if time_diff > timedelta(minutes=10):
         warning = (
@@ -698,16 +711,15 @@ async def check_data_availability(
     - `time_since_request`: Wie alt ist der angefragte Zeitraum?
     - `warning`: Warnung bei synthetischen Daten
     """
-    time_diff = datetime.now() - start_time
-    is_historical = time_diff > timedelta(minutes=10)
+    is_historical, warning = check_if_historical(start_time)
     
-    warning = None
-    if is_historical:
-        warning = (
-            f"Angeforderter Zeitraum ist {time_diff.total_seconds() / 60:.1f} Minuten alt. "
-            f"Exchanges speichern Trades nur ~5-10 Minuten. "
-            f"Es werden synthetische Trades aus OHLCV-Daten verwendet."
-        )
+    # Berechne time_diff timezone-safe
+    if start_time.tzinfo is not None:
+        now = datetime.now(timezone.utc)
+    else:
+        now = datetime.now()
+    
+    time_diff = now - start_time
     
     return {
         "success": True,
