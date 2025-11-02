@@ -1,551 +1,607 @@
 """
-FastAPI Routes für Price Movers API
+Enhanced FastAPI Routes für Price Movers API mit Chart-Support
+===============================================================
 
-Endpoints:
-- POST /api/v1/analyze/price-movers
-- POST /api/v1/analyze/quick
-- POST /api/v1/analyze/historical
-- GET  /api/v1/wallet/{wallet_id}
-- POST /api/v1/compare-exchanges
-- GET  /api/v1/health
+Neue Endpoints für interaktiven Candlestick Chart:
+- GET /api/v1/chart/candles - Candlestick-Daten für Chart
+- GET /api/v1/chart/candle/{timestamp}/movers - Price Movers für spezifische Candle
+- POST /api/v1/chart/batch-analyze - Batch-Analyse für mehrere Candles
 """
 
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 from datetime import datetime, timedelta
-from fastapi import APIRouter, HTTPException, Depends, status
-
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+from fastapi import APIRouter, HTTPException, Depends, status, Query
 
 from app.core.price_movers.api.test_schemas import (
-    AnalysisRequest,
-    AnalysisResponse,
-    QuickAnalysisRequest,
-    HistoricalAnalysisRequest,
-    HistoricalAnalysisResponse,
-    WalletLookupRequest,
-    WalletDetailResponse,
-    CompareExchangesRequest,
-    ExchangeComparison,
-    HealthCheckResponse,
+    CandleData,
+    WalletMover,
+    AnalysisMetadata,
+    ExchangeEnum,
+    TimeframeEnum,
     ErrorResponse,
-    SuccessResponse,
 )
 from app.core.price_movers.api.dependencies import (
     get_exchange_collector,
-    get_all_exchange_collectors,
     get_analyzer,
-    verify_api_key,
-    check_rate_limit,
     log_request,
 )
 from app.core.price_movers.collectors import ExchangeCollector
 from app.core.price_movers.services import PriceMoverAnalyzer
+from pydantic import BaseModel, Field
 
 
 logger = logging.getLogger(__name__)
 
 # Router erstellen
-router = APIRouter(
-    prefix="/api/v1",
-    tags=["price-movers"],
+chart_router = APIRouter(
+    prefix="/api/v1/chart",
+    tags=["chart"],
     responses={
         500: {"model": ErrorResponse, "description": "Internal Server Error"},
-        503: {"model": ErrorResponse, "description": "Service Unavailable"},
     }
 )
 
 
-# ==================== MAIN ANALYSIS ENDPOINT ====================
+# ==================== NEW SCHEMAS ====================
 
-@router.post(
-    "/analyze/price-movers",
-    response_model=AnalysisResponse,
+class ChartCandlesRequest(BaseModel):
+    """Request für Chart Candle-Daten"""
+    exchange: ExchangeEnum = Field(..., description="Exchange")
+    symbol: str = Field(..., description="Trading pair (e.g., BTC/USDT)")
+    timeframe: TimeframeEnum = Field(..., description="Candle timeframe")
+    start_time: datetime = Field(..., description="Start of time range")
+    end_time: datetime = Field(..., description="End of time range")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "exchange": "binance",
+                "symbol": "BTC/USDT",
+                "timeframe": "5m",
+                "start_time": "2025-10-30T10:00:00Z",
+                "end_time": "2025-10-30T12:00:00Z"
+            }
+        }
+
+
+class ChartCandleWithImpact(BaseModel):
+    """Candle mit Impact-Indikator für Chart"""
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    has_high_impact: bool = Field(False, description="Hat diese Candle High-Impact Movers?")
+    total_impact_score: float = Field(0.0, description="Gesamter Impact Score aller Movers")
+    top_mover_count: int = Field(0, description="Anzahl signifikanter Movers")
+
+
+class ChartCandlesResponse(BaseModel):
+    """Response mit Chart Candle-Daten"""
+    success: bool = True
+    symbol: str
+    exchange: str
+    timeframe: str
+    candles: List[ChartCandleWithImpact]
+    total_candles: int
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "symbol": "BTC/USDT",
+                "exchange": "binance",
+                "timeframe": "5m",
+                "candles": [
+                    {
+                        "timestamp": "2025-10-30T10:00:00Z",
+                        "open": 68500.50,
+                        "high": 68750.25,
+                        "low": 68400.00,
+                        "close": 68650.75,
+                        "volume": 1250.5,
+                        "has_high_impact": True,
+                        "total_impact_score": 2.45,
+                        "top_mover_count": 8
+                    }
+                ],
+                "total_candles": 24
+            }
+        }
+
+
+class CandleMoversResponse(BaseModel):
+    """Response mit Price Movers für eine spezifische Candle"""
+    success: bool = True
+    candle: CandleData
+    top_movers: List[WalletMover]
+    analysis_metadata: AnalysisMetadata
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "candle": {
+                    "timestamp": "2025-10-30T12:00:00Z",
+                    "open": 68500.50,
+                    "high": 68750.25,
+                    "low": 68400.00,
+                    "close": 68650.75,
+                    "volume": 1250.5
+                },
+                "top_movers": [],
+                "analysis_metadata": {
+                    "analysis_timestamp": "2025-10-30T12:05:30Z",
+                    "processing_duration_ms": 1250,
+                    "total_trades_analyzed": 5420,
+                    "unique_wallets_found": 342,
+                    "exchange": "binance",
+                    "symbol": "BTC/USDT",
+                    "timeframe": "5m"
+                }
+            }
+        }
+
+
+class BatchAnalyzeRequest(BaseModel):
+    """Request für Batch-Analyse mehrerer Candles"""
+    exchange: ExchangeEnum
+    symbol: str
+    timeframe: TimeframeEnum
+    candle_timestamps: List[datetime] = Field(..., max_items=50, description="Liste von Candle-Timestamps (max 50)")
+    top_n_wallets: int = Field(default=10, ge=1, le=100)
+
+
+class BatchCandleResult(BaseModel):
+    """Ergebnis für eine einzelne Candle im Batch"""
+    timestamp: datetime
+    candle: Optional[CandleData]
+    top_movers: List[WalletMover]
+    error: Optional[str] = None
+
+
+class BatchAnalyzeResponse(BaseModel):
+    """Response für Batch-Analyse"""
+    success: bool = True
+    symbol: str
+    exchange: str
+    timeframe: str
+    results: List[BatchCandleResult]
+    successful_analyses: int
+    failed_analyses: int
+
+
+# ==================== CHART ENDPOINTS ====================
+
+@chart_router.get(
+    "/candles",
+    response_model=ChartCandlesResponse,
     status_code=status.HTTP_200_OK,
-    summary="Analyze Price Movers",
-    description="Identifiziert Wallets mit dem größten Einfluss auf Preisbewegungen",
-    responses={
-        400: {"model": ErrorResponse, "description": "Invalid Request"},
-        503: {"model": ErrorResponse, "description": "Exchange Unavailable"},
-    }
+    summary="Get Chart Candle Data",
+    description="Lädt Candlestick-Daten für Chart mit Impact-Indikatoren"
 )
-async def analyze_price_movers(
-    request: AnalysisRequest,
-    analyzer: PriceMoverAnalyzer = Depends(get_analyzer),
-    request_id: str = Depends(log_request),
-    rate_limit_ok: bool = Depends(check_rate_limit),
-    api_key: str = Depends(verify_api_key)
-) -> AnalysisResponse:
+async def get_chart_candles(
+    exchange: ExchangeEnum = Query(..., description="Exchange"),
+    symbol: str = Query(..., description="Trading pair (e.g., BTC/USDT)"),
+    timeframe: TimeframeEnum = Query(..., description="Candle timeframe"),
+    start_time: datetime = Query(..., description="Start of time range"),
+    end_time: datetime = Query(..., description="End of time range"),
+    include_impact: bool = Query(default=True, description="Include impact indicators"),
+    request_id: str = Depends(log_request)
+) -> ChartCandlesResponse:
     """
-    ## Hauptanalyse für Price Movers
+    ## Chart Candle-Daten
     
-    Analysiert eine Candle und identifiziert die Top Wallets/Pattern mit dem
-    größten Einfluss auf Preisbewegungen.
+    Lädt OHLCV-Daten für einen Zeitraum mit optionalen Impact-Indikatoren.
     
-    ### Parameter:
-    - **exchange**: Exchange (bitget, binance, kraken)
+    ### Query Parameter:
+    - **exchange**: Exchange (binance, bitget, kraken)
     - **symbol**: Trading Pair (z.B. BTC/USDT)
-    - **timeframe**: Candle Timeframe (1m, 5m, 15m, 30m, 1h, 4h, 1d)
+    - **timeframe**: Candle Timeframe (1m, 5m, 15m, etc.)
     - **start_time**: Start-Zeitpunkt (ISO 8601)
     - **end_time**: End-Zeitpunkt (ISO 8601)
-    - **min_impact_threshold**: Minimaler Impact Score (0-1)
-    - **top_n_wallets**: Anzahl Top Wallets (1-100)
-    - **include_trades**: Einzelne Trades inkludieren
+    - **include_impact**: Impact-Indikatoren berechnen (default: true)
+    
+    ### Returns:
+    - Liste von Candles mit OHLCV-Daten
+    - Impact-Indikatoren (wenn aktiviert)
+    
+    ### Verwendung:
+    Dieser Endpoint wird vom Chart verwendet, um die initialen Candlestick-Daten zu laden.
+    """
+    try:
+        logger.info(
+            f"[{request_id}] Chart candles request: {exchange} {symbol} {timeframe} "
+            f"({start_time} - {end_time})"
+        )
+        
+        # Hole Collector
+        collector = await get_exchange_collector(exchange)
+        
+        # Fetch OHLCV-Daten
+        candles_raw = await collector.fetch_ohlcv_range(
+            symbol=symbol,
+            timeframe=timeframe,
+            start_time=start_time,
+            end_time=end_time
+        )
+        
+        # Konvertiere zu Chart-Format
+        chart_candles = []
+        
+        for candle_raw in candles_raw:
+            chart_candle = ChartCandleWithImpact(
+                timestamp=candle_raw['timestamp'],
+                open=candle_raw['open'],
+                high=candle_raw['high'],
+                low=candle_raw['low'],
+                close=candle_raw['close'],
+                volume=candle_raw['volume'],
+                has_high_impact=False,
+                total_impact_score=0.0,
+                top_mover_count=0
+            )
+            
+            # Optional: Berechne Impact-Indikatoren
+            if include_impact:
+                try:
+                    # Quick-Analyse für diese Candle
+                    analyzer = PriceMoverAnalyzer(exchange_collector=collector)
+                    
+                    # Berechne Zeitfenster für diese Candle
+                    timeframe_minutes = {
+                        "1m": 1, "5m": 5, "15m": 15, "30m": 30,
+                        "1h": 60, "4h": 240, "1d": 1440
+                    }.get(timeframe, 5)
+                    
+                    candle_start = candle_raw['timestamp']
+                    candle_end = candle_start + timedelta(minutes=timeframe_minutes)
+                    
+                    result = await analyzer.analyze_candle(
+                        exchange=exchange,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        start_time=candle_start,
+                        end_time=candle_end,
+                        top_n_wallets=5,  # Nur Top 5 für Performance
+                        include_trades=False
+                    )
+                    
+                    # Berechne Impact-Score
+                    top_movers = result.get('top_movers', [])
+                    if top_movers:
+                        total_impact = sum(m['impact_score'] for m in top_movers)
+                        high_impact_count = sum(1 for m in top_movers if m['impact_score'] > 0.5)
+                        
+                        chart_candle.total_impact_score = total_impact
+                        chart_candle.top_mover_count = len(top_movers)
+                        chart_candle.has_high_impact = high_impact_count > 0
+                        
+                except Exception as e:
+                    logger.warning(
+                        f"[{request_id}] Failed to calculate impact for candle "
+                        f"{candle_raw['timestamp']}: {e}"
+                    )
+                    # Continue ohne Impact-Daten
+            
+            chart_candles.append(chart_candle)
+        
+        response = ChartCandlesResponse(
+            symbol=symbol,
+            exchange=exchange,
+            timeframe=timeframe,
+            candles=chart_candles,
+            total_candles=len(chart_candles)
+        )
+        
+        logger.info(
+            f"[{request_id}] Chart candles loaded: {len(chart_candles)} candles"
+        )
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"[{request_id}] Chart candles error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load chart candles: {str(e)}"
+        )
+
+
+@chart_router.get(
+    "/candle/{candle_timestamp}/movers",
+    response_model=CandleMoversResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get Price Movers for Specific Candle",
+    description="Lädt Price Movers für eine angeklickte Candle"
+)
+async def get_candle_movers(
+    candle_timestamp: datetime,
+    exchange: ExchangeEnum = Query(..., description="Exchange"),
+    symbol: str = Query(..., description="Trading pair"),
+    timeframe: TimeframeEnum = Query(..., description="Candle timeframe"),
+    top_n_wallets: int = Query(default=10, ge=1, le=100, description="Number of top wallets"),
+    request_id: str = Depends(log_request)
+) -> CandleMoversResponse:
+    """
+    ## Price Movers für spezifische Candle
+    
+    Wird aufgerufen, wenn User auf eine Candle im Chart klickt.
+    
+    ### Path Parameter:
+    - **candle_timestamp**: Timestamp der Candle (ISO 8601)
+    
+    ### Query Parameter:
+    - **exchange**: Exchange
+    - **symbol**: Trading Pair
+    - **timeframe**: Candle Timeframe
+    - **top_n_wallets**: Anzahl Top Wallets (default: 10)
     
     ### Returns:
     - Candle-Daten (OHLCV)
     - Top Movers mit Impact Scores
     - Analyse-Metadaten
     
-    ### Beispiel:
-    ```json
-    {
-      "exchange": "binance",
-      "symbol": "BTC/USDT",
-      "timeframe": "5m",
-      "start_time": "2024-10-27T10:00:00Z",
-      "end_time": "2024-10-27T10:05:00Z",
-      "min_impact_threshold": 0.1,
-      "top_n_wallets": 10
-    }
-    ```
+    ### Verwendung:
+    Dieser Endpoint wird aufgerufen, wenn der User im Chart auf eine Candle klickt,
+    um die einflussreichsten Wallets für diese spezifische Candle zu sehen.
     """
     try:
         logger.info(
-            f"[{request_id}] Analysis request: {request.exchange} "
-            f"{request.symbol} {request.timeframe}"
+            f"[{request_id}] Candle movers request: {exchange} {symbol} "
+            f"@ {candle_timestamp}"
         )
+        
+        # Hole Analyzer
+        collector = await get_exchange_collector(exchange)
+        analyzer = PriceMoverAnalyzer(exchange_collector=collector)
+        
+        # Berechne Zeitfenster für diese Candle
+        timeframe_minutes = {
+            "1m": 1, "5m": 5, "15m": 15, "30m": 30,
+            "1h": 60, "4h": 240, "1d": 1440
+        }.get(timeframe, 5)
+        
+        start_time = candle_timestamp
+        end_time = candle_timestamp + timedelta(minutes=timeframe_minutes)
         
         # Führe Analyse aus
         result = await analyzer.analyze_candle(
-            exchange=request.exchange,
-            symbol=request.symbol,
-            timeframe=request.timeframe,
-            start_time=request.start_time,
-            end_time=request.end_time,
-            min_impact_threshold=request.min_impact_threshold,
-            top_n_wallets=request.top_n_wallets,
-            include_trades=request.include_trades
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            start_time=start_time,
+            end_time=end_time,
+            top_n_wallets=top_n_wallets,
+            include_trades=False
+        )
+        
+        # Konvertiere zu Response
+        from app.core.price_movers.api.test_schemas import AnalysisResponse
+        response = CandleMoversResponse(
+            candle=CandleData(**result['candle']),
+            top_movers=[WalletMover(**m) for m in result['top_movers']],
+            analysis_metadata=AnalysisMetadata(**result['analysis_metadata'])
         )
         
         logger.info(
-            f"[{request_id}] Analysis complete: "
-            f"{len(result.get('top_movers', []))} movers found"
+            f"[{request_id}] Candle movers loaded: "
+            f"{len(result['top_movers'])} movers found"
         )
         
-        # Konvertiere zu Response Model
-        return AnalysisResponse(**result)
+        return response
         
-    except ValueError as e:
-        logger.error(f"[{request_id}] Validation error: {e}")
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
-        )
     except Exception as e:
-        logger.error(f"[{request_id}] Analysis error: {e}", exc_info=True)
+        logger.error(f"[{request_id}] Candle movers error: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Analysis failed: {str(e)}"
+            detail=f"Failed to load candle movers: {str(e)}"
         )
 
 
-# ==================== QUICK ANALYSIS ====================
-
-@router.post(
-    "/analyze/quick",
-    response_model=AnalysisResponse,
+@chart_router.post(
+    "/batch-analyze",
+    response_model=BatchAnalyzeResponse,
     status_code=status.HTTP_200_OK,
-    summary="Quick Analysis",
-    description="Schnellanalyse der aktuellen/letzten Candle"
+    summary="Batch Analyze Multiple Candles",
+    description="Analysiert mehrere Candles in einem Request (für Performance)"
 )
-async def quick_analysis(
-    request: QuickAnalysisRequest,
+async def batch_analyze_candles(
+    request: BatchAnalyzeRequest,
     request_id: str = Depends(log_request)
-) -> AnalysisResponse:
+) -> BatchAnalyzeResponse:
     """
-    ## Schnellanalyse
+    ## Batch-Analyse mehrerer Candles
     
-    Analysiert die aktuelle oder letzte abgeschlossene Candle.
+    Analysiert bis zu 50 Candles in einem Request für bessere Performance.
+    
+    ### Request Body:
+    - **exchange**: Exchange
+    - **symbol**: Trading Pair
+    - **timeframe**: Candle Timeframe
+    - **candle_timestamps**: Liste von Candle-Timestamps (max 50)
+    - **top_n_wallets**: Anzahl Top Wallets pro Candle
+    
+    ### Returns:
+    - Liste von Analyse-Ergebnissen pro Candle
+    - Erfolgs-/Fehler-Statistiken
+    
+    ### Verwendung:
+    Kann verwendet werden, um Impact-Daten für alle sichtbaren Candles
+    im Chart auf einmal zu laden (z.B. beim Zoom).
     """
     try:
         logger.info(
-            f"[{request_id}] Quick analysis: {request.exchange} "
-            f"{request.symbol} {request.timeframe}"
+            f"[{request_id}] Batch analyze request: {request.exchange} "
+            f"{request.symbol} - {len(request.candle_timestamps)} candles"
         )
         
-        # Hole Analyzer OHNE get_analyzer zu callen, erstelle direkt
-        from app.core.price_movers.api.dependencies import get_exchange_collector
+        # Validierung
+        if len(request.candle_timestamps) > 50:
+            raise HTTPException(
+                status_code=400,
+                detail="Maximum 50 candles per batch request"
+            )
         
+        # Hole Analyzer
         collector = await get_exchange_collector(request.exchange)
         analyzer = PriceMoverAnalyzer(exchange_collector=collector)
         
-        # Berechne Zeitfenster für letzte Candle
-        now = datetime.now()
-        
-        # Timeframe zu Minuten
+        # Berechne Timeframe in Minuten
         timeframe_minutes = {
             "1m": 1, "5m": 5, "15m": 15, "30m": 30,
             "1h": 60, "4h": 240, "1d": 1440
         }.get(request.timeframe, 5)
         
-        end_time = now
-        start_time = now - timedelta(minutes=timeframe_minutes)
+        results = []
+        successful = 0
+        failed = 0
         
-        # Führe Analyse aus
-        result = await analyzer.analyze_candle(
-            exchange=request.exchange,
-            symbol=request.symbol,
-            timeframe=request.timeframe,
-            start_time=start_time,
-            end_time=end_time,
-            top_n_wallets=request.top_n_wallets,
-            include_trades=False
-        )
-        
-        return AnalysisResponse(**result)
-        
-    except Exception as e:
-        logger.error(f"[{request_id}] Quick analysis error: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Quick analysis failed: {str(e)}"
-        )
-
-
-# ==================== HISTORICAL ANALYSIS ====================
-
-@router.post(
-    "/analyze/historical",
-    response_model=HistoricalAnalysisResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Historical Analysis",
-    description="Analyse über mehrere Candles hinweg"
-)
-async def historical_analysis(
-    request: HistoricalAnalysisRequest,
-    analyzer: PriceMoverAnalyzer = Depends(get_analyzer),
-    request_id: str = Depends(log_request)
-) -> HistoricalAnalysisResponse:
-    """
-    ## Historische Analyse
-    
-    Analysiert mehrere Candles über einen Zeitraum und aggregiert die Top Movers.
-    
-    ### Parameter:
-    - **exchange**: Exchange
-    - **symbol**: Trading Pair
-    - **timeframe**: Candle Timeframe
-    - **start_time**: Start-Zeitpunkt
-    - **end_time**: End-Zeitpunkt
-    - **min_impact_threshold**: Minimaler Impact Score
-    
-    ### Returns:
-    - Aggregierte Top Movers über den Zeitraum
-    - Summary mit Statistiken
-    """
-    try:
-        logger.info(
-            f"[{request_id}] Historical analysis: {request.exchange} "
-            f"{request.symbol} ({request.start_time} - {request.end_time})"
-        )
-        
-        # TODO: Implementiere echte historische Analyse
-        # Placeholder Response
-        
-        response = HistoricalAnalysisResponse(
-            symbol=request.symbol,
-            exchange=request.exchange,
-            timeframe=request.timeframe,
-            start_time=request.start_time,
-            end_time=request.end_time,
-            candles_analyzed=0,
-            top_movers=[],
-            summary={
-                "total_volume": 0.0,
-                "total_trades": 0,
-                "unique_wallets": 0,
-                "avg_impact_score": 0.0
-            }
-        )
-        
-        logger.warning(
-            f"[{request_id}] Historical analysis not fully implemented yet"
-        )
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"[{request_id}] Historical analysis error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Historical analysis failed: {str(e)}"
-        )
-
-
-# ==================== WALLET LOOKUP ====================
-
-@router.get(
-    "/wallet/{wallet_id}",
-    response_model=WalletDetailResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Wallet Lookup",
-    description="Detaillierte Informationen zu einem Wallet"
-)
-async def wallet_lookup(
-    wallet_id: str,
-    exchange: str,
-    symbol: str = None,
-    time_range_hours: int = 24,
-    request_id: str = Depends(log_request)
-) -> WalletDetailResponse:
-    """
-    ## Wallet-Detail Lookup
-    
-    Gibt detaillierte Informationen zu einem spezifischen Wallet.
-    
-    ### Path Parameter:
-    - **wallet_id**: Wallet Identifier (z.B. whale_0x742d35)
-    
-    ### Query Parameter:
-    - **exchange**: Exchange (required)
-    - **symbol**: Trading Pair (optional)
-    - **time_range_hours**: Zeitraum in Stunden (default: 24)
-    
-    ### Returns:
-    - Wallet-Details
-    - Trading-Historie
-    - Statistiken
-    """
-    try:
-        logger.info(
-            f"[{request_id}] Wallet lookup: {wallet_id} on {exchange}"
-        )
-        
-        # TODO: Implementiere echtes Wallet Lookup
-        # Placeholder Response
-        
-        response = WalletDetailResponse(
-            wallet_id=wallet_id,
-            wallet_type="unknown",
-            first_seen=datetime.now() - timedelta(days=7),
-            last_seen=datetime.now(),
-            total_trades=0,
-            total_volume=0.0,
-            total_value_usd=0.0,
-            avg_impact_score=0.0,
-            exchange=exchange,  # NEU: Required field
-            symbol=symbol or "BTC/USDT",  # NEU: Required field
-            recent_trades=[],
-            statistics={}
-        )
-        
-        logger.warning(
-            f"[{request_id}] Wallet lookup not fully implemented yet"
-        )
-        
-        return response
-        
-    except Exception as e:
-        logger.error(f"[{request_id}] Wallet lookup error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Wallet lookup failed: {str(e)}"
-        )
-
-
-# ==================== EXCHANGE COMPARISON ====================
-
-@router.post(
-    "/compare-exchanges",
-    response_model=ExchangeComparison,
-    status_code=status.HTTP_200_OK,
-    summary="Compare Exchanges",
-    description="Vergleicht Preise und Volume über mehrere Exchanges"
-)
-async def compare_exchanges(
-    request: CompareExchangesRequest,
-    collectors: Dict[str, ExchangeCollector] = Depends(get_all_exchange_collectors),
-    request_id: str = Depends(log_request)
-) -> ExchangeComparison:
-    """
-    ## Exchange-Vergleich
-    
-    Vergleicht aktuelle Preise und Volumes über mehrere Exchanges.
-    
-    ### Parameter:
-    - **exchanges**: Liste von Exchanges (min. 1)
-    - **symbol**: Trading Pair
-    - **timeframe**: Candle Timeframe (default: 5m)
-    
-    ### Returns:
-    - Exchange-spezifische Daten (Preis, Volume, Spread)
-    - Best Price
-    - Highest Volume
-    """
-    try:
-        logger.info(
-            f"[{request_id}] Compare exchanges: "
-            f"{', '.join(request.exchanges)} for {request.symbol}"
-        )
-        
-        exchange_data = {}
-        
-        # Fetch Daten von allen Exchanges
-        for exchange_name in request.exchanges:
+        # Analysiere jede Candle
+        for timestamp in request.candle_timestamps:
             try:
-                collector = collectors.get(exchange_name)
-                if not collector:
-                    continue
+                start_time = timestamp
+                end_time = timestamp + timedelta(minutes=timeframe_minutes)
                 
-                # Fetch Ticker
-                ticker = await collector.fetch_ticker(request.symbol)
+                result = await analyzer.analyze_candle(
+                    exchange=request.exchange,
+                    symbol=request.symbol,
+                    timeframe=request.timeframe,
+                    start_time=start_time,
+                    end_time=end_time,
+                    top_n_wallets=request.top_n_wallets,
+                    include_trades=False
+                )
                 
-                exchange_data[exchange_name] = {
-                    "price": ticker['last'],
-                    "volume": ticker['volume'] or 0.0,
-                    "bid": ticker['bid'],
-                    "ask": ticker['ask'],
-                    "spread": (ticker['ask'] - ticker['bid']) if ticker['ask'] and ticker['bid'] else 0.0
-                }
+                batch_result = BatchCandleResult(
+                    timestamp=timestamp,
+                    candle=CandleData(**result['candle']),
+                    top_movers=[WalletMover(**m) for m in result['top_movers']]
+                )
+                
+                results.append(batch_result)
+                successful += 1
                 
             except Exception as e:
-                logger.error(
-                    f"[{request_id}] Failed to fetch from {exchange_name}: {e}"
+                logger.warning(
+                    f"[{request_id}] Failed to analyze candle {timestamp}: {e}"
                 )
-                exchange_data[exchange_name] = {
-                    "error": str(e)
-                }
+                
+                batch_result = BatchCandleResult(
+                    timestamp=timestamp,
+                    candle=None,
+                    top_movers=[],
+                    error=str(e)
+                )
+                
+                results.append(batch_result)
+                failed += 1
         
-        # Finde Best Price und Highest Volume
-        valid_exchanges = {
-            k: v for k, v in exchange_data.items() 
-            if "error" not in v
-        }
-        
-        best_price = None
-        highest_volume = None
-        
-        if valid_exchanges:
-            best_price_exchange = min(
-                valid_exchanges.items(),
-                key=lambda x: x[1]['price']
-            )
-            best_price = {
-                "exchange": best_price_exchange[0],
-                "price": best_price_exchange[1]['price']
-            }
-            
-            highest_volume_exchange = max(
-                valid_exchanges.items(),
-                key=lambda x: x[1]['volume']
-            )
-            highest_volume = {
-                "exchange": highest_volume_exchange[0],
-                "volume": highest_volume_exchange[1]['volume']
-            }
-        
-        response = ExchangeComparison(
+        response = BatchAnalyzeResponse(
             symbol=request.symbol,
+            exchange=request.exchange,
             timeframe=request.timeframe,
-            timestamp=datetime.now(),
-            exchanges=exchange_data,
-            best_price=best_price or {},
-            highest_volume=highest_volume or {}
+            results=results,
+            successful_analyses=successful,
+            failed_analyses=failed
         )
         
         logger.info(
-            f"[{request_id}] Exchange comparison complete: "
-            f"{len(valid_exchanges)}/{len(request.exchanges)} successful"
+            f"[{request_id}] Batch analyze complete: "
+            f"{successful} successful, {failed} failed"
         )
         
         return response
         
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"[{request_id}] Exchange comparison error: {e}")
+        logger.error(f"[{request_id}] Batch analyze error: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Exchange comparison failed: {str(e)}"
+            detail=f"Batch analysis failed: {str(e)}"
         )
 
 
-# ==================== HEALTH CHECK ====================
+# ==================== UTILITY ENDPOINTS ====================
 
-@router.get(
-    "/health",
-    response_model=HealthCheckResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Health Check",
-    description="Prüft den Status aller Exchanges und des Systems"
+@chart_router.get(
+    "/timeframes",
+    summary="Get Available Timeframes",
+    description="Liste aller verfügbaren Timeframes"
 )
-async def health_check(
-    collectors: Dict[str, ExchangeCollector] = Depends(get_all_exchange_collectors)
-) -> HealthCheckResponse:
+async def get_available_timeframes():
     """
-    ## Health Check
+    ## Verfügbare Timeframes
     
-    Prüft die Erreichbarkeit aller Exchanges und gibt System-Status zurück.
-    
-    ### Returns:
-    - Gesamt-Status (healthy/unhealthy)
-    - Exchange-Status (pro Exchange)
-    - API Version
+    Gibt eine Liste aller unterstützten Timeframes zurück.
     """
-    logger.info("Health check requested")
-    
-    exchange_status = {}
-    
-    # Prüfe alle Exchanges
-    for exchange_name, collector in collectors.items():
-        try:
-            is_healthy = await collector.health_check()
-            exchange_status[exchange_name] = is_healthy
-        except Exception as e:
-            logger.error(f"Health check failed for {exchange_name}: {e}")
-            exchange_status[exchange_name] = False
-    
-    # Gesamt-Status
-    all_healthy = all(exchange_status.values())
-    overall_status = "healthy" if all_healthy else "degraded"
-    
-    response = HealthCheckResponse(
-        status=overall_status,
-        timestamp=datetime.now(),
-        exchanges=exchange_status,
-        version="0.1.0"
-    )
-    
-    logger.info(
-        f"Health check complete: {overall_status} "
-        f"({sum(exchange_status.values())}/{len(exchange_status)} exchanges healthy)"
-    )
-    
-    return response
+    return {
+        "success": True,
+        "timeframes": [
+            {"value": "1m", "label": "1 Minute", "seconds": 60},
+            {"value": "5m", "label": "5 Minutes", "seconds": 300},
+            {"value": "15m", "label": "15 Minutes", "seconds": 900},
+            {"value": "30m", "label": "30 Minutes", "seconds": 1800},
+            {"value": "1h", "label": "1 Hour", "seconds": 3600},
+            {"value": "4h", "label": "4 Hours", "seconds": 14400},
+            {"value": "1d", "label": "1 Day", "seconds": 86400},
+        ]
+    }
 
 
-# ==================== ROOT ENDPOINT ====================
-
-@router.get(
-    "/",
-    response_model=SuccessResponse,
-    status_code=status.HTTP_200_OK,
-    summary="API Root",
-    description="API Information"
+@chart_router.get(
+    "/symbols",
+    summary="Get Available Symbols",
+    description="Liste verfügbarer Trading Pairs"
 )
-async def root() -> SuccessResponse:
+async def get_available_symbols(
+    exchange: ExchangeEnum = Query(..., description="Exchange")
+):
     """
-    ## API Root
+    ## Verfügbare Trading Pairs
     
-    Gibt Informationen über die API zurück.
+    Gibt eine Liste aller verfügbaren Trading Pairs für eine Exchange zurück.
     """
-    return SuccessResponse(
-        message="Price Movers API",
-        data={
-            "version": "0.1.0",
-            "status": "operational",
-            "documentation": "/docs",
-            "supported_exchanges": ["bitget", "binance", "kraken"]
-        }
-    )
+    try:
+        collector = await get_exchange_collector(exchange)
+        
+        # Load markets
+        if hasattr(collector.exchange, 'load_markets'):
+            await collector.exchange.load_markets()
+            markets = collector.exchange.markets
+            
+            symbols = [
+                {
+                    "symbol": symbol,
+                    "base": market['base'],
+                    "quote": market['quote']
+                }
+                for symbol, market in markets.items()
+                if market.get('active', True) and market.get('spot', True)
+            ]
+            
+            return {
+                "success": True,
+                "exchange": exchange,
+                "total_symbols": len(symbols),
+                "symbols": symbols[:100]  # Limit für Performance
+            }
+        else:
+            return {
+                "success": False,
+                "error": "Exchange not initialized properly"
+            }
+            
+    except Exception as e:
+        logger.error(f"Failed to fetch symbols: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch symbols: {str(e)}"
+        )
+
+
+# Export Router
+__all__ = ['chart_router']
