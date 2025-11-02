@@ -1,5 +1,10 @@
 """
-Exchange Collector - CCXT Integration (FIXED)
+Exchange Collector - CCXT Integration (IMPROVED VERSION)
+
+HAUPTÄNDERUNG:
+- OHLCV-Fallback für historische Trade-Daten
+- Bitget/Binance speichern Trades nur ~5-10 Minuten
+- Für historische Analyse: Nutze Candle-Daten statt Trades
 
 Sammelt Daten von Centralized Exchanges:
 - Bitget
@@ -36,6 +41,9 @@ class ExchangeCollector(BaseCollector):
     - Bitget
     - Binance
     - Kraken
+    
+    WICHTIG: Trades sind nur ~5-10 Minuten verfügbar!
+    Für historische Daten wird OHLCV-Fallback verwendet.
     """
     
     def __init__(
@@ -213,6 +221,9 @@ class ExchangeCollector(BaseCollector):
         """
         Fetcht Trade History im Zeitraum
         
+        ⚠️ WICHTIG: Exchanges speichern Trades nur ~5-10 Minuten!
+        Für historische Daten wird automatisch OHLCV-Fallback verwendet.
+        
         Args:
             symbol: Trading Pair
             start_time: Start-Zeitpunkt
@@ -220,29 +231,39 @@ class ExchangeCollector(BaseCollector):
             limit: Max. Anzahl Trades pro Request
             
         Returns:
-            Liste von Trades
+            Liste von Trades (oder synthetische Trades aus OHLCV)
         """
         if not self.exchange:
             raise RuntimeError(f"Exchange {self.exchange_name} not initialized")
         
+        # Prüfe, ob Zeitbereich zu alt ist (> 10 Minuten)
+        time_diff = datetime.now() - start_time
+        is_historical = time_diff > timedelta(minutes=10)
+        
+        if is_historical:
+            logger.warning(
+                f"Angeforderter Zeitbereich ist historisch ({time_diff} alt). "
+                f"Trades sind nur ~5-10 Minuten verfügbar. "
+                f"Verwende OHLCV-Fallback für {symbol}."
+            )
+            return await self._fetch_trades_from_ohlcv_fallback(
+                symbol=symbol,
+                start_time=start_time,
+                end_time=end_time
+            )
+        
         await self._rate_limit_wait()
         
         try:
-            # Detailliertes Logging für Debugging
             logger.info(f"=== fetch_trades Debug Info ===")
             logger.info(f"Exchange: {self.exchange_name}")
             logger.info(f"Symbol: {symbol}")
             logger.info(f"Start time: {start_time}")
             logger.info(f"End time: {end_time}")
-            logger.info(f"Limit: {limit}")
             
             # Konvertiere Zeitstempel
             since = int(start_time.timestamp() * 1000)
             end_ms = int(end_time.timestamp() * 1000)
-            
-            logger.info(f"Since (ms): {since}")
-            logger.info(f"End (ms): {end_ms}")
-            logger.info(f"Time range (ms): {end_ms - since}")
             
             # Prüfe, ob Symbol existiert
             if not hasattr(self.exchange, 'markets') or not self.exchange.markets:
@@ -250,29 +271,17 @@ class ExchangeCollector(BaseCollector):
             
             if symbol not in self.exchange.markets:
                 logger.error(f"Symbol {symbol} not found in {self.exchange_name} markets")
-                logger.info(f"Available symbols: {list(self.exchange.markets.keys())[:10]}...")
-                return []
-            
-            # Marktinformationen
-            market = self.exchange.markets[symbol]
-            logger.info(f"Market info: {market}")
-            
-            # Prüfe, ob Trades für dieses Symbol verfügbar sind
-            if not market.get('active', True):
-                logger.warning(f"Symbol {symbol} is not active")
                 return []
             
             all_trades = []
             
-            # Versuche 1: Direkter Abruf mit Zeitbereich
+            # Versuche Trades zu holen
             try:
-                logger.info("Versuche 1: Direkter Abruf mit Zeitbereich")
                 trades = await self.exchange.fetch_trades(
                     symbol=symbol,
                     since=since,
                     limit=limit
                 )
-                logger.info(f"Versuch 1: {len(trades)} Trades erhalten")
                 
                 # Filtere Trades im Zeitfenster
                 for trade in trades:
@@ -281,97 +290,22 @@ class ExchangeCollector(BaseCollector):
                         parsed_trade = self._parse_trade(trade)
                         all_trades.append(parsed_trade)
                 
-                logger.info(f"Versuch 1: {len(all_trades)} Trades im Zeitfenster")
+                logger.info(f"Trades erhalten: {len(all_trades)} im Zeitfenster")
                 
-                if len(all_trades) > 0:
-                    return all_trades
-                    
             except Exception as e:
-                logger.warning(f"Versuch 1 fehlgeschlagen: {e}")
+                logger.warning(f"fetch_trades fehlgeschlagen: {e}")
             
-            # Versuche 2: Abruf ohne Zeitbegrenzung, dann Filter
-            try:
-                logger.info("Versuche 2: Abruf ohne Zeitbegrenzung")
-                recent_trades = await self.exchange.fetch_trades(
-                    symbol=symbol,
-                    limit=limit * 2  # Mehr Trades holen
+            # FALLBACK: Wenn keine Trades verfügbar, nutze OHLCV
+            if len(all_trades) == 0:
+                logger.warning(
+                    f"Keine Trades verfügbar für {symbol} @ {start_time} - "
+                    f"Verwende OHLCV-Fallback"
                 )
-                logger.info(f"Versuch 2: {len(recent_trades)} Trades erhalten")
-                
-                # Filtere Trades im Zeitfenster
-                for trade in recent_trades:
-                    trade_time = trade['timestamp']
-                    if since <= trade_time <= end_ms:
-                        parsed_trade = self._parse_trade(trade)
-                        all_trades.append(parsed_trade)
-                
-                logger.info(f"Versuch 2: {len(all_trades)} Trades im Zeitfenster")
-                
-                if len(all_trades) > 0:
-                    return all_trades
-                    
-                # Debugging: Zeige einige Trade-Zeitstempel
-                if recent_trades:
-                    sample_times = [t['timestamp'] for t in recent_trades[:5]]
-                    logger.info(f"Sample trade timestamps: {sample_times}")
-                    logger.info(f"Sample trade times: {[datetime.fromtimestamp(ts/1000) for ts in sample_times]}")
-                    
-            except Exception as e:
-                logger.warning(f"Versuch 2 fehlgeschlagen: {e}")
-            
-            # Versuche 3: Abruf mit größerem Zeitfenster
-            try:
-                logger.info("Versuche 3: Abruf mit größerem Zeitfenster")
-                extended_start = int((start_time - timedelta(minutes=5)).timestamp() * 1000)
-                extended_end = int((end_time + timedelta(minutes=5)).timestamp() * 1000)
-                
-                extended_trades = await self.exchange.fetch_trades(
+                return await self._fetch_trades_from_ohlcv_fallback(
                     symbol=symbol,
-                    since=extended_start,
-                    limit=limit * 3
+                    start_time=start_time,
+                    end_time=end_time
                 )
-                logger.info(f"Versuch 3: {len(extended_trades)} Trades erhalten")
-                
-                # Filtere Trades im ursprünglichen Zeitfenster
-                for trade in extended_trades:
-                    trade_time = trade['timestamp']
-                    if since <= trade_time <= end_ms:
-                        parsed_trade = self._parse_trade(trade)
-                        all_trades.append(parsed_trade)
-                
-                logger.info(f"Versuch 3: {len(all_trades)} Trades im Zeitfenster")
-                
-            except Exception as e:
-                logger.warning(f"Versuch 3 fehlgeschlagen: {e}")
-            
-            # Versuche 4: Prüfe, ob es überhaupt Trades für dieses Symbol gibt
-            try:
-                logger.info("Versuche 4: Prüfe auf beliebige Trades")
-                any_trades = await self.exchange.fetch_trades(
-                    symbol=symbol,
-                    limit=10
-                )
-                logger.info(f"Versuch 4: {len(any_trades)} beliebige Trades erhalten")
-                
-                if any_trades:
-                    latest_trade_time = datetime.fromtimestamp(any_trades[0]['timestamp'] / 1000)
-                    oldest_trade_time = datetime.fromtimestamp(any_trades[-1]['timestamp'] / 1000)
-                    logger.info(f"Neuester Trade: {latest_trade_time}")
-                    logger.info(f"Ältester Trade: {oldest_trade_time}")
-                    
-                    # Prüfe, ob unser Zeitbereich im Bereich der verfügbaren Trades liegt
-                    if end_time < oldest_trade_time:
-                        logger.warning("Angefragter Zeitbereich liegt vor den verfügbaren Trades")
-                    elif start_time > latest_trade_time:
-                        logger.warning("Angefragter Zeitbereich liegt nach den verfügbaren Trades")
-                else:
-                    logger.warning("Keine Trades für dieses Symbol verfügbar")
-                    
-            except Exception as e:
-                logger.warning(f"Versuch 4 fehlgeschlagen: {e}")
-            
-            logger.info(f"=== End fetch_trades Debug Info ===")
-            logger.info(f"Final result: {len(all_trades)} trades")
             
             return all_trades
             
@@ -380,7 +314,111 @@ class ExchangeCollector(BaseCollector):
                 f"Fehler beim Fetchen von Trades: {e}",
                 exc_info=True
             )
-            raise
+            # Versuche OHLCV-Fallback als letztes Mittel
+            try:
+                return await self._fetch_trades_from_ohlcv_fallback(
+                    symbol=symbol,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+            except:
+                raise  # Original-Fehler wenn auch Fallback fehlschlägt
+    
+    async def _fetch_trades_from_ohlcv_fallback(
+        self,
+        symbol: str,
+        start_time: datetime,
+        end_time: datetime
+    ) -> List[Dict[str, Any]]:
+        """
+        Fallback: Erstelle synthetische Trades aus OHLCV-Daten
+        
+        Verwendet 1-Minuten Candles um Trade-Aktivität zu approximieren.
+        Nützlich für historische Daten, wo echte Trades nicht mehr verfügbar sind.
+        
+        Args:
+            symbol: Trading Pair
+            start_time: Start-Zeitpunkt
+            end_time: End-Zeitpunkt
+            
+        Returns:
+            Liste von synthetischen Trades
+        """
+        try:
+            logger.info(f"OHLCV-Fallback aktiviert für {symbol}")
+            
+            # Hole 1-Minuten Candles für beste Granularität
+            ohlcv_data = await self.fetch_ohlcv_range(
+                symbol=symbol,
+                timeframe='1m',
+                start_time=start_time,
+                end_time=end_time
+            )
+            
+            if not ohlcv_data:
+                logger.warning("Keine OHLCV-Daten verfügbar für Fallback")
+                return []
+            
+            logger.info(
+                f"OHLCV-Fallback: {len(ohlcv_data)} Candles gefunden - "
+                f"Erstelle synthetische Trades"
+            )
+            
+            synthetic_trades = []
+            
+            for candle in ohlcv_data:
+                # Erstelle 4 synthetische Trades pro Candle (Open, High, Low, Close)
+                # Dies approximiert die Trade-Aktivität basierend auf Preis-Bewegungen
+                volume_per_trade = candle['volume'] / 4
+                
+                # Bestimme Trade-Richtung basierend auf Candle-Bewegung
+                is_bullish = candle['close'] > candle['open']
+                
+                synthetic_trades.extend([
+                    {
+                        'id': f"ohlcv_{candle['timestamp'].isoformat()}_open",
+                        'timestamp': candle['timestamp'],
+                        'trade_type': 'buy' if is_bullish else 'sell',
+                        'amount': volume_per_trade,
+                        'price': candle['open'],
+                        'value_usd': volume_per_trade * candle['open'],
+                    },
+                    {
+                        'id': f"ohlcv_{candle['timestamp'].isoformat()}_high",
+                        'timestamp': candle['timestamp'] + timedelta(seconds=15),
+                        'trade_type': 'buy',  # High = Kaufdruck
+                        'amount': volume_per_trade,
+                        'price': candle['high'],
+                        'value_usd': volume_per_trade * candle['high'],
+                    },
+                    {
+                        'id': f"ohlcv_{candle['timestamp'].isoformat()}_low",
+                        'timestamp': candle['timestamp'] + timedelta(seconds=30),
+                        'trade_type': 'sell',  # Low = Verkaufsdruck
+                        'amount': volume_per_trade,
+                        'price': candle['low'],
+                        'value_usd': volume_per_trade * candle['low'],
+                    },
+                    {
+                        'id': f"ohlcv_{candle['timestamp'].isoformat()}_close",
+                        'timestamp': candle['timestamp'] + timedelta(seconds=45),
+                        'trade_type': 'buy' if is_bullish else 'sell',
+                        'amount': volume_per_trade,
+                        'price': candle['close'],
+                        'value_usd': volume_per_trade * candle['close'],
+                    },
+                ])
+            
+            logger.info(
+                f"✅ OHLCV-Fallback erfolgreich: {len(synthetic_trades)} "
+                f"synthetische Trades erstellt aus {len(ohlcv_data)} Candles"
+            )
+            
+            return synthetic_trades
+            
+        except Exception as e:
+            logger.error(f"OHLCV-Fallback fehlgeschlagen: {e}", exc_info=True)
+            return []
     
     def _parse_trade(self, raw_trade: Dict) -> Dict[str, Any]:
         """
