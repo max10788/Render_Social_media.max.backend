@@ -244,6 +244,7 @@ app.include_router(contracts_router, prefix="/api/v1")
 app.include_router(wallet_router)
 app.include_router(frontend_router)
 app.include_router(price_movers_router)
+app.include_router(analyze_router)  # ← DIESE ZEILE HINZUFÜGEN
 
 # ------------------------------------------------------------------
 # WebSocket Endpoint
