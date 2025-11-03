@@ -29,6 +29,7 @@ from app.core.backend_crypto_tracker.api.routes.frontend_routes import router as
 from app.core.backend_crypto_tracker.api.routes.wallet_routes import router as wallet_router
 from app.core.price_movers.api.routes import router as price_movers_router
 from app.core.price_movers.api.analyze_routes import router as analyze_router  # ← DIESE ZEILE HINZUFÜGEN
+from app.core.price_movers.api.wallet_detail_routes import router as wallet_detail_router
 
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
@@ -245,6 +246,7 @@ app.include_router(wallet_router)
 app.include_router(frontend_router)
 app.include_router(price_movers_router)
 app.include_router(analyze_router)  # ← DIESE ZEILE HINZUFÜGEN
+app.include_router(wallet_detail_router)
 
 # ------------------------------------------------------------------
 # WebSocket Endpoint
