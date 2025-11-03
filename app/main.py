@@ -17,6 +17,7 @@ import signal
 import sys
 
 # Router-Imports
+# Router-Imports
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
     router as custom_analysis_router,
 )
@@ -27,6 +28,7 @@ from app.core.backend_crypto_tracker.api.routes import scanner_routes
 from app.core.backend_crypto_tracker.api.routes.frontend_routes import router as frontend_router
 from app.core.backend_crypto_tracker.api.routes.wallet_routes import router as wallet_router
 from app.core.price_movers.api.routes import router as price_movers_router
+from app.core.price_movers.api.analyze_routes import router as analyze_router  # ← DIESE ZEILE HINZUFÜGEN
 
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
