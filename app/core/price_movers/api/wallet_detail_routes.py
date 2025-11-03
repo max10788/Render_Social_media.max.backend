@@ -170,26 +170,22 @@ async def get_wallet_details(
         # Generiere Blockchain Explorer URL
         explorer_info = get_blockchain_explorer_url(wallet_id, symbol)
         
-        # Erstelle Response
+        # Erstelle Response (Flat Structure für Frontend)
         response = {
             "success": True,
             "wallet_id": wallet_id,
-            "wallet_address": wallet_id,  # Gleich wie ID
+            "wallet_address": wallet_id,
             "wallet_type": wallet_type,
             "blockchain": explorer_info["blockchain"],
-            "explorer": {
-                "name": explorer_info["explorer_name"],
-                "url": explorer_info["explorer_url"]
-            },
-            "statistics": {
-                "first_seen": first_seen.isoformat() if isinstance(first_seen, datetime) else first_seen,
-                "last_seen": last_seen.isoformat() if isinstance(last_seen, datetime) else last_seen,
-                "total_trades": trade_count,
-                "total_volume": round(total_volume, 4),
-                "total_value_usd": round(total_value, 2),
-                "avg_impact_score": round(avg_impact, 4),
-                "avg_trade_size": round(total_volume / trade_count, 4) if trade_count > 0 else 0
-            },
+            "explorer_name": explorer_info["explorer_name"],
+            "explorer_url": explorer_info["explorer_url"],
+            "first_seen": first_seen.isoformat() if isinstance(first_seen, datetime) else first_seen,
+            "last_seen": last_seen.isoformat() if isinstance(last_seen, datetime) else last_seen,
+            "total_trades": trade_count,
+            "total_volume": round(total_volume, 4),
+            "total_value_usd": round(total_value, 2),
+            "avg_impact_score": round(avg_impact, 4),
+            "avg_trade_size": round(total_volume / trade_count, 4) if trade_count > 0 else 0,
             "exchange": exchange,
             "symbol": symbol,
             "time_range_hours": time_range_hours
