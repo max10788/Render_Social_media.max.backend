@@ -184,21 +184,23 @@ async def get_hardcoded_prices() -> Dict[str, float]:
 
 
 async def execute_get_token_prices_bulk(
-    token_addresses: List[str], 
+    token_addresses: List[str],
     chain: str = 'ethereum'
 ) -> Dict[str, float]:
     """
-    Get USD prices for multiple tokens with QUINTUPLE FALLBACK system
-    
-    Strategy:
-    1. Start with hardcoded stablecoin prices
-    2. Try Moralis with PRIMARY key
-    3. Try Moralis with FALLBACK key #1
-    4. Try Moralis with FALLBACK key #2 (🆕 THIRD KEY)
-    5. Try CoinGecko for any remaining
-    
-    ✅ Maximum reliability with TRIPLE Moralis keys
+    Fetch token prices in bulk
+    ✅ NEW: Hard limit to prevent API exhaustion
     """
+    # ✅ CRITICAL: Hard limit to prevent API exhaustion
+    MAX_TOKENS_PER_REQUEST = 100
+    
+    if len(token_addresses) > MAX_TOKENS_PER_REQUEST:
+        logger.warning(f"⚠️ Too many tokens requested ({len(token_addresses)})")
+        logger.warning(f"   Limiting to top {MAX_TOKENS_PER_REQUEST} tokens to preserve API limits")
+        token_addresses = token_addresses[:MAX_TOKENS_PER_REQUEST]
+    
+    logger.info(f"💰 Fetching prices for {len(token_addresses)} tokens on {chain}")
+
     try:
         if not token_addresses:
             logger.warning("⚠️ No token addresses provided")
