@@ -31,6 +31,7 @@ async def get_transactions_moralis(
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Get wallet transactions via Moralis API
+    ✅ FIXED: Now uses /erc20/transfers endpoint
     
     Args:
         key_label: "Primary", "Fallback-1", or "Fallback-2" for logging
@@ -47,8 +48,8 @@ async def get_transactions_moralis(
         
         _last_moralis_request = asyncio.get_event_loop().time()
         
-        # Moralis Wallet Transactions API
-        url = f"https://deep-index.moralis.io/api/v2/{wallet_address}"
+        # ✅ FIXED: Use ERC20 transfers endpoint
+        url = f"https://deep-index.moralis.io/api/v2/{wallet_address}/erc20/transfers"
         
         headers = {
             'accept': 'application/json',
@@ -57,8 +58,7 @@ async def get_transactions_moralis(
         
         params = {
             'chain': chain,
-            'limit': limit,
-            'include': 'internal_transactions'
+            'limit': limit
         }
         
         logger.info(f"🚀 Moralis ({key_label}): Fetching transactions for {wallet_address[:10]}...")
@@ -87,49 +87,56 @@ async def get_transactions_moralis(
                 
                 transactions = []
                 
-                for tx in data['result']:
+                # ✅ Parse ERC20 transfers as transactions
+                for transfer in data['result']:
                     try:
+                        # Extract timestamp
+                        timestamp_str = transfer.get('block_timestamp', '')
+                        if timestamp_str:
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                            timestamp = int(dt.timestamp())
+                        else:
+                            timestamp = 0
+                        
+                        # Extract value with decimals
+                        decimals = int(transfer.get('token_decimals', 18))
+                        value_raw = float(transfer.get('value', 0))
+                        value = value_raw / (10 ** decimals)
+                        
+                        # Build transaction with token transfer
                         parsed_tx = {
-                            'hash': tx.get('hash', ''),
-                            'from': tx.get('from_address', '').lower(),
-                            'to': tx.get('to_address', '').lower(),
-                            'value': float(tx.get('value', 0)) / 1e18,
-                            'timestamp': int(tx.get('block_timestamp', 0)),
-                            'block_number': int(tx.get('block_number', 0)),
-                            'gas_price': float(tx.get('gas_price', 0)),
-                            'gas_used': int(tx.get('receipt_gas_used', 0)),
-                            'input': tx.get('input', ''),
-                            'nonce': int(tx.get('nonce', 0)),
-                            'transaction_index': int(tx.get('transaction_index', 0)),
-                            'token_transfers': []
+                            'hash': transfer.get('transaction_hash', ''),
+                            'from': transfer.get('from_address', '').lower(),
+                            'to': transfer.get('to_address', '').lower(),
+                            'value': 0,  # ERC20 transfers don't have native ETH value
+                            'timestamp': timestamp,
+                            'block_number': int(transfer.get('block_number', 0)),
+                            'gas_price': 0,
+                            'gas_used': 0,
+                            'input': '',
+                            'nonce': 0,
+                            'transaction_index': int(transfer.get('transaction_index', 0)),
+                            'token_transfers': [{
+                                'token_address': transfer.get('address', '').lower(),
+                                'token_symbol': transfer.get('token_symbol', ''),
+                                'token_name': transfer.get('token_name', ''),
+                                'from': transfer.get('from_address', '').lower(),
+                                'to': transfer.get('to_address', '').lower(),
+                                'value': value,
+                                'value_raw': str(int(value_raw)),
+                                'decimals': decimals,
+                                'value_usd': transfer.get('value_usd', 0)
+                            }]
                         }
                         
-                        # Parse internal transactions (token transfers)
-                        internal_txs = tx.get('internal_transactions', [])
-                        if internal_txs:
-                            for internal in internal_txs:
-                                try:
-                                    token_transfer = {
-                                        'token_address': internal.get('token_address', '').lower(),
-                                        'token_symbol': internal.get('token_symbol', ''),
-                                        'token_name': internal.get('token_name', ''),
-                                        'from': internal.get('from_address', '').lower(),
-                                        'to': internal.get('to_address', '').lower(),
-                                        'value': float(internal.get('value', 0)),
-                                        'value_raw': internal.get('value', '0'),
-                                        'decimals': int(internal.get('token_decimals', 18))
-                                    }
-                                    parsed_tx['token_transfers'].append(token_transfer)
-                                except (ValueError, TypeError):
-                                    continue
-                        
                         parsed_tx['input_count'] = 1
-                        parsed_tx['output_count'] = len(parsed_tx['token_transfers']) + (1 if parsed_tx['value'] > 0 else 0)
+                        parsed_tx['output_count'] = 1
                         
                         transactions.append(parsed_tx)
                         
                     except (ValueError, TypeError) as e:
-                        logger.debug(f"⚠️ Error parsing transaction: {e}")
+                        logger.debug(f"⚠️ Error parsing transfer: {e}")
                         continue
                 
                 logger.info(f"✅ Moralis ({key_label}): Successfully fetched {len(transactions)} transactions")
