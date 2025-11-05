@@ -556,11 +556,12 @@ class TokenAnalyzer:
     ) -> Dict[str, Any]:
         """
         OPTIMIZED VERSION - Minimizes API calls while collecting all necessary data
+        ✅ NEW: Filters out spam tokens to save API calls
         
         Returns complete blockchain data including:
         - transactions[] with token_transfers[]
-        - token_balances[] 
-        - prices{} for USD conversion
+        - token_balances[] (filtered, max 50)
+        - prices{} for USD conversion (only for relevant tokens)
         - current_balance
         """
         try:
@@ -609,7 +610,56 @@ class TokenAnalyzer:
                     prices = token_data.get('prices', {})
                     total_portfolio_value_usd = token_data.get('total_portfolio_value_usd', 0.0)
                     
-                    self.logger.info(f"✅ Found {len(token_balances)} token balances and {len(prices)} prices")
+                    # ✅ CRITICAL FILTER - Reduce API calls by filtering tokens
+                    original_count = len(token_balances)
+                    
+                    if original_count > 50:
+                        self.logger.warning(f"⚠️ Wallet has {original_count} tokens - applying filters to reduce API calls")
+                        
+                        # Filter 1: Remove spam tokens
+                        token_balances = [
+                            t for t in token_balances
+                            if not t.get('possible_spam', False)
+                        ]
+                        self.logger.info(f"   After spam filter: {len(token_balances)} tokens")
+                        
+                        # Filter 2: Remove zero balances
+                        token_balances = [
+                            t for t in token_balances
+                            if t.get('balance', 0) > 0
+                        ]
+                        self.logger.info(f"   After zero balance filter: {len(token_balances)} tokens")
+                        
+                        # Filter 3: Only verified contracts
+                        token_balances = [
+                            t for t in token_balances
+                            if t.get('verified_contract', False)
+                        ]
+                        self.logger.info(f"   After verification filter: {len(token_balances)} tokens")
+                        
+                        # Filter 4: Security score >= 40
+                        token_balances = [
+                            t for t in token_balances
+                            if t.get('security_score', 0) >= 40
+                        ]
+                        self.logger.info(f"   After security filter: {len(token_balances)} tokens")
+                        
+                        # Filter 5: Sort by balance * security_score and take top 50
+                        token_balances = sorted(
+                            token_balances,
+                            key=lambda x: x.get('balance', 0) * x.get('security_score', 1),
+                            reverse=True
+                        )[:50]
+                        
+                        self.logger.info(f"✅ Filtered from {original_count} to {len(token_balances)} relevant tokens")
+                        
+                        # Update prices dict to only include filtered tokens
+                        filtered_addresses = {t.get('token_address', '').lower() for t in token_balances}
+                        prices = {k: v for k, v in prices.items() if k.lower() in filtered_addresses}
+                        
+                        self.logger.info(f"✅ Reduced price lookups from {original_count} to {len(prices)}")
+                    else:
+                        self.logger.info(f"✅ Wallet has {original_count} tokens - no filtering needed")
                     
                 except Exception as e:
                     self.logger.warning(f"Could not fetch token data: {e}")
@@ -662,8 +712,8 @@ class TokenAnalyzer:
             blockchain_data = {
                 'address': wallet_address,
                 'transactions': txs,  # ✅ With token_transfers[] for each tx
-                'token_balances': token_balances,  # 🆕
-                'prices': prices,  # 🆕
+                'token_balances': token_balances,  # 🆕 Filtered to max 50 relevant tokens
+                'prices': prices,  # 🆕 Only prices for filtered tokens
                 'current_balance': current_balance,
                 'total_portfolio_value_usd': total_portfolio_value_usd,  # 🆕
                 
