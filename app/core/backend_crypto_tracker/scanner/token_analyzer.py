@@ -639,7 +639,7 @@ class TokenAnalyzer:
                         # Filter 4: Security score >= 40
                         token_balances = [
                             t for t in token_balances
-                            if t.get('security_score', 0) >= 40
+                            if t.get('security_score', 0) >= 30
                         ]
                         self.logger.info(f"   After security filter: {len(token_balances)} tokens")
                         
