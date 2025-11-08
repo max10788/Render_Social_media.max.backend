@@ -630,10 +630,9 @@ class TokenAnalyzer:
                         ]
                         self.logger.info(f"   After zero balance filter: {len(token_balances)} tokens")
                         
-                        # Filter 3: Only verified contracts
                         token_balances = [
                             t for t in token_balances
-                            if t.get('verified_contract', False)
+                            if t.get('verified_contract', False) or t.get('security_score', 0) >= 60  # ✅ ODER-Bedingung
                         ]
                         self.logger.info(f"   After verification filter: {len(token_balances)} tokens")
                         
