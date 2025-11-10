@@ -640,7 +640,270 @@ class ExchangeCollector(BaseCollector):
                 await asyncio.sleep(wait_time)
         
         self._last_request_time = datetime.now()
+
+    async def fetch_aggregate_trades(
+        self,
+        symbol: str,
+        start_time: datetime,
+        end_time: datetime,
+        limit: Optional[int] = 1000
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetcht Aggregated Trades (bessere Entity-Approximation)
+        
+        Binance: Native aggTrades API
+        Bitget: Manuelle Aggregation
+        Kraken: Normale Trades
+        
+        Aggregierte Trades gruppieren kleine Trades vom gleichen Maker
+        → Bessere "Entity" Erkennung
+        
+        Args:
+            symbol: Trading Pair
+            start_time: Start-Zeitpunkt
+            end_time: End-Zeitpunkt
+            limit: Max. Anzahl Trades
+            
+        Returns:
+            Liste von aggregierten Trades
+        """
+        if not self.exchange:
+            raise RuntimeError(f"Exchange {self.exchange_name} not initialized")
+        
+        # Prüfe, ob historisch
+        time_diff = datetime.now() - start_time
+        is_historical = time_diff > timedelta(minutes=10)
+        
+        if is_historical:
+            logger.warning(
+                f"Aggregate trades nicht verfügbar für historische Daten. "
+                f"Verwende OHLCV-Fallback."
+            )
+            return await self._fetch_trades_from_ohlcv_fallback(
+                symbol=symbol,
+                start_time=start_time,
+                end_time=end_time
+            )
+        
+        # Exchange-spezifische Implementierung
+        if self.exchange_name == 'binance':
+            return await self._fetch_binance_agg_trades(symbol, start_time, end_time, limit)
+        elif self.exchange_name == 'bitget':
+            return await self._fetch_bitget_agg_trades(symbol, start_time, end_time, limit)
+        elif self.exchange_name == 'kraken':
+            # Kraken hat keine aggTrades → normale Trades + manuelle Aggregation
+            trades = await self.fetch_trades(symbol, start_time, end_time, limit)
+            return self._aggregate_trades_manually(trades)
+        else:
+            # Fallback: Normale Trades
+            return await self.fetch_trades(symbol, start_time, end_time, limit)
     
+    async def _fetch_binance_agg_trades(
+        self,
+        symbol: str,
+        start_time: datetime,
+        end_time: datetime,
+        limit: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Binance Native Aggregated Trades
+        
+        Verwendet /api/v3/aggTrades Endpoint
+        Trades vom gleichen Maker sind bereits gruppiert
+        """
+        await self._rate_limit_wait()
+        
+        try:
+            # Binance aggTrades nutzt CCXT nicht direkt
+            # Wir müssen den Raw API Call machen
+            import aiohttp
+            
+            url = "https://data-api.binance.vision/api/v3/aggTrades"
+            
+            params = {
+                'symbol': symbol.replace('/', ''),  # BTCUSDT statt BTC/USDT
+                'startTime': int(start_time.timestamp() * 1000),
+                'endTime': int(end_time.timestamp() * 1000),
+                'limit': min(limit, 1000)  # Max 1000 per request
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status != 200:
+                        logger.error(f"Binance aggTrades failed: {response.status}")
+                        # Fallback zu normalen Trades
+                        return await self.fetch_trades(symbol, start_time, end_time, limit)
+                    
+                    agg_trades_raw = await response.json()
+            
+            # Parse zu unserem Format
+            agg_trades = []
+            for agg in agg_trades_raw:
+                agg_trades.append({
+                    'id': f"agg_{agg['a']}",  # Aggregate trade ID
+                    'timestamp': datetime.fromtimestamp(agg['T'] / 1000),
+                    'trade_type': 'buy' if agg['m'] else 'sell',  # m = is buyer maker
+                    'amount': float(agg['q']),  # Quantity
+                    'price': float(agg['p']),   # Price
+                    'value_usd': float(agg['q']) * float(agg['p']),
+                    'first_trade_id': agg['f'],  # First trade ID in aggregate
+                    'last_trade_id': agg['l'],   # Last trade ID in aggregate
+                    'trade_count': agg['l'] - agg['f'] + 1,  # 🆕 Anzahl aggregierter Trades
+                })
+            
+            logger.info(
+                f"✅ Binance aggTrades: {len(agg_trades)} aggregated trades fetched "
+                f"(avg {sum(t['trade_count'] for t in agg_trades) / len(agg_trades):.1f} trades per aggregate)"
+            )
+            
+            return agg_trades
+            
+        except Exception as e:
+            logger.error(f"Binance aggTrades error: {e}", exc_info=True)
+            # Fallback zu normalen Trades
+            return await self.fetch_trades(symbol, start_time, end_time, limit)
+    
+    async def _fetch_bitget_agg_trades(
+        self,
+        symbol: str,
+        start_time: datetime,
+        end_time: datetime,
+        limit: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Bitget: Hole normale Trades + manuelle Aggregation
+        
+        Bitget hat keinen nativen aggTrades Endpoint
+        """
+        # Hole normale Trades
+        trades = await self.fetch_trades(symbol, start_time, end_time, limit)
+        
+        # Aggregiere manuell
+        return self._aggregate_trades_manually(trades)
+    
+    def _aggregate_trades_manually(
+        self,
+        trades: List[Dict[str, Any]],
+        time_threshold_seconds: float = 5.0,
+        size_threshold_pct: float = 0.05
+    ) -> List[Dict[str, Any]]:
+        """
+        Manuelle Trade-Aggregation
+        
+        Gruppiert Trades die wahrscheinlich vom gleichen Entity stammen:
+        - Zeitlich nah (<5 Sekunden)
+        - Ähnliche Größe (±5%)
+        - Gleiche Richtung (buy/sell)
+        - Ähnlicher Preis (±0.1%)
+        
+        Args:
+            trades: Liste von Trades
+            time_threshold_seconds: Max. Zeit zwischen Trades
+            size_threshold_pct: Max. Größen-Unterschied (als %)
+            
+        Returns:
+            Liste von aggregierten Trades
+        """
+        if not trades:
+            return []
+        
+        # Sortiere nach Zeit
+        sorted_trades = sorted(trades, key=lambda t: t['timestamp'])
+        
+        aggregated = []
+        current_group = []
+        
+        for trade in sorted_trades:
+            if not current_group:
+                # Starte neue Gruppe
+                current_group.append(trade)
+                continue
+            
+            last_trade = current_group[-1]
+            
+            # Prüfe Ähnlichkeit
+            time_diff = (trade['timestamp'] - last_trade['timestamp']).total_seconds()
+            
+            # Prüfe Size-Ähnlichkeit (nur wenn > 0)
+            if last_trade['amount'] > 0:
+                size_diff_pct = abs(trade['amount'] - last_trade['amount']) / last_trade['amount']
+            else:
+                size_diff_pct = 1.0  # Nicht ähnlich
+            
+            # Prüfe Preis-Ähnlichkeit
+            if last_trade['price'] > 0:
+                price_diff_pct = abs(trade['price'] - last_trade['price']) / last_trade['price']
+            else:
+                price_diff_pct = 1.0
+            
+            same_side = trade['trade_type'] == last_trade['trade_type']
+            
+            # Aggregations-Kriterien
+            should_aggregate = (
+                time_diff < time_threshold_seconds and
+                size_diff_pct < size_threshold_pct and
+                price_diff_pct < 0.001 and  # ±0.1% Preis
+                same_side
+            )
+            
+            if should_aggregate:
+                # Füge zu aktueller Gruppe hinzu
+                current_group.append(trade)
+            else:
+                # Finalize aktuelle Gruppe
+                if len(current_group) >= 1:  # Auch einzelne Trades behalten
+                    aggregated.append(self._merge_trade_group(current_group))
+                
+                # Starte neue Gruppe
+                current_group = [trade]
+        
+        # Don't forget last group
+        if current_group:
+            aggregated.append(self._merge_trade_group(current_group))
+        
+        logger.info(
+            f"✅ Manual aggregation: {len(trades)} trades → {len(aggregated)} aggregated "
+            f"(compression: {len(trades) / len(aggregated):.1f}x)"
+        )
+        
+        return aggregated
+    
+    def _merge_trade_group(self, group: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Merged eine Gruppe von Trades zu einem Aggregat
+        
+        Args:
+            group: Liste von Trades
+            
+        Returns:
+            Aggregierter Trade
+        """
+        if len(group) == 1:
+            # Einzelner Trade → füge nur trade_count hinzu
+            trade = group[0].copy()
+            trade['trade_count'] = 1
+            return trade
+        
+        # Multiple Trades → merge
+        total_amount = sum(t['amount'] for t in group)
+        total_value = sum(t['value_usd'] for t in group)
+        
+        # Volume-weighted average price
+        vwap = total_value / total_amount if total_amount > 0 else group[0]['price']
+        
+        return {
+            'id': f"agg_{group[0]['id']}",
+            'timestamp': group[0]['timestamp'],  # Nutze ersten Timestamp
+            'trade_type': group[0]['trade_type'],
+            'amount': total_amount,
+            'price': vwap,
+            'value_usd': total_value,
+            'trade_count': len(group),  # 🆕 Wie viele Trades wurden gemerged
+            'first_trade_id': group[0]['id'],
+            'last_trade_id': group[-1]['id'],
+            'time_span_seconds': (group[-1]['timestamp'] - group[0]['timestamp']).total_seconds()
+        }
+
     async def close(self):
         """Schließt Exchange Connection"""
         if self.exchange:
