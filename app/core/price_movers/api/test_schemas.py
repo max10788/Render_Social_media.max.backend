@@ -75,22 +75,21 @@ class WalletMover(BaseModel):
     total_volume: float = Field(..., description="Total trading volume")
     trade_count: int = Field(..., description="Number of trades")
     avg_trade_size: float = Field(..., description="Average trade size")
+    
+    # 🆕 NEU: Lightweight-spezifische Felder
+    confidence_score: Optional[float] = Field(
+        None, 
+        ge=0, 
+        le=1, 
+        description="Confidence that this is a real entity (0-1)"
+    )
+    timing_pattern: Optional[str] = Field(
+        None,
+        description="Timing pattern: 'regular', 'burst', 'random'"
+    )
+    
     first_trade: Optional[datetime] = Field(None, description="First trade timestamp")
     last_trade: Optional[datetime] = Field(None, description="Last trade timestamp")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "wallet_id": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
-                "wallet_type": "whale",
-                "impact_score": 0.85,
-                "total_volume": 2400000.50,
-                "trade_count": 127,
-                "avg_trade_size": 18897.64,
-                "first_trade": "2025-10-30T12:00:00Z",
-                "last_trade": "2025-10-30T12:05:00Z"
-            }
-        }
 
 
 class AnalysisMetadata(BaseModel):
