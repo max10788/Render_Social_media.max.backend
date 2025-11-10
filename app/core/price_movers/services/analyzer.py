@@ -1,18 +1,18 @@
 """
-Price Mover Analyzer - Vollständige Integration
+Price Mover Analyzer - Vollständige Integration mit Enhanced Features
 
 Orchestriert die gesamte Analyse-Pipeline mit echten Daten:
-1. Data Collection von Exchanges
-2. Wallet Aggregation  
+1. Data Collection von Exchanges (mit Aggregated Trades Support!)
+2. Lightweight Entity Identification (Render Free optimiert)
 3. Impact Calculation mit ImpactCalculator
 4. Pattern Detection
 5. Ranking & Filtering
-"""
 
-from app.core.price_movers.services.lightweight_entity_identifier import (
-    LightweightEntityIdentifier,
-    TradingEntity
-)
+NEUE FEATURES:
+- ✅ Aggregated Trades Support (bessere Entity-Detection)
+- ✅ Lightweight Mode (für Render Free)
+- ✅ Enhanced Mode Flag
+"""
 
 import asyncio
 import logging
@@ -26,6 +26,10 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from app.core.price_movers.services.impact_calculator import ImpactCalculator
+from app.core.price_movers.services.lightweight_entity_identifier import (
+    LightweightEntityIdentifier,
+    TradingEntity
+)
 from app.core.price_movers.utils.metrics import (
     detect_bot_pattern,
     detect_whale_pattern,
@@ -47,6 +51,7 @@ class Trade:
     amount: float
     price: float
     value_usd: float
+    trade_count: int = 1  # 🆕 NEU: Für aggregierte Trades
 
 
 @dataclass
@@ -74,7 +79,7 @@ class Candle:
 
 @dataclass
 class WalletActivity:
-    """Wallet-Aktivitäten Container"""
+    """Wallet-Aktivitäten Container (LEGACY - für Backward Compatibility)"""
     wallet_id: str
     trades: List[Trade]
     
@@ -128,30 +133,45 @@ class PriceMoverAnalyzer:
     
     Orchestriert:
     - Datensammlung von Exchanges (via ExchangeCollector)
-    - Wallet-Pattern Erkennung
+    - Entity Identification (Lightweight oder Legacy)
     - Impact Score Berechnung (via ImpactCalculator)
     - Ranking und Filterung
+    
+    FEATURES:
+    - ✅ Lightweight Mode (Render Free optimiert, NO ML)
+    - ✅ Enhanced Mode (Aggregated Trades Support)
+    - ✅ Legacy Mode (Simple Pattern-based)
     """
     
     def __init__(
         self,
         exchange_collector=None,
         impact_calculator: Optional[ImpactCalculator] = None,
-        use_lightweight: bool = True  # 🆕 NEU: Default auf True für Render Free!
+        use_lightweight: bool = True  # Default: Lightweight für Render Free
     ):
+        """
+        Initialisiert den Analyzer
+        
+        Args:
+            exchange_collector: Collector für Exchange-Daten
+            impact_calculator: Calculator für Impact Scores (optional)
+            use_lightweight: Nutze Lightweight Identifier (empfohlen für Render Free)
+        """
         self.exchange_collector = exchange_collector
         self.use_lightweight = use_lightweight
         
         if use_lightweight:
-            # NEU: Lightweight Entity Identifier
+            # NEU: Lightweight Entity Identifier (NO ML, 10x faster)
             self.entity_identifier = LightweightEntityIdentifier(
                 exchange_collector=exchange_collector
             )
             logger.info("✓ Lightweight Entity Identification ENABLED (Render Free optimiert)")
         else:
-            # ALT: Legacy Pattern-based
+            # LEGACY: Simple Pattern-based (backup)
             self.impact_calculator = impact_calculator or ImpactCalculator()
             logger.info("⚠️ Using legacy pattern-based clustering")
+        
+        logger.info("PriceMoverAnalyzer initialisiert")
     
     @measure_time
     async def analyze_candle(
@@ -163,7 +183,8 @@ class PriceMoverAnalyzer:
         end_time: datetime,
         min_impact_threshold: float = 0.05,
         top_n_wallets: int = 10,
-        include_trades: bool = False
+        include_trades: bool = False,
+        use_enhanced: bool = True  # 🆕 NEU: Enhanced Mode (Aggregated Trades)
     ) -> Dict:
         """
         Haupt-Analyse-Methode
@@ -177,6 +198,7 @@ class PriceMoverAnalyzer:
             min_impact_threshold: Minimaler Impact Score
             top_n_wallets: Anzahl Top Wallets
             include_trades: Trades in Response inkludieren
+            use_enhanced: 🆕 Nutze Aggregated Trades (bessere Daten!)
             
         Returns:
             Analysis Response Dictionary
@@ -184,14 +206,20 @@ class PriceMoverAnalyzer:
         start = datetime.now()
         logger.info(
             f"Starte Analyse: {exchange} {symbol} {timeframe} "
-            f"({start_time} - {end_time})"
+            f"({start_time} - {end_time}) "
+            f"[Enhanced: {use_enhanced}]"
         )
         
         try:
-            # Phase 1: Data Collection (ECHT!)
+            # Phase 1: Data Collection (mit Enhanced Support!)
             logger.debug("Phase 1: Datensammlung von Exchange")
             candle, trades = await self._fetch_all_data(
-                exchange, symbol, timeframe, start_time, end_time
+                exchange, 
+                symbol, 
+                timeframe, 
+                start_time, 
+                end_time,
+                use_enhanced=use_enhanced  # 🆕 NEU!
             )
             
             if not trades:
@@ -199,12 +227,14 @@ class PriceMoverAnalyzer:
                 return self._empty_response(candle, exchange, symbol, timeframe)
             
             logger.info(f"✓ {len(trades)} Trades von {exchange} gefetcht")
-
+            
+            # Phase 2+3: Entity Identification & Impact Calculation
             if self.use_lightweight:
-                # 🆕 NEU: Lightweight Entity Identification
+                # 🆕 LIGHTWEIGHT MODE (Render Free optimiert)
                 logger.debug("Phase 2+3: Lightweight Entity Identification")
+                
                 entities = await self.entity_identifier.identify_entities(
-                    trades=trades,
+                    trades=self._trades_to_dict_list(trades),
                     candle_data={
                         'timestamp': candle.timestamp,
                         'open': candle.open,
@@ -219,11 +249,16 @@ class PriceMoverAnalyzer:
                 )
                 
                 # Konvertiere zu Legacy-Format für Response
-                top_movers = self._format_entities_as_movers(entities, top_n_wallets, include_trades)
+                top_movers = self._format_entities_as_movers(
+                    entities, 
+                    top_n_wallets, 
+                    include_trades
+                )
                 
                 logger.info(f"✓ {len(entities)} Entities identifiziert (Lightweight)")
+                
             else:
-                # ALT: Legacy Path
+                # LEGACY MODE
                 logger.debug("Phase 2: Wallet Aggregation (Legacy)")
                 wallet_activities = self._aggregate_wallet_activities(trades, candle)
                 logger.info(f"✓ {len(wallet_activities)} Wallet-Pattern identifiziert (Legacy)")
@@ -245,30 +280,6 @@ class PriceMoverAnalyzer:
                 )
                 logger.info(f"✓ Top {len(top_movers)} Movers gefiltert (Legacy)")
             
-            # Phase 2: Wallet Aggregation
-            logger.debug(f"Phase 2: Aggregiere {len(trades)} Trades zu Wallets")
-            wallet_activities = self._aggregate_wallet_activities(trades, candle)
-            logger.info(f"✓ {len(wallet_activities)} Wallet-Pattern identifiziert")
-            
-            # Phase 3: Impact Calculation (mit ImpactCalculator!)
-            logger.debug(f"Phase 3: Berechne Impact für {len(wallet_activities)} Wallets")
-            scored_wallets = await self._calculate_all_impacts(
-                wallet_activities,
-                candle,
-                candle.volume
-            )
-            logger.info(f"✓ Impact Scores berechnet")
-            
-            # Phase 4: Ranking & Filtering
-            logger.debug("Phase 4: Ranking und Filterung")
-            top_movers = self._rank_and_filter(
-                scored_wallets,
-                min_impact_threshold,
-                top_n_wallets,
-                include_trades
-            )
-            logger.info(f"✓ Top {len(top_movers)} Movers gefiltert")
-            
             # Build Response
             duration_ms = int((datetime.now() - start).total_seconds() * 1000)
             
@@ -286,7 +297,7 @@ class PriceMoverAnalyzer:
                     "analysis_timestamp": datetime.now(),
                     "processing_duration_ms": duration_ms,
                     "total_trades_analyzed": len(trades),
-                    "unique_wallets_found": len(wallet_activities),
+                    "unique_wallets_found": len(top_movers),
                     "exchange": str(exchange),
                     "symbol": symbol,
                     "timeframe": str(timeframe)
@@ -303,50 +314,6 @@ class PriceMoverAnalyzer:
         except Exception as e:
             logger.error(f"❌ Fehler bei Analyse: {e}", exc_info=True)
             raise
-
-    def _format_entities_as_movers(
-        self,
-        entities: List[TradingEntity],
-        top_n: int,
-        include_trades: bool
-    ) -> List[Dict]:
-        """Konvertiert TradingEntity zu WalletMover-Format"""
-        
-        # Nehme Top N
-        top_entities = entities[:top_n]
-        
-        movers = []
-        for entity in top_entities:
-            mover = {
-                "wallet_id": entity.entity_id,
-                "wallet_type": entity.entity_type,
-                "impact_score": entity.impact_score,
-                "impact_level": entity.impact_level,
-                "total_volume": round(entity.total_volume, 4),
-                "total_value_usd": round(entity.total_value_usd, 2),
-                "trade_count": entity.trade_count,
-                "avg_trade_size": round(entity.avg_trade_size, 4),
-                "volume_ratio": round(entity.impact_components["volume_ratio"], 3),
-                "components": entity.impact_components,
-                "confidence_score": entity.confidence_score,  # 🆕 NEU
-                "timing_pattern": entity.timing_pattern,      # 🆕 NEU
-            }
-            
-            if include_trades:
-                mover["trades"] = [
-                    {
-                        "timestamp": t.timestamp.isoformat(),
-                        "trade_type": t.trade_type,
-                        "amount": round(t.amount, 4),
-                        "price": round(t.price, 2),
-                        "value_usd": round(t.value_usd, 2)
-                    }
-                    for t in entity.trades
-                ]
-            
-            movers.append(mover)
-        
-        return movers
     
     async def _fetch_all_data(
         self,
@@ -354,10 +321,16 @@ class PriceMoverAnalyzer:
         symbol: str,
         timeframe: str,
         start_time: datetime,
-        end_time: datetime
+        end_time: datetime,
+        use_enhanced: bool = False  # 🆕 NEU: Enhanced Mode
     ) -> Tuple[Candle, List[Trade]]:
         """
         Sammelt alle benötigten Daten von der Exchange
+        
+        🆕 NEU: Mit use_enhanced=True werden bessere Daten genutzt:
+        - Aggregated Trades statt normale Trades
+        - Bessere Entity-Gruppierung
+        - Höhere Accuracy
         
         Returns:
             Tuple of (Candle, List[Trade])
@@ -374,11 +347,28 @@ class PriceMoverAnalyzer:
                 timestamp=start_time
             )
             
-            trades_task = self.exchange_collector.fetch_trades(
-                symbol=symbol,
-                start_time=start_time,
-                end_time=end_time
-            )
+            # 🆕 NEU: Nutze Aggregate Trades wenn möglich
+            time_diff = datetime.now() - start_time
+            is_recent = time_diff < timedelta(minutes=30)
+            
+            if use_enhanced and is_recent:
+                # Enhanced Mode: Nutze Aggregated Trades (bessere Entity-Detection!)
+                logger.info("✨ Using AGGREGATED TRADES (enhanced mode)")
+                trades_task = self.exchange_collector.fetch_aggregate_trades(
+                    symbol=symbol,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+            else:
+                # Standard Mode: Normale Trades (oder OHLCV-Fallback)
+                if use_enhanced and not is_recent:
+                    logger.info("⚠️ Enhanced mode requested but data too old, using standard mode")
+                
+                trades_task = self.exchange_collector.fetch_trades(
+                    symbol=symbol,
+                    start_time=start_time,
+                    end_time=end_time
+                )
             
             # Warte auf beide Requests
             candle_data, trades_data = await asyncio.gather(
@@ -413,7 +403,8 @@ class PriceMoverAnalyzer:
                     amount=trade_data["amount"],
                     price=trade_data["price"],
                     value_usd=trade_data.get("value_usd", 
-                                             trade_data["amount"] * trade_data["price"])
+                                             trade_data["amount"] * trade_data["price"]),
+                    trade_count=trade_data.get("trade_count", 1)  # 🆕 NEU: Aggregated count
                 )
                 trades.append(trade)
             
@@ -464,11 +455,75 @@ class PriceMoverAnalyzer:
                 trade_type='buy' if random.random() > 0.5 else 'sell',
                 amount=amount,
                 price=price,
-                value_usd=amount * price
+                value_usd=amount * price,
+                trade_count=1
             )
             trades.append(trade)
         
         return candle, trades
+    
+    def _trades_to_dict_list(self, trades: List[Trade]) -> List[Dict]:
+        """Konvertiert Trade-Objekte zu Dictionary-Liste"""
+        return [
+            {
+                'timestamp': t.timestamp,
+                'trade_type': t.trade_type,
+                'amount': t.amount,
+                'price': t.price,
+                'value_usd': t.value_usd,
+                'trade_count': t.trade_count  # 🆕 NEU
+            }
+            for t in trades
+        ]
+    
+    def _format_entities_as_movers(
+        self,
+        entities: List[TradingEntity],
+        top_n: int,
+        include_trades: bool
+    ) -> List[Dict]:
+        """
+        🆕 NEU: Konvertiert TradingEntity zu WalletMover-Format
+        
+        Für Lightweight Entity Identifier
+        """
+        # Nehme Top N
+        top_entities = entities[:top_n]
+        
+        movers = []
+        for entity in top_entities:
+            mover = {
+                "wallet_id": entity.entity_id,
+                "wallet_type": entity.entity_type,
+                "impact_score": entity.impact_score,
+                "impact_level": entity.impact_level,
+                "total_volume": round(entity.total_volume, 4),
+                "total_value_usd": round(entity.total_value_usd, 2),
+                "trade_count": entity.trade_count,
+                "avg_trade_size": round(entity.avg_trade_size, 4),
+                "volume_ratio": round(entity.impact_components["volume_ratio"], 3),
+                "components": entity.impact_components,
+                "confidence_score": entity.confidence_score,  # 🆕 NEU
+                "timing_pattern": entity.timing_pattern,      # 🆕 NEU
+            }
+            
+            if include_trades:
+                mover["trades"] = [
+                    {
+                        "timestamp": t.timestamp.isoformat(),
+                        "trade_type": t.trade_type,
+                        "amount": round(t.amount, 4),
+                        "price": round(t.price, 2),
+                        "value_usd": round(t.value_usd, 2)
+                    }
+                    for t in entity.trades
+                ]
+            
+            movers.append(mover)
+        
+        return movers
+    
+    # ==================== LEGACY METHODS (Backup) ====================
     
     def _aggregate_wallet_activities(
         self,
@@ -476,14 +531,9 @@ class PriceMoverAnalyzer:
         candle: Candle
     ) -> Dict[str, WalletActivity]:
         """
-        Gruppiert Trades nach Wallet-Pattern
+        LEGACY: Gruppiert Trades nach Wallet-Pattern
         
         Bei CEX: Pattern-basierte "virtuelle Wallets"
-        - Whales: Große Trades
-        - Smart Money: Mittelgroße Trades
-        - Bots: Regelmäßige kleine Trades
-        - Market Makers: Beide Seiten
-        - Retail: Rest
         """
         wallet_map: Dict[str, List[Trade]] = defaultdict(list)
         
@@ -500,12 +550,7 @@ class PriceMoverAnalyzer:
     
     def _identify_wallet_pattern(self, trade: Trade, candle: Candle) -> str:
         """
-        Erstellt Pattern-basierte Wallet-ID
-        
-        Clustering basierend auf:
-        - Trade Size (USD Value)
-        - Timing
-        - Price Level
+        LEGACY: Erstellt Pattern-basierte Wallet-ID
         """
         # Whale: Große Trades (> $100k)
         if trade.value_usd > 100_000:
@@ -535,7 +580,7 @@ class PriceMoverAnalyzer:
         total_volume: float
     ) -> List[Dict]:
         """
-        Berechnet Impact Scores für alle Wallets mit ImpactCalculator
+        LEGACY: Berechnet Impact Scores für alle Wallets
         """
         scored_wallets = []
         
@@ -554,15 +599,15 @@ class PriceMoverAnalyzer:
             # Konvertiere Trades zu Dict-Format für Impact Calculator
             wallet_trades_dict = activity.to_dict_list()
             
-            # Berechne Impact Score mit echtem Calculator
+            # Berechne Impact Score
             impact_result = self.impact_calculator.calculate_impact_score(
                 wallet_trades=wallet_trades_dict,
                 candle_data=candle_data,
                 total_volume=total_volume
             )
             
-            # Klassifiziere Wallet-Typ mit Pattern Detection
-            wallet_type = self._classify_wallet_type_advanced(
+            # Klassifiziere Wallet-Typ
+            wallet_type = self._classify_wallet_type_legacy(
                 activity, 
                 impact_result["impact_score"]
             )
@@ -578,48 +623,42 @@ class PriceMoverAnalyzer:
         
         return scored_wallets
     
-    def _classify_wallet_type_advanced(
-            self,
-            activity: WalletActivity,
-            impact_score: float
-        ) -> str:
-            """
-            Erweiterte Wallet-Klassifizierung mit Pattern Detection
-            
-            Returns NUR gültige Enum-Werte: "whale", "market_maker", "bot", "unknown"
-            """
-            # Konvertiere zu Dict-Liste für Pattern Detection
-            trades_dict = activity.to_dict_list()
-            
-            # Bot-Pattern?
-            if detect_bot_pattern(trades_dict):
-                return "bot"
-            
-            # Whale-Pattern?
-            if detect_whale_pattern(trades_dict):
-                return "whale"
-            
-            # Smart Money Pattern? -> map to market_maker
-            if detect_smart_money_pattern(trades_dict):
+    def _classify_wallet_type_legacy(
+        self,
+        activity: WalletActivity,
+        impact_score: float
+    ) -> str:
+        """
+        LEGACY: Klassifizierung (returns nur gültige Enum-Werte)
+        """
+        trades_dict = activity.to_dict_list()
+        
+        if detect_bot_pattern(trades_dict):
+            return "bot"
+        
+        if detect_whale_pattern(trades_dict):
+            return "whale"
+        
+        if detect_smart_money_pattern(trades_dict):
+            return "market_maker"
+        
+        # Market Maker: Beide Seiten
+        if activity.buy_trades > 0 and activity.sell_trades > 0:
+            buy_sell_ratio = activity.buy_trades / activity.sell_trades
+            if 0.7 <= buy_sell_ratio <= 1.3:
                 return "market_maker"
-            
-            # Market Maker: Beide Seiten handeln
-            if activity.buy_trades > 0 and activity.sell_trades > 0:
-                buy_sell_ratio = activity.buy_trades / activity.sell_trades
-                if 0.7 <= buy_sell_ratio <= 1.3:  # Relativ ausgeglichen
-                    return "market_maker"
-            
-            # Fallback auf Impact Score
-            avg_value = activity.total_value_usd / activity.trade_count if activity.trade_count > 0 else 0
-            
-            if avg_value > 100_000:
-                return "whale"
-            elif avg_value > 50_000:
-                return "market_maker"
-            elif activity.trade_count > 10:
-                return "bot"
-            else:
-                return "unknown"
+        
+        # Fallback
+        avg_value = activity.total_value_usd / activity.trade_count if activity.trade_count > 0 else 0
+        
+        if avg_value > 100_000:
+            return "whale"
+        elif avg_value > 50_000:
+            return "market_maker"
+        elif activity.trade_count > 10:
+            return "bot"
+        else:
+            return "unknown"
     
     def _rank_and_filter(
         self,
@@ -629,7 +668,7 @@ class PriceMoverAnalyzer:
         include_trades: bool
     ) -> List[Dict]:
         """
-        Filtert und ranked Wallets
+        LEGACY: Filtert und ranked Wallets
         """
         # Filter nach Threshold
         filtered = [
@@ -677,25 +716,31 @@ class PriceMoverAnalyzer:
         
         return result
     
-    def _empty_response(self, candle: Candle, exchange: str, symbol: str, timeframe: str) -> Dict:
-            """Leere Response wenn keine Daten"""
-            return {
-                "candle": {
-                    "timestamp": candle.timestamp,  # datetime Objekt
-                    "open": candle.open,
-                    "high": candle.high,
-                    "low": candle.low,
-                    "close": candle.close,
-                    "volume": candle.volume
-                },
-                "top_movers": [],
-                "analysis_metadata": {
-                    "analysis_timestamp": datetime.now(),
-                    "processing_duration_ms": 0,
-                    "total_trades_analyzed": 0,
-                    "unique_wallets_found": 0,
-                    "exchange": str(exchange),
-                    "symbol": symbol,
-                    "timeframe": str(timeframe)
-                }
+    def _empty_response(
+        self, 
+        candle: Candle, 
+        exchange: str, 
+        symbol: str, 
+        timeframe: str
+    ) -> Dict:
+        """Leere Response wenn keine Daten"""
+        return {
+            "candle": {
+                "timestamp": candle.timestamp,  # datetime Objekt
+                "open": candle.open,
+                "high": candle.high,
+                "low": candle.low,
+                "close": candle.close,
+                "volume": candle.volume
+            },
+            "top_movers": [],
+            "analysis_metadata": {
+                "analysis_timestamp": datetime.now(),
+                "processing_duration_ms": 0,
+                "total_trades_analyzed": 0,
+                "unique_wallets_found": 0,
+                "exchange": str(exchange),
+                "symbol": symbol,
+                "timeframe": str(timeframe)
             }
+        }
