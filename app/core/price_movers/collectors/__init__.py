@@ -4,12 +4,13 @@ Collectors Package
 Exportiert alle Collector-Klassen
 """
 
-from .base import BaseCollector
 from .exchange_collector import ExchangeCollector, ExchangeCollectorFactory
-
+from .orderbook_analyzer import OrderbookAnalyzer
+from .realtime_stream import RealtimeTradeStream
 
 __all__ = [
-    "BaseCollector",
-    "ExchangeCollector",
-    "ExchangeCollectorFactory",
+    'ExchangeCollector',
+    'ExchangeCollectorFactory',
+    'OrderbookAnalyzer',
+    'RealtimeTradeStream',
 ]
