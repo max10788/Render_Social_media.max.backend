@@ -195,6 +195,131 @@ async def get_analysis_status():
             "timestamp": datetime.utcnow().isoformat()
         }
 
+@router.post(
+    "/enhanced",
+    response_model=AnalysisResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Enhanced Analysis with Better Data",
+    description="Nutzt Aggregated Trades + Orderbook für bessere Entity-Detection"
+)
+async def enhanced_analyze(
+    request: QuickAnalysisRequest,
+    request_id: str = Depends(log_request)
+) -> AnalysisResponse:
+    """
+    ## Enhanced Analyse (BESSERE DATEN!)
+    
+    Nutzt verbesserte Datenquellen:
+    - ✅ Aggregated Trades (bessere Entity-Gruppierung)
+    - ✅ Orderbook-Analyse (für Whales)
+    - ✅ Höhere Accuracy
+    
+    ⚠️ NUR für recent data (< 30 Minuten)!
+    
+    ### Request Body:
+    Gleich wie /quick aber mit besseren Daten
+    
+    ### Beispiel Request:
+```json
+    {
+        "exchange": "bitget",
+        "symbol": "BTC/USDT",
+        "timeframe": "5m",
+        "top_n_wallets": 10
+    }
+```
+    """
+    try:
+        logger.info(
+            f"[{request_id}] Enhanced analysis request: {request.exchange} "
+            f"{request.symbol} {request.timeframe}"
+        )
+        
+        # Hole Exchange Collector
+        collector = await get_exchange_collector(request.exchange)
+        
+        # Initialisiere Analyzer mit enhanced mode
+        analyzer = PriceMoverAnalyzer(
+            exchange_collector=collector,
+            use_lightweight=True
+        )
+        
+        # Berechne Zeitfenster
+        timeframe_minutes = {
+            "1m": 1, "5m": 5, "15m": 15, "30m": 30,
+            "1h": 60, "4h": 240, "1d": 1440
+        }.get(request.timeframe, 5)
+        
+        now = datetime.utcnow()
+        minutes_since_midnight = now.hour * 60 + now.minute
+        candles_since_midnight = minutes_since_midnight // timeframe_minutes
+        
+        end_time = now.replace(
+            minute=(candles_since_midnight * timeframe_minutes) % 60,
+            second=0,
+            microsecond=0
+        )
+        
+        if candles_since_midnight * timeframe_minutes >= 60:
+            end_time = end_time.replace(
+                hour=candles_since_midnight * timeframe_minutes // 60
+            )
+        
+        start_time = end_time - timedelta(minutes=timeframe_minutes)
+        
+        # Prüfe ob recent genug
+        time_diff = datetime.utcnow() - start_time
+        if time_diff > timedelta(minutes=30):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Enhanced analysis only available for recent data (< 30 minutes). "
+                    f"Your data is {time_diff.total_seconds() / 60:.1f} minutes old. "
+                    f"Use /quick endpoint instead."
+                )
+            )
+        
+        logger.info(
+            f"[{request_id}] Analyzing candle (ENHANCED MODE): {start_time} - {end_time}"
+        )
+        
+        # Führe Analyse durch MIT enhanced mode
+        result = await analyzer.analyze_candle(
+            exchange=request.exchange,
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            start_time=start_time,
+            end_time=end_time,
+            top_n_wallets=request.top_n_wallets,
+            include_trades=False
+        )
+        
+        # Konvertiere zu Response-Format
+        response = AnalysisResponse(
+            candle=CandleData(**result['candle']),
+            top_movers=[WalletMover(**m) for m in result['top_movers']],
+            analysis_metadata=AnalysisMetadata(**result['analysis_metadata'])
+        )
+        
+        logger.info(
+            f"[{request_id}] Enhanced analysis completed: "
+            f"{len(result['top_movers'])} top movers found (AGGREGATED TRADES)"
+        )
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(
+            f"[{request_id}] Enhanced analysis error: {e}",
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Enhanced analysis failed: {str(e)}"
+        )
+
 
 # Export Router
 __all__ = ['router']
