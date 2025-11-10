@@ -303,6 +303,50 @@ class PriceMoverAnalyzer:
         except Exception as e:
             logger.error(f"❌ Fehler bei Analyse: {e}", exc_info=True)
             raise
+
+    def _format_entities_as_movers(
+        self,
+        entities: List[TradingEntity],
+        top_n: int,
+        include_trades: bool
+    ) -> List[Dict]:
+        """Konvertiert TradingEntity zu WalletMover-Format"""
+        
+        # Nehme Top N
+        top_entities = entities[:top_n]
+        
+        movers = []
+        for entity in top_entities:
+            mover = {
+                "wallet_id": entity.entity_id,
+                "wallet_type": entity.entity_type,
+                "impact_score": entity.impact_score,
+                "impact_level": entity.impact_level,
+                "total_volume": round(entity.total_volume, 4),
+                "total_value_usd": round(entity.total_value_usd, 2),
+                "trade_count": entity.trade_count,
+                "avg_trade_size": round(entity.avg_trade_size, 4),
+                "volume_ratio": round(entity.impact_components["volume_ratio"], 3),
+                "components": entity.impact_components,
+                "confidence_score": entity.confidence_score,  # 🆕 NEU
+                "timing_pattern": entity.timing_pattern,      # 🆕 NEU
+            }
+            
+            if include_trades:
+                mover["trades"] = [
+                    {
+                        "timestamp": t.timestamp.isoformat(),
+                        "trade_type": t.trade_type,
+                        "amount": round(t.amount, 4),
+                        "price": round(t.price, 2),
+                        "value_usd": round(t.value_usd, 2)
+                    }
+                    for t in entity.trades
+                ]
+            
+            movers.append(mover)
+        
+        return movers
     
     async def _fetch_all_data(
         self,
