@@ -9,6 +9,11 @@ Orchestriert die gesamte Analyse-Pipeline mit echten Daten:
 5. Ranking & Filtering
 """
 
+from app.core.price_movers.services.lightweight_entity_identifier import (
+    LightweightEntityIdentifier,
+    TradingEntity
+)
+
 import asyncio
 import logging
 from datetime import datetime, timedelta
