@@ -18,6 +18,10 @@ from app.core.backend_crypto_tracker.scanner.wallet_classifierr.core.adaptive_cl
     AdaptiveClassifier,
     FeatureImportanceAnalyzer
 )
+from app.core.price_movers.services.lightweight_entity_identifier import (
+    LightweightEntityIdentifier,
+    TradingEntity
+)
 
 
 class WalletClassifier:
