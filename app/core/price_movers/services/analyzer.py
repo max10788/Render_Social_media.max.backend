@@ -136,19 +136,22 @@ class PriceMoverAnalyzer:
     def __init__(
         self,
         exchange_collector=None,
-        impact_calculator: Optional[ImpactCalculator] = None
+        impact_calculator: Optional[ImpactCalculator] = None,
+        use_lightweight: bool = True  # 🆕 NEU: Default auf True für Render Free!
     ):
-        """
-        Initialisiert den Analyzer
-        
-        Args:
-            exchange_collector: Collector für Exchange-Daten
-            impact_calculator: Calculator für Impact Scores (optional)
-        """
         self.exchange_collector = exchange_collector
-        self.impact_calculator = impact_calculator or ImpactCalculator()
+        self.use_lightweight = use_lightweight
         
-        logger.info("PriceMoverAnalyzer initialisiert mit echten Datenquellen")
+        if use_lightweight:
+            # NEU: Lightweight Entity Identifier
+            self.entity_identifier = LightweightEntityIdentifier(
+                exchange_collector=exchange_collector
+            )
+            logger.info("✓ Lightweight Entity Identification ENABLED (Render Free optimiert)")
+        else:
+            # ALT: Legacy Pattern-based
+            self.impact_calculator = impact_calculator or ImpactCalculator()
+            logger.info("⚠️ Using legacy pattern-based clustering")
     
     @measure_time
     async def analyze_candle(
@@ -196,6 +199,51 @@ class PriceMoverAnalyzer:
                 return self._empty_response(candle, exchange, symbol, timeframe)
             
             logger.info(f"✓ {len(trades)} Trades von {exchange} gefetcht")
+
+            if self.use_lightweight:
+                # 🆕 NEU: Lightweight Entity Identification
+                logger.debug("Phase 2+3: Lightweight Entity Identification")
+                entities = await self.entity_identifier.identify_entities(
+                    trades=trades,
+                    candle_data={
+                        'timestamp': candle.timestamp,
+                        'open': candle.open,
+                        'high': candle.high,
+                        'low': candle.low,
+                        'close': candle.close,
+                        'volume': candle.volume,
+                        'price_change_pct': candle.price_change_pct
+                    },
+                    symbol=symbol,
+                    exchange=exchange
+                )
+                
+                # Konvertiere zu Legacy-Format für Response
+                top_movers = self._format_entities_as_movers(entities, top_n_wallets, include_trades)
+                
+                logger.info(f"✓ {len(entities)} Entities identifiziert (Lightweight)")
+            else:
+                # ALT: Legacy Path
+                logger.debug("Phase 2: Wallet Aggregation (Legacy)")
+                wallet_activities = self._aggregate_wallet_activities(trades, candle)
+                logger.info(f"✓ {len(wallet_activities)} Wallet-Pattern identifiziert (Legacy)")
+                
+                logger.debug(f"Phase 3: Impact Calculation (Legacy)")
+                scored_wallets = await self._calculate_all_impacts(
+                    wallet_activities,
+                    candle,
+                    candle.volume
+                )
+                logger.info(f"✓ Impact Scores berechnet (Legacy)")
+                
+                logger.debug("Phase 4: Ranking und Filterung (Legacy)")
+                top_movers = self._rank_and_filter(
+                    scored_wallets,
+                    min_impact_threshold,
+                    top_n_wallets,
+                    include_trades
+                )
+                logger.info(f"✓ Top {len(top_movers)} Movers gefiltert (Legacy)")
             
             # Phase 2: Wallet Aggregation
             logger.debug(f"Phase 2: Aggregiere {len(trades)} Trades zu Wallets")
