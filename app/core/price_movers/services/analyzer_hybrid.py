@@ -388,7 +388,7 @@ class HybridPriceMoverAnalyzer:
             
             logger.info(
                 f"✓ DEX data fetched: {len(trades)} trades "
-                f"({sum(1 for t in trades if t.wallet_address)} with wallet IDs)"
+                f"({sum(1 for t in trades if t.wallet_address) if trades else 0} with wallet IDs)"
             )
             return candle, trades
             
@@ -532,6 +532,7 @@ class HybridPriceMoverAnalyzer:
                 'score': 0.0,
                 'cex_led_by_seconds': 0,
                 'volume_correlation': 0.0,
+                'timing_score': 0.0, # <-- Hinzugefügt
                 'pattern_matches': [],
                 'conclusion': 'Insufficient data for correlation'
             }
@@ -604,7 +605,7 @@ class HybridPriceMoverAnalyzer:
             'score': round(overall_score, 3),
             'cex_led_by_seconds': int(time_diff),
             'volume_correlation': round(volume_correlation, 3),
-            'timing_score': round(timing_score, 3),
+            'timing_score': round(timing_score, 3), # <-- Hinzugefügt
             'pattern_matches': pattern_matches,
             'conclusion': conclusion
         }
@@ -714,6 +715,9 @@ class HybridPriceMoverAnalyzer:
             "correlation": {
                 'score': 0.0,
                 'cex_led_by_seconds': 0,
+                'volume_correlation': 0.0, # <-- Hinzugefügt
+                'timing_score': 0.0,       # <-- Hinzugefügt
+                'pattern_matches': [],
                 'conclusion': 'No data available'
             },
             "analysis_metadata": {
