@@ -1,729 +1,480 @@
 """
-HYBRID Price Mover Analyzer - CEX + DEX Combined Analysis
+Hybrid Analysis Routes - CEX + DEX Combined Analysis
 
-🆕 NEUE FEATURES:
-- ✅ CEX (Bitget/Binance/Kraken) + DEX (Jupiter/Raydium/Orca) PARALLEL
-- ✅ Cross-Exchange Correlation (finde Bitget Whales auf Solana DEX!)
-- ✅ Pattern-based (CEX) vs. Wallet-based (DEX) Analyse
-- ✅ Unified Response mit beiden Datenquellen
-
-ARCHITECTURE:
-1. Unified Collector routet automatisch zu CEX oder DEX
-2. CEX: Pattern-based Entity Identification (virtuelle Wallets)
-3. DEX: Wallet-based Analysis (echte On-chain Adressen)
-4. Correlation Engine: Matched CEX-Pattern mit DEX-Wallets
+Neue Endpoints:
+- POST /api/v1/hybrid/analyze - Parallel CEX + DEX Analyse
+- POST /api/v1/hybrid/track-wallet - Tracke CEX Pattern auf DEX
+- GET /api/v1/hybrid/correlation - Correlation History
 """
 
-import asyncio
 import logging
+from typing import Dict, List, Optional
 from datetime import datetime, timedelta
-from typing import List, Dict, Tuple, Optional, Union
-from collections import defaultdict
-from dataclasses import dataclass
+from fastapi import APIRouter, HTTPException, Depends, status, Body
+from pydantic import BaseModel, Field
 
+from app.core.price_movers.api.test_schemas import (
+    ExchangeEnum,
+    TimeframeEnum,
+    CandleData,
+    WalletMover,
+    ErrorResponse,
+)
+from app.core.price_movers.api.dependencies import (
+    get_analyzer,
+    log_request,
+)
 from app.core.price_movers.collectors.unified_collector import UnifiedCollector
-from app.core.price_movers.services.impact_calculator import ImpactCalculator
-from app.core.price_movers.services.lightweight_entity_identifier import (
-    LightweightEntityIdentifier,
-    TradingEntity
-)
-from app.core.price_movers.services.entity_classifier import EntityClassifier
-from app.core.price_movers.utils.metrics import (
-    validate_trade_data,
-    validate_candle_data,
-    measure_time,
-)
 
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class Trade:
-    """Einzelner Trade (CEX oder DEX)"""
-    timestamp: datetime
-    trade_type: str  # 'buy' oder 'sell'
-    amount: float
-    price: float
-    value_usd: float
-    trade_count: int = 1
-    wallet_address: Optional[str] = None  # 🆕 Nur bei DEX!
-    source: str = "cex"  # 'cex' oder 'dex'
+router = APIRouter(
+    prefix="/api/v1/hybrid",
+    tags=["hybrid-analysis"],
+    responses={
+        500: {"model": ErrorResponse, "description": "Internal Server Error"},
+    }
+)
 
 
-@dataclass
-class Candle:
-    """OHLCV Candle"""
-    timestamp: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-    
-    @property
-    def price_change_pct(self) -> float:
-        if self.open == 0:
-            return 0.0
-        return ((self.close - self.open) / self.open) * 100
-    
-    @property
-    def volatility(self) -> float:
-        if self.low == 0:
-            return 0.0
-        return ((self.high - self.low) / self.low) * 100
+# ==================== SCHEMAS ====================
 
-
-class HybridPriceMoverAnalyzer:
-    """
-    🆕 HYBRID Analyzer - CEX + DEX Combined
+class HybridAnalysisRequest(BaseModel):
+    """Request für Hybrid CEX/DEX Analyse"""
+    cex_exchange: ExchangeEnum = Field(..., description="CEX Exchange (bitget/binance/kraken)")
+    dex_exchange: str = Field(..., description="DEX Exchange (jupiter/raydium/orca)")
+    symbol: str = Field(..., description="Trading pair (e.g., SOL/USDT)")
+    timeframe: TimeframeEnum = Field(..., description="Candle timeframe")
+    start_time: datetime = Field(..., description="Start time")
+    end_time: datetime = Field(..., description="End time")
+    min_impact_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
+    top_n_wallets: int = Field(default=10, ge=1, le=100)
     
-    Orchestrates:
-    - CEX Analysis (Pattern-based virtual entities)
-    - DEX Analysis (Wallet-based real addresses)
-    - Cross-Exchange Correlation
-    - Unified Response
-    
-    FEATURES:
-    - ✅ Parallel CEX + DEX Fetching
-    - ✅ Lightweight Entity Identification
-    - ✅ Cross-Platform Wallet Tracking
-    - ✅ Correlation Score Calculation
-    """
-    
-    def __init__(
-        self,
-        unified_collector: Optional[UnifiedCollector] = None,
-        impact_calculator: Optional[ImpactCalculator] = None,
-        use_lightweight: bool = True
-    ):
-        """
-        Args:
-            unified_collector: Unified CEX/DEX Collector
-            impact_calculator: Impact Score Calculator
-            use_lightweight: Use Lightweight Entity Identifier
-        """
-        self.unified_collector = unified_collector
-        self.use_lightweight = use_lightweight
-        
-        if use_lightweight:
-            self.entity_identifier = LightweightEntityIdentifier()
-            logger.info("✓ Lightweight Entity Identification ENABLED")
-        else:
-            self.impact_calculator = impact_calculator or ImpactCalculator()
-            logger.info("⚠️ Using legacy pattern-based clustering")
-        
-        self.classifier = EntityClassifier()
-        
-        logger.info("HybridPriceMoverAnalyzer initialized")
-    
-    @measure_time
-    async def analyze_hybrid_candle(
-        self,
-        cex_exchange: str,
-        dex_exchange: str,
-        symbol: str,
-        timeframe: str,
-        start_time: datetime,
-        end_time: datetime,
-        min_impact_threshold: float = 0.05,
-        top_n_wallets: int = 10,
-        include_trades: bool = False
-    ) -> Dict:
-        """
-        🆕 HYBRID ANALYSIS - CEX + DEX Combined
-        
-        Analyzes BOTH CEX and DEX in the same timeframe and finds:
-        1. Top movers on CEX (pattern-based)
-        2. Top movers on DEX (wallet-based)
-        3. Cross-exchange correlation
-        4. Potential wash trading detection
-        
-        Args:
-            cex_exchange: CEX name (bitget/binance/kraken)
-            dex_exchange: DEX name (jupiter/raydium/orca)
-            symbol: Trading pair (z.B. SOL/USDT)
-            timeframe: Candle timeframe
-            start_time: Analysis start
-            end_time: Analysis end
-            min_impact_threshold: Minimum impact score
-            top_n_wallets: Number of top movers
-            include_trades: Include individual trades
-            
-        Returns:
-            {
-                'candle': {...},
-                'cex_analysis': {
-                    'exchange': 'bitget',
-                    'top_movers': [...],
-                    'has_wallet_ids': False
-                },
-                'dex_analysis': {
-                    'exchange': 'jupiter',
-                    'top_movers': [...],
-                    'has_wallet_ids': True
-                },
-                'correlation': {
-                    'score': 0.85,
-                    'cex_led_by_seconds': -120,  # CEX 2min before DEX
-                    'matched_patterns': [...]
-                },
-                'analysis_metadata': {...}
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "cex_exchange": "bitget",
+                "dex_exchange": "jupiter",
+                "symbol": "SOL/USDT",
+                "timeframe": "5m",
+                "start_time": "2025-11-11T10:00:00Z",
+                "end_time": "2025-11-11T10:05:00Z",
+                "min_impact_threshold": 0.05,
+                "top_n_wallets": 10
             }
-        """
-        start = datetime.now()
-        logger.info(
-            f"🔀 HYBRID Analysis: CEX={cex_exchange} vs DEX={dex_exchange} "
-            f"{symbol} {timeframe} ({start_time} - {end_time})"
-        )
-        
-        try:
-            # Phase 1: Parallel Data Collection
-            logger.debug("Phase 1: Parallel CEX + DEX data collection")
-            
-            cex_task = self._fetch_cex_data(
-                cex_exchange, symbol, timeframe, start_time, end_time
-            )
-            dex_task = self._fetch_dex_data(
-                dex_exchange, symbol, timeframe, start_time, end_time
-            )
-            
-            # Wait for both
-            (cex_candle, cex_trades), (dex_candle, dex_trades) = await asyncio.gather(
-                cex_task, dex_task, return_exceptions=True
-            )
-            
-            # Check for errors
-            if isinstance((cex_candle, cex_trades), Exception):
-                logger.error(f"CEX fetch failed: {cex_candle}")
-                cex_candle, cex_trades = None, []
-            
-            if isinstance((dex_candle, dex_trades), Exception):
-                logger.error(f"DEX fetch failed: {dex_candle}")
-                dex_candle, dex_trades = None, []
-            
-            logger.info(
-                f"✓ Data fetched: CEX={len(cex_trades)} trades, "
-                f"DEX={len(dex_trades)} trades"
-            )
-            
-            # Use CEX candle as primary (usually more accurate)
-            candle = cex_candle or dex_candle
-            
-            if not candle:
-                logger.error("No candle data available from either source")
-                return self._empty_hybrid_response(
-                    cex_exchange, dex_exchange, symbol, timeframe
-                )
-            
-            # Phase 2: Analyze CEX (Pattern-based)
-            logger.debug("Phase 2: CEX Analysis (Pattern-based)")
-            cex_movers = await self._analyze_cex_trades(
-                cex_trades, candle, symbol, cex_exchange, top_n_wallets
-            )
-            
-            # Phase 3: Analyze DEX (Wallet-based)
-            logger.debug("Phase 3: DEX Analysis (Wallet-based)")
-            dex_movers = await self._analyze_dex_trades(
-                dex_trades, candle, symbol, dex_exchange, top_n_wallets
-            )
-            
-            # Phase 4: Cross-Exchange Correlation
-            logger.debug("Phase 4: Cross-Exchange Correlation")
-            correlation = self._calculate_correlation(
-                cex_movers, dex_movers, cex_trades, dex_trades
-            )
-            
-            # Build Response
-            duration_ms = int((datetime.now() - start).total_seconds() * 1000)
-            
-            response = {
+        }
+
+
+class CEXAnalysis(BaseModel):
+    """CEX Analysis Result"""
+    exchange: str
+    top_movers: List[WalletMover]
+    has_wallet_ids: bool = False
+    data_source: str = "pattern_based"
+    trade_count: int
+
+
+class DEXAnalysis(BaseModel):
+    """DEX Analysis Result"""
+    exchange: str
+    top_movers: List[Dict]  # With wallet_address field
+    has_wallet_ids: bool = True
+    data_source: str = "on_chain"
+    trade_count: int
+
+
+class PatternMatch(BaseModel):
+    """Matched pattern between CEX and DEX"""
+    cex_entity: str = Field(..., description="CEX Entity ID")
+    dex_wallet: str = Field(..., description="DEX Wallet Address")
+    type: str = Field(..., description="Entity type (whale/bot/market_maker)")
+    volume_diff_pct: float = Field(..., description="Volume difference %")
+    confidence: float = Field(..., description="Match confidence (0-1)")
+
+
+class CorrelationResult(BaseModel):
+    """Cross-Exchange Correlation"""
+    score: float = Field(..., description="Overall correlation score (0-1)")
+    cex_led_by_seconds: int = Field(..., description="Time difference (positive = CEX first)")
+    volume_correlation: float = Field(..., description="Volume similarity (0-1)")
+    timing_score: float = Field(..., description="Timing alignment (0-1)")
+    pattern_matches: List[PatternMatch] = Field(..., description="Matched patterns")
+    conclusion: str = Field(..., description="Human-readable conclusion")
+
+
+class HybridAnalysisMetadata(BaseModel):
+    """Metadata for hybrid analysis"""
+    analysis_timestamp: datetime
+    processing_duration_ms: int
+    total_trades_analyzed: int
+    cex_entities_found: int
+    dex_wallets_found: int
+    exchanges: str
+    symbol: str
+    timeframe: str
+
+
+class HybridAnalysisResponse(BaseModel):
+    """Response für Hybrid Analyse"""
+    success: bool = True
+    candle: CandleData
+    cex_analysis: CEXAnalysis
+    dex_analysis: DEXAnalysis
+    correlation: CorrelationResult
+    analysis_metadata: HybridAnalysisMetadata
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
                 "candle": {
-                    "timestamp": candle.timestamp,
-                    "open": candle.open,
-                    "high": candle.high,
-                    "low": candle.low,
-                    "close": candle.close,
-                    "volume": candle.volume
+                    "timestamp": "2025-11-11T10:00:00Z",
+                    "open": 150.50,
+                    "high": 151.25,
+                    "low": 150.10,
+                    "close": 151.00,
+                    "volume": 12500.5
                 },
                 "cex_analysis": {
-                    "exchange": cex_exchange,
-                    "top_movers": cex_movers,
+                    "exchange": "bitget",
+                    "top_movers": [],
                     "has_wallet_ids": False,
                     "data_source": "pattern_based",
-                    "trade_count": len(cex_trades)
+                    "trade_count": 1250
                 },
                 "dex_analysis": {
-                    "exchange": dex_exchange,
-                    "top_movers": dex_movers,
+                    "exchange": "jupiter",
+                    "top_movers": [],
                     "has_wallet_ids": True,
                     "data_source": "on_chain",
-                    "trade_count": len(dex_trades)
+                    "trade_count": 450
                 },
-                "correlation": correlation,
+                "correlation": {
+                    "score": 0.75,
+                    "cex_led_by_seconds": -120,
+                    "volume_correlation": 0.82,
+                    "timing_score": 0.65,
+                    "pattern_matches": [],
+                    "conclusion": "Moderate correlation - CEX led by 2 minutes"
+                },
                 "analysis_metadata": {
-                    "analysis_timestamp": datetime.now(),
-                    "processing_duration_ms": duration_ms,
-                    "total_trades_analyzed": len(cex_trades) + len(dex_trades),
-                    "cex_entities_found": len(cex_movers),
-                    "dex_wallets_found": len(dex_movers),
-                    "exchanges": f"{cex_exchange}+{dex_exchange}",
-                    "symbol": symbol,
-                    "timeframe": timeframe
+                    "analysis_timestamp": "2025-11-11T10:06:00Z",
+                    "processing_duration_ms": 2500,
+                    "total_trades_analyzed": 1700,
+                    "cex_entities_found": 10,
+                    "dex_wallets_found": 8,
+                    "exchanges": "bitget+jupiter",
+                    "symbol": "SOL/USDT",
+                    "timeframe": "5m"
                 }
             }
-            
-            logger.info(
-                f"✅ HYBRID Analysis complete in {duration_ms}ms. "
-                f"CEX: {len(cex_movers)} movers, DEX: {len(dex_movers)} movers, "
-                f"Correlation: {correlation['score']:.2f}"
-            )
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"❌ Hybrid analysis error: {e}", exc_info=True)
-            raise
+        }
+
+
+class TrackWalletRequest(BaseModel):
+    """Request to track CEX pattern on DEX"""
+    cex_exchange: ExchangeEnum
+    cex_entity_pattern: str = Field(..., description="CEX entity pattern (e.g., whale_5)")
+    dex_exchange: str
+    symbol: str
+    time_range_hours: int = Field(default=24, ge=1, le=168)
+
+
+class WalletTrackingResponse(BaseModel):
+    """Response for wallet tracking"""
+    success: bool = True
+    cex_entity: str
+    potential_dex_wallets: List[Dict]
+    match_confidence: List[float]
+    conclusion: str
+
+
+# ==================== ENDPOINTS ====================
+
+@router.post(
+    "/analyze",
+    response_model=HybridAnalysisResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Hybrid CEX + DEX Analysis",
+    description="Analysiert CEX und DEX parallel und findet Korrelationen"
+)
+async def analyze_hybrid(
+    request: HybridAnalysisRequest = Body(...),
+    request_id: str = Depends(log_request)
+) -> HybridAnalysisResponse:
+    """
+    ## 🔀 Hybrid CEX + DEX Analyse
     
-    async def _fetch_cex_data(
-        self,
-        exchange: str,
-        symbol: str,
-        timeframe: str,
-        start_time: datetime,
-        end_time: datetime
-    ) -> Tuple[Candle, List[Trade]]:
-        """Fetch CEX data (pattern-based)"""
-        if not self.unified_collector:
-            logger.warning("No unified collector, using mock data")
-            return await self._fetch_mock_data(start_time, end_time, "cex")
-        
-        try:
-            result = await self.unified_collector.fetch_trades(
-                exchange=exchange,
-                symbol=symbol,
-                start_time=start_time,
-                end_time=end_time,
-                limit=5000
-            )
-            
-            # Also fetch candle
-            candle_data = await self.unified_collector.fetch_candle_data(
-                exchange=exchange,
-                symbol=symbol,
-                timeframe=timeframe,
-                timestamp=start_time
-            )
-            
-            candle = Candle(**candle_data)
-            
-            # Parse trades
-            trades = []
-            for t in result['trades']:
-                trade = Trade(
-                    timestamp=t['timestamp'],
-                    trade_type=t['trade_type'],
-                    amount=t['amount'],
-                    price=t['price'],
-                    value_usd=t.get('value_usd', t['amount'] * t['price']),
-                    trade_count=t.get('trade_count', 1),
-                    wallet_address=None,  # CEX = no wallet IDs
-                    source='cex'
-                )
-                trades.append(trade)
-            
-            logger.info(f"✓ CEX data fetched: {len(trades)} trades")
-            return candle, trades
-            
-        except Exception as e:
-            logger.error(f"CEX fetch error: {e}")
-            return await self._fetch_mock_data(start_time, end_time, "cex")
+    Analysiert CEX und DEX im selben Zeitraum und findet:
     
-    async def _fetch_dex_data(
-        self,
-        exchange: str,
-        symbol: str,
-        timeframe: str,
-        start_time: datetime,
-        end_time: datetime
-    ) -> Tuple[Candle, List[Trade]]:
-        """Fetch DEX data (wallet-based)"""
-        if not self.unified_collector:
-            logger.warning("No unified collector, using mock data")
-            return await self._fetch_mock_data(start_time, end_time, "dex")
-        
-        try:
-            result = await self.unified_collector.fetch_trades(
-                exchange=exchange,
-                symbol=symbol,
-                start_time=start_time,
-                end_time=end_time,
-                limit=5000
-            )
-            
-            # Also fetch candle
-            candle_data = await self.unified_collector.fetch_candle_data(
-                exchange=exchange,
-                symbol=symbol,
-                timeframe=timeframe,
-                timestamp=start_time
-            )
-            
-            candle = Candle(**candle_data)
-            
-            # Parse trades WITH wallet addresses
-            trades = []
-            for t in result['trades']:
-                trade = Trade(
-                    timestamp=t['timestamp'],
-                    trade_type=t['trade_type'],
-                    amount=t['amount'],
-                    price=t['price'],
-                    value_usd=t.get('value_usd', t['amount'] * t['price']),
-                    trade_count=t.get('trade_count', 1),
-                    wallet_address=t.get('wallet_address'),  # 🎯 DEX = REAL Wallet!
-                    source='dex'
-                )
-                trades.append(trade)
-            
-            logger.info(
-                f"✓ DEX data fetched: {len(trades)} trades "
-                f"({sum(1 for t in trades if t.wallet_address)} with wallet IDs)"
-            )
-            return candle, trades
-            
-        except Exception as e:
-            logger.error(f"DEX fetch error: {e}")
-            return await self._fetch_mock_data(start_time, end_time, "dex")
+    ### CEX Analysis (Pattern-based):
+    - Identifiziert virtuelle Entities (Whales, Bots, Market Makers)
+    - Basiert auf Trading-Pattern
+    - KEINE echten Wallet-IDs
     
-    async def _analyze_cex_trades(
-        self,
-        trades: List[Trade],
-        candle: Candle,
-        symbol: str,
-        exchange: str,
-        top_n: int
-    ) -> List[Dict]:
-        """Analyze CEX trades (pattern-based)"""
-        if not trades:
-            return []
+    ### DEX Analysis (Wallet-based):
+    - Identifiziert echte On-Chain Wallets
+    - Echte Wallet-Adressen
+    - Blockchain-Explorer Links
+    
+    ### Cross-Exchange Correlation:
+    - Volume Correlation
+    - Timing Analysis (wer bewegte sich zuerst?)
+    - Pattern Matching (CEX Whale = DEX Whale?)
+    
+    ### Use Case:
+    Finde heraus, ob große CEX-Trader auch auf DEX aktiv sind!
+    
+    ### Beispiel Request:
+    ```json
+    {
+        "cex_exchange": "bitget",
+        "dex_exchange": "jupiter",
+        "symbol": "SOL/USDT",
+        "timeframe": "5m",
+        "start_time": "2025-11-11T10:00:00Z",
+        "end_time": "2025-11-11T10:05:00Z"
+    }
+    ```
+    """
+    try:
+        logger.info(
+            f"[{request_id}] Hybrid analysis: "
+            f"CEX={request.cex_exchange} vs DEX={request.dex_exchange} "
+            f"{request.symbol} {request.timeframe}"
+        )
         
-        # Convert to dict format for entity identifier
-        trades_dict = [
+        # Initialize Unified Collector
+        # TODO: Get from dependencies
+        unified_collector = None  # Will be injected via dependencies
+        
+        # Initialize Hybrid Analyzer
+        from app.core.price_movers.services.analyzer_hybrid import HybridPriceMoverAnalyzer
+        
+        analyzer = HybridPriceMoverAnalyzer(
+            unified_collector=unified_collector,
+            use_lightweight=True
+        )
+        
+        # Perform hybrid analysis
+        result = await analyzer.analyze_hybrid_candle(
+            cex_exchange=request.cex_exchange,
+            dex_exchange=request.dex_exchange,
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            start_time=request.start_time,
+            end_time=request.end_time,
+            min_impact_threshold=request.min_impact_threshold,
+            top_n_wallets=request.top_n_wallets,
+            include_trades=False
+        )
+        
+        # Convert to response format
+        response = HybridAnalysisResponse(
+            candle=CandleData(**result['candle']),
+            cex_analysis=CEXAnalysis(**result['cex_analysis']),
+            dex_analysis=DEXAnalysis(**result['dex_analysis']),
+            correlation=CorrelationResult(**result['correlation']),
+            analysis_metadata=HybridAnalysisMetadata(**result['analysis_metadata'])
+        )
+        
+        logger.info(
+            f"[{request_id}] Hybrid analysis complete: "
+            f"Correlation={result['correlation']['score']:.2f}, "
+            f"CEX={len(result['cex_analysis']['top_movers'])} movers, "
+            f"DEX={len(result['dex_analysis']['top_movers'])} wallets"
+        )
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"[{request_id}] Hybrid analysis error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Hybrid analysis failed: {str(e)}"
+        )
+
+
+@router.post(
+    "/track-wallet",
+    response_model=WalletTrackingResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Track CEX Pattern on DEX",
+    description="Versucht, ein CEX Trading-Pattern auf DEX zu identifizieren"
+)
+async def track_wallet_across_exchanges(
+    request: TrackWalletRequest = Body(...),
+    request_id: str = Depends(log_request)
+) -> WalletTrackingResponse:
+    """
+    ## 🔍 Cross-Exchange Wallet Tracking
+    
+    Identifiziert potenzielle DEX-Wallets, die einem CEX-Entity-Pattern entsprechen.
+    
+    ### Wie es funktioniert:
+    1. Analysiert das CEX-Trading-Pattern (z.B. "whale_5")
+    2. Sucht auf DEX nach Wallets mit ähnlichen Charakteristiken:
+       - Ähnliche Trade-Größen
+       - Ähnliches Timing
+       - Ähnliche Buy/Sell Ratios
+    3. Gibt Liste potentieller Matches mit Confidence-Score
+    
+    ### Use Case:
+    "Dieser Whale auf Bitget... ist das derselbe auf Jupiter?"
+    
+    ### Beispiel Request:
+    ```json
+    {
+        "cex_exchange": "bitget",
+        "cex_entity_pattern": "whale_5",
+        "dex_exchange": "jupiter",
+        "symbol": "SOL/USDT",
+        "time_range_hours": 24
+    }
+    ```
+    
+    ### Beispiel Response:
+    ```json
+    {
+        "success": true,
+        "cex_entity": "whale_5",
+        "potential_dex_wallets": [
             {
-                'timestamp': t.timestamp,
-                'trade_type': t.trade_type,
-                'amount': t.amount,
-                'price': t.price,
-                'value_usd': t.value_usd,
-                'trade_count': t.trade_count
+                "wallet_address": "7xKXtg2CW87d97TXJSDpb...",
+                "confidence": 0.85,
+                "reason": "Similar volume pattern, timing aligned",
+                "explorer_url": "https://solscan.io/account/7xKXt..."
             }
-            for t in trades
-        ]
-        
-        candle_data = {
-            'timestamp': candle.timestamp,
-            'open': candle.open,
-            'high': candle.high,
-            'low': candle.low,
-            'close': candle.close,
-            'volume': candle.volume,
-            'price_change_pct': candle.price_change_pct
-        }
-        
-        # Use lightweight identifier
-        entities = await self.entity_identifier.identify_entities(
-            trades=trades_dict,
-            candle_data=candle_data,
-            symbol=symbol,
-            exchange=exchange
+        ],
+        "conclusion": "Found 1 high-confidence match on Jupiter"
+    }
+    ```
+    """
+    try:
+        logger.info(
+            f"[{request_id}] Wallet tracking: "
+            f"{request.cex_entity_pattern} on {request.cex_exchange} → "
+            f"{request.dex_exchange}"
         )
         
-        # Format as movers
-        return self._format_entities_as_movers(entities[:top_n], False)
-    
-    async def _analyze_dex_trades(
-        self,
-        trades: List[Trade],
-        candle: Candle,
-        symbol: str,
-        exchange: str,
-        top_n: int
-    ) -> List[Dict]:
-        """Analyze DEX trades (wallet-based)"""
-        if not trades:
-            return []
+        # TODO: Implement actual tracking logic
+        # This would:
+        # 1. Analyze CEX pattern characteristics
+        # 2. Fetch DEX trades in timeframe
+        # 3. Find similar patterns
+        # 4. Return matches with confidence scores
         
-        # Group by wallet address
-        wallet_groups = defaultdict(list)
-        
-        for trade in trades:
-            if trade.wallet_address:
-                wallet_groups[trade.wallet_address].append(trade)
-        
-        logger.info(f"✓ DEX: {len(wallet_groups)} unique wallets found")
-        
-        # Convert to entity format
-        entities = []
-        
-        for wallet_addr, wallet_trades in wallet_groups.items():
-            # Calculate stats
-            total_volume = sum(t.amount for t in wallet_trades)
-            total_value = sum(t.value_usd for t in wallet_trades)
-            trade_count = len(wallet_trades)
-            
-            buy_volume = sum(t.amount for t in wallet_trades if t.trade_type == 'buy')
-            sell_volume = sum(t.amount for t in wallet_trades if t.trade_type == 'sell')
-            buy_sell_ratio = buy_volume / sell_volume if sell_volume > 0 else float('inf')
-            
-            # Calculate impact score
-            volume_ratio = total_volume / candle.volume if candle.volume > 0 else 0
-            impact_score = min(volume_ratio * 2.0, 1.0)  # Simplified
-            
-            # Classify wallet type
-            wallet_type = self.classifier.classify(
-                avg_trade_size=total_value / trade_count if trade_count > 0 else 0,
-                trade_count=trade_count,
-                size_consistency=0.7,  # Simplified
-                timing_pattern='random',
-                buy_sell_ratio=buy_sell_ratio,
-                impact_score=impact_score
-            )
-            
-            entity = {
-                'wallet_id': wallet_addr,
-                'wallet_address': wallet_addr,  # 🎯 REAL Address!
-                'wallet_type': wallet_type,
-                'impact_score': impact_score,
-                'total_volume': total_volume,
-                'total_value_usd': total_value,
-                'trade_count': trade_count,
-                'avg_trade_size': total_volume / trade_count if trade_count > 0 else 0,
-                'volume_ratio': volume_ratio,
-                'buy_sell_ratio': buy_sell_ratio,
-                'blockchain': 'solana',  # or auto-detect
-                'dex': exchange
-            }
-            
-            entities.append(entity)
-        
-        # Sort by impact score
-        entities.sort(key=lambda e: e['impact_score'], reverse=True)
-        
-        return entities[:top_n]
-    
-    def _calculate_correlation(
-        self,
-        cex_movers: List[Dict],
-        dex_movers: List[Dict],
-        cex_trades: List[Trade],
-        dex_trades: List[Trade]
-    ) -> Dict:
-        """
-        Calculate cross-exchange correlation
-        
-        Checks:
-        1. Volume correlation (are volumes similar?)
-        2. Timing correlation (who moved first?)
-        3. Pattern matching (similar entity types?)
-        """
-        if not cex_movers or not dex_movers:
-            return {
-                'score': 0.0,
-                'cex_led_by_seconds': 0,
-                'volume_correlation': 0.0,
-                'pattern_matches': [],
-                'conclusion': 'Insufficient data for correlation'
-            }
-        
-        # 1. Volume Correlation
-        cex_total_volume = sum(m['total_volume'] for m in cex_movers)
-        dex_total_volume = sum(m['total_volume'] for m in dex_movers)
-        
-        volume_ratio = min(cex_total_volume, dex_total_volume) / max(cex_total_volume, dex_total_volume)
-        volume_correlation = volume_ratio
-        
-        # 2. Timing Correlation
-        if cex_trades and dex_trades:
-            cex_avg_time = sum((t.timestamp.timestamp() for t in cex_trades)) / len(cex_trades)
-            dex_avg_time = sum((t.timestamp.timestamp() for t in dex_trades)) / len(dex_trades)
-            
-            time_diff = cex_avg_time - dex_avg_time  # Positive = CEX first
-        else:
-            time_diff = 0
-        
-        # 3. Pattern Matching
-        pattern_matches = []
-        
-        for cex_mover in cex_movers[:5]:  # Top 5 CEX
-            cex_type = cex_mover['wallet_type']
-            cex_volume = cex_mover['total_volume']
-            
-            # Find similar DEX movers
-            for dex_mover in dex_movers[:10]:  # Top 10 DEX
-                dex_type = dex_mover['wallet_type']
-                dex_volume = dex_mover['total_volume']
-                
-                # Check if similar
-                type_match = cex_type == dex_type
-                volume_similar = abs(cex_volume - dex_volume) / max(cex_volume, dex_volume) < 0.3
-                
-                if type_match and volume_similar:
-                    pattern_matches.append({
-                        'cex_entity': cex_mover['wallet_id'],
-                        'dex_wallet': dex_mover['wallet_address'],
-                        'type': cex_type,
-                        'volume_diff_pct': abs(cex_volume - dex_volume) / max(cex_volume, dex_volume) * 100,
-                        'confidence': 0.7  # Simplified
-                    })
-        
-        # 4. Overall Correlation Score
-        timing_score = max(0, 1.0 - abs(time_diff) / 300)  # 5 min = 0 score
-        pattern_score = len(pattern_matches) / min(len(cex_movers), len(dex_movers))
-        
-        overall_score = (
-            volume_correlation * 0.4 +
-            timing_score * 0.3 +
-            pattern_score * 0.3
+        # Placeholder response
+        response = WalletTrackingResponse(
+            cex_entity=request.cex_entity_pattern,
+            potential_dex_wallets=[],
+            match_confidence=[],
+            conclusion="Wallet tracking not fully implemented yet"
         )
         
-        # 5. Conclusion
-        if overall_score > 0.7:
-            conclusion = "Strong correlation - CEX and DEX activity aligned"
-        elif overall_score > 0.4:
-            conclusion = "Moderate correlation - some alignment detected"
-        else:
-            conclusion = "Weak correlation - independent activity"
+        logger.warning(f"[{request_id}] Wallet tracking not implemented")
         
-        if time_diff > 60:
-            conclusion += f" | CEX led by {int(time_diff)}s"
-        elif time_diff < -60:
-            conclusion += f" | DEX led by {int(abs(time_diff))}s"
+        return response
+        
+    except Exception as e:
+        logger.error(f"[{request_id}] Wallet tracking error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Wallet tracking failed: {str(e)}"
+        )
+
+
+@router.get(
+    "/correlation/history",
+    summary="Get Correlation History",
+    description="Historische Korrelation zwischen CEX und DEX"
+)
+async def get_correlation_history(
+    cex_exchange: ExchangeEnum,
+    dex_exchange: str,
+    symbol: str,
+    hours_back: int = 24,
+    request_id: str = Depends(log_request)
+):
+    """
+    ## 📊 Correlation History
+    
+    Zeigt historische Korrelation zwischen CEX und DEX über Zeit.
+    
+    ### Query Parameters:
+    - **cex_exchange**: CEX (bitget/binance/kraken)
+    - **dex_exchange**: DEX (jupiter/raydium/orca)
+    - **symbol**: Trading Pair
+    - **hours_back**: Zeitraum in Stunden
+    
+    ### Returns:
+    - Zeitreihe der Korrelations-Scores
+    - Durchschnittliche Korrelation
+    - Leader-Board (wer bewegte sich zuerst?)
+    """
+    try:
+        logger.info(
+            f"[{request_id}] Correlation history: "
+            f"{cex_exchange} vs {dex_exchange} {symbol}"
+        )
+        
+        # TODO: Implement correlation history
         
         return {
-            'score': round(overall_score, 3),
-            'cex_led_by_seconds': int(time_diff),
-            'volume_correlation': round(volume_correlation, 3),
-            'timing_score': round(timing_score, 3),
-            'pattern_matches': pattern_matches,
-            'conclusion': conclusion
+            "success": True,
+            "cex_exchange": cex_exchange,
+            "dex_exchange": dex_exchange,
+            "symbol": symbol,
+            "hours_back": hours_back,
+            "correlation_history": [],
+            "avg_correlation": 0.0,
+            "leader_board": {
+                "cex_led_count": 0,
+                "dex_led_count": 0,
+                "simultaneous_count": 0
+            },
+            "message": "Correlation history not implemented yet"
         }
-    
-    def _format_entities_as_movers(
-        self,
-        entities: List[Union[TradingEntity, Dict]],
-        include_trades: bool
-    ) -> List[Dict]:
-        """Format entities to mover format"""
-        movers = []
         
-        for entity in entities:
-            if isinstance(entity, TradingEntity):
-                mover = {
-                    "wallet_id": entity.entity_id,
-                    "wallet_type": entity.entity_type,
-                    "impact_score": entity.impact_score,
-                    "impact_level": entity.impact_level,
-                    "total_volume": round(entity.total_volume, 4),
-                    "total_value_usd": round(entity.total_value_usd, 2),
-                    "trade_count": entity.trade_count,
-                    "avg_trade_size": round(entity.avg_trade_size, 4),
-                    "volume_ratio": round(entity.impact_components["volume_ratio"], 3),
-                    "confidence_score": entity.confidence_score,
-                }
-            else:
-                mover = entity
-            
-            movers.append(mover)
-        
-        return movers
-    
-    async def _fetch_mock_data(
-        self,
-        start_time: datetime,
-        end_time: datetime,
-        source: str
-    ) -> Tuple[Candle, List[Trade]]:
-        """Generate mock data for testing"""
-        import random
-        
-        candle = Candle(
-            timestamp=start_time,
-            open=67500.0,
-            high=67800.0,
-            low=67450.0,
-            close=67750.0,
-            volume=1234.56
+    except Exception as e:
+        logger.error(f"[{request_id}] Correlation history error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Correlation history failed: {str(e)}"
         )
-        
-        trades = []
-        current_time = start_time
-        base_price = 67500.0
-        
-        for i in range(30):
-            current_time += timedelta(seconds=random.randint(5, 15))
-            if current_time > end_time:
-                break
-            
-            price = base_price + random.uniform(-100, 100)
-            amount = random.uniform(0.1, 5.0)
-            
-            # Mock wallet for DEX
-            wallet = None
-            if source == 'dex':
-                wallet = f"mock_wallet_{random.randint(1, 10)}"
-            
-            trade = Trade(
-                timestamp=current_time,
-                trade_type='buy' if random.random() > 0.5 else 'sell',
-                amount=amount,
-                price=price,
-                value_usd=amount * price,
-                trade_count=1,
-                wallet_address=wallet,
-                source=source
-            )
-            trades.append(trade)
-        
-        return candle, trades
+
+
+@router.get(
+    "/supported-dexs",
+    summary="Get Supported DEX Exchanges"
+)
+async def get_supported_dexs():
+    """
+    ## 📋 Unterstützte DEX Exchanges
     
-    def _empty_hybrid_response(
-        self,
-        cex_exchange: str,
-        dex_exchange: str,
-        symbol: str,
-        timeframe: str
-    ) -> Dict:
-        """Empty response when no data"""
-        return {
-            "candle": None,
-            "cex_analysis": {
-                "exchange": cex_exchange,
-                "top_movers": [],
-                "has_wallet_ids": False,
-                "data_source": "pattern_based",
-                "trade_count": 0
-            },
-            "dex_analysis": {
-                "exchange": dex_exchange,
-                "top_movers": [],
-                "has_wallet_ids": True,
-                "data_source": "on_chain",
-                "trade_count": 0
-            },
-            "correlation": {
-                'score': 0.0,
-                'cex_led_by_seconds': 0,
-                'conclusion': 'No data available'
-            },
-            "analysis_metadata": {
-                "analysis_timestamp": datetime.now(),
-                "processing_duration_ms": 0,
-                "total_trades_analyzed": 0,
-                "cex_entities_found": 0,
-                "dex_wallets_found": 0,
-                "exchanges": f"{cex_exchange}+{dex_exchange}",
-                "symbol": symbol,
-                "timeframe": timeframe
-            }
-        }
+    Liste aller unterstützten DEX-Exchanges für Hybrid-Analyse.
+    """
+    from app.core.price_movers.utils.constants import SUPPORTED_DEXS, DEX_CONFIGS
+    
+    dex_list = []
+    
+    for dex in SUPPORTED_DEXS:
+        config = DEX_CONFIGS.get(dex, {})
+        dex_list.append({
+            "id": dex,
+            "name": config.get("name", dex),
+            "blockchain": config.get("blockchain", {}).value if hasattr(config.get("blockchain"), 'value') else str(config.get("blockchain", "unknown")),
+            "has_wallet_ids": True,
+            "api_provider": config.get("api_provider", "unknown")
+        })
+    
+    return {
+        "success": True,
+        "total_dexs": len(dex_list),
+        "dexs": dex_list
+    }
+
+
+# Export Router
+__all__ = ['router']
