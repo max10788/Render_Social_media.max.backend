@@ -421,7 +421,7 @@ async def get_enhanced_wallet_details(
     description="Sucht Wallet über mehrere Exchanges hinweg"
 )
 async def cross_exchange_wallet_lookup(
-    request: CrossExchangeLookupRequest = Field(...),
+    request: CrossExchangeLookupRequest,
     request_id: str = Depends(log_request)
 ):
     """
