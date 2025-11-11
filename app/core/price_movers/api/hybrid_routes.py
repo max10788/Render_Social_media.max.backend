@@ -245,15 +245,15 @@ async def analyze_hybrid(
             f"{request.symbol} {request.timeframe}"
         )
         
-        # Initialize Unified Collector
-        # TODO: Get from dependencies
-        unified_collector = None  # Will be injected via dependencies
-        
-        # Initialize Hybrid Analyzer
+        # Get Unified Collector via dependency
+        from app.core.price_movers.api.dependencies import get_unified_collector
+        unified_collector = await get_unified_collector() # Holt den Collector aus der Dependency
+
+        # Initialize Hybrid Analyzer with the real collector
         from app.core.price_movers.services.analyzer_hybrid import HybridPriceMoverAnalyzer
-        
+
         analyzer = HybridPriceMoverAnalyzer(
-            unified_collector=unified_collector,
+            unified_collector=unified_collector, # <-- Jetzt wird der echte Collector übergeben
             use_lightweight=True
         )
         
