@@ -227,31 +227,35 @@ async def check_rate_limit(
     client_id = x_forwarded_for or "default"
     return await rate_limiter.check_rate_limit(client_id, x_forwarded_for)
 
-    async def get_unified_collector() -> UnifiedCollector:
-        """
-        Dependency für UnifiedCollector.
-        
-        Initialisiert und gibt eine Instanz des UnifiedCollectors zurück.
-        Diese Instanz kann dann in Services wie dem HybridPriceMoverAnalyzer verwendet werden.
-        """
-        # Hier könntest du Konfigurationen oder API-Keys aus Umgebungsvariablen laden
-        # Beispiel:
-        # import os
-        # cex_creds = {
-        #     'binance': {'api_key': os.getenv('BINANCE_API_KEY'), 'api_secret': os.getenv('BINANCE_API_SECRET')},
-        #     # ... andere CEXs
-        # }
-        # dex_keys = {
-        #     'birdeye': os.getenv('BIRD_EYE_API_KEY'),
-        #     # ... andere DEXs
-        # }
-        # collector = UnifiedCollector(cex_credentials=cex_creds, dex_api_keys=dex_keys)
-        # 
-        # Für den Moment erstellen wir ihn ohne spezielle Konfiguration,
-        # was bedeutet, dass nur die Dinge verfügbar sind, die ohne API-Key funktionieren
-        # (oder du setzt die Keys in den Umgebungsvariablen).
-        collector = UnifiedCollector()
-        return collector
+
+# --- NEUER CODE START ---
+async def get_unified_collector() -> UnifiedCollector:
+    """
+    Dependency für UnifiedCollector.
+    
+    Initialisiert und gibt eine Instanz des UnifiedCollectors zurück.
+    Diese Instanz kann dann in Services wie dem HybridPriceMoverAnalyzer verwendet werden.
+    """
+    # Hier könntest du Konfigurationen oder API-Keys aus Umgebungsvariablen laden
+    # Beispiel:
+    # import os
+    # cex_creds = {
+    #     'binance': {'api_key': os.getenv('BINANCE_API_KEY'), 'api_secret': os.getenv('BINANCE_API_SECRET')},
+    #     # ... andere CEXs
+    # }
+    # dex_keys = {
+    #     'birdeye': os.getenv('BIRD_EYE_API_KEY'),
+    #     # ... andere DEXs
+    # }
+    # collector = UnifiedCollector(cex_credentials=cex_creds, dex_api_keys=dex_keys)
+    # 
+    # Für den Moment erstellen wir ihn ohne spezielle Konfiguration,
+    # was bedeutet, dass nur die Dinge verfügbar sind, die ohne API-Key funktionieren
+    # (oder du setzt die Keys in den Umgebungsvariablen).
+    collector = UnifiedCollector()
+    return collector
+# --- NEUER CODE ENDE ---
+
 
 # ==================== CLEANUP ====================
 
