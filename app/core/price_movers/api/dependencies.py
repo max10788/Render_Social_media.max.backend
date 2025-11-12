@@ -1,5 +1,10 @@
 """
-FastAPI Dependencies
+FastAPI Dependencies - FIXED VERSION
+
+🔧 FIXES:
+- ✅ BIRDEYE_API_KEY wird aus ENV geladen
+- ✅ UnifiedCollector erhält DEX API Keys
+- ✅ CEX API Keys optional unterstützt
 
 Dependency Injection für:
 - Exchange Collectors
@@ -33,6 +38,9 @@ _exchange_collectors: Dict[str, ExchangeCollector] = {}
 
 # Cache für Analyzer (wiederverwendbar)
 _analyzer_instance: Optional[PriceMoverAnalyzer] = None
+
+# Cache für UnifiedCollector (wiederverwendbar)
+_unified_collector_instance: Optional[UnifiedCollector] = None
 
 
 # ==================== COLLECTOR DEPENDENCIES ====================
@@ -133,6 +141,104 @@ async def get_analyzer(
     return _analyzer_instance
 
 
+# ==================== UNIFIED COLLECTOR DEPENDENCY (FIXED) ====================
+
+async def get_unified_collector() -> UnifiedCollector:
+    """
+    🔧 FIXED: Dependency für UnifiedCollector mit API Keys aus ENV
+    
+    Initialisiert und gibt eine Instanz des UnifiedCollectors zurück mit:
+    - CEX Credentials (optional, funktioniert auch ohne)
+    - DEX API Keys (BIRDEYE_API_KEY aus ENV) ← FIX!
+    
+    Returns:
+        UnifiedCollector Instance mit konfigurierten API Keys
+    """
+    global _unified_collector_instance
+    
+    # Verwende gecachte Instance wenn vorhanden
+    if _unified_collector_instance is not None:
+        return _unified_collector_instance
+    
+    logger.info("🔧 Creating UnifiedCollector with API Keys from ENV")
+    
+    # 🔧 FIX: Lade API Keys aus Environment
+    birdeye_key = os.getenv('BIRDEYE_API_KEY')
+    
+    # CEX Credentials (optional - funktionieren auch ohne)
+    cex_creds = {}
+    
+    # Binance
+    binance_key = os.getenv('BINANCE_API_KEY')
+    binance_secret = os.getenv('BINANCE_API_SECRET')
+    if binance_key and binance_secret:
+        cex_creds['binance'] = {
+            'api_key': binance_key,
+            'api_secret': binance_secret
+        }
+        logger.info("✅ Binance API Keys geladen")
+    
+    # Bitget
+    bitget_key = os.getenv('BITGET_API_KEY')
+    bitget_secret = os.getenv('BITGET_API_SECRET')
+    if bitget_key and bitget_secret:
+        cex_creds['bitget'] = {
+            'api_key': bitget_key,
+            'api_secret': bitget_secret
+        }
+        logger.info("✅ Bitget API Keys geladen")
+    
+    # Kraken
+    kraken_key = os.getenv('KRAKEN_API_KEY')
+    kraken_secret = os.getenv('KRAKEN_API_SECRET')
+    if kraken_key and kraken_secret:
+        cex_creds['kraken'] = {
+            'api_key': kraken_key,
+            'api_secret': kraken_secret
+        }
+        logger.info("✅ Kraken API Keys geladen")
+    
+    # DEX API Keys
+    dex_keys = {}
+    if birdeye_key:
+        dex_keys['birdeye'] = birdeye_key
+        logger.info(f"✅ Birdeye API Key geladen: {birdeye_key[:8]}...")
+    else:
+        logger.warning("⚠️ BIRDEYE_API_KEY nicht in ENV gefunden! DEX wird nicht verfügbar sein.")
+    
+    # Helius (optional, für alternative Solana DEX Daten)
+    helius_key = os.getenv('HELIUS_API_KEY')
+    if helius_key:
+        dex_keys['helius'] = helius_key
+        logger.info(f"✅ Helius API Key geladen: {helius_key[:8]}...")
+    
+    # Erstelle UnifiedCollector mit API Keys
+    try:
+        collector = UnifiedCollector(
+            cex_credentials=cex_creds if cex_creds else None,
+            dex_api_keys=dex_keys if dex_keys else None
+        )
+        
+        # Cache die Instance
+        _unified_collector_instance = collector
+        
+        # Log verfügbare Exchanges
+        available = collector.list_available_exchanges()
+        logger.info(
+            f"✅ UnifiedCollector initialisiert: "
+            f"CEX={available['cex']}, DEX={available['dex']}"
+        )
+        
+        return collector
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to create UnifiedCollector: {e}", exc_info=True)
+        # Erstelle fallback ohne API Keys
+        collector = UnifiedCollector()
+        _unified_collector_instance = collector
+        return collector
+
+
 # ==================== AUTHENTICATION (FUTURE) ====================
 
 async def verify_api_key(
@@ -228,35 +334,6 @@ async def check_rate_limit(
     return await rate_limiter.check_rate_limit(client_id, x_forwarded_for)
 
 
-# --- NEUER CODE START ---
-async def get_unified_collector() -> UnifiedCollector:
-    """
-    Dependency für UnifiedCollector.
-    
-    Initialisiert und gibt eine Instanz des UnifiedCollectors zurück.
-    Diese Instanz kann dann in Services wie dem HybridPriceMoverAnalyzer verwendet werden.
-    """
-    # Hier könntest du Konfigurationen oder API-Keys aus Umgebungsvariablen laden
-    # Beispiel:
-    # import os
-    # cex_creds = {
-    #     'binance': {'api_key': os.getenv('BINANCE_API_KEY'), 'api_secret': os.getenv('BINANCE_API_SECRET')},
-    #     # ... andere CEXs
-    # }
-    # dex_keys = {
-    #     'birdeye': os.getenv('BIRD_EYE_API_KEY'),
-    #     # ... andere DEXs
-    # }
-    # collector = UnifiedCollector(cex_credentials=cex_creds, dex_api_keys=dex_keys)
-    # 
-    # Für den Moment erstellen wir ihn ohne spezielle Konfiguration,
-    # was bedeutet, dass nur die Dinge verfügbar sind, die ohne API-Key funktionieren
-    # (oder du setzt die Keys in den Umgebungsvariablen).
-    collector = UnifiedCollector()
-    return collector
-# --- NEUER CODE ENDE ---
-
-
 # ==================== CLEANUP ====================
 
 async def cleanup_dependencies():
@@ -265,7 +342,7 @@ async def cleanup_dependencies():
     
     Schließt alle Exchange Connections
     """
-    global _exchange_collectors, _analyzer_instance
+    global _exchange_collectors, _analyzer_instance, _unified_collector_instance
     
     logger.info("Cleaning up dependencies...")
     
@@ -277,8 +354,17 @@ async def cleanup_dependencies():
         except Exception as e:
             logger.error(f"Error closing {exchange_name} collector: {e}")
     
+    # Schließe UnifiedCollector
+    if _unified_collector_instance:
+        try:
+            await _unified_collector_instance.close()
+            logger.info("Closed UnifiedCollector")
+        except Exception as e:
+            logger.error(f"Error closing UnifiedCollector: {e}")
+    
     _exchange_collectors.clear()
     _analyzer_instance = None
+    _unified_collector_instance = None
     
     logger.info("Cleanup complete")
 
