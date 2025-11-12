@@ -1,5 +1,10 @@
 """
-Exchange Collector - CCXT Integration (IMPROVED VERSION)
+Exchange Collector - CCXT Integration (IMPROVED VERSION + TIMEZONE FIX)
+
+🔧 FIXES:
+1. ✅ Alle datetime.now() → datetime.now(timezone.utc)
+2. ✅ Alle datetime.fromtimestamp() → timezone-aware
+3. ✅ Input datetime validation (ensure timezone-aware)
 
 HAUPTÄNDERUNG:
 - OHLCV-Fallback für historische Trade-Daten
@@ -16,7 +21,7 @@ Verwendet CCXT Library für einheitliches Interface
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import ccxt.async_support as ccxt
 
@@ -31,6 +36,34 @@ from ..utils.constants import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_timezone_aware(dt: datetime) -> datetime:
+    """
+    🔧 FIX: Ensure datetime is timezone-aware (UTC)
+    
+    Args:
+        dt: Input datetime
+        
+    Returns:
+        Timezone-aware datetime (UTC)
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def timestamp_to_datetime(timestamp_ms: int) -> datetime:
+    """
+    🔧 FIX: Convert timestamp to timezone-aware datetime
+    
+    Args:
+        timestamp_ms: Timestamp in milliseconds
+        
+    Returns:
+        Timezone-aware datetime (UTC)
+    """
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc)
 
 
 class ExchangeCollector(BaseCollector):
@@ -169,6 +202,9 @@ class ExchangeCollector(BaseCollector):
         if not self.exchange:
             raise RuntimeError(f"Exchange {self.exchange_name} not initialized")
         
+        # 🔧 FIX: Ensure timezone-aware
+        timestamp = ensure_timezone_aware(timestamp)
+        
         await self._rate_limit_wait()
         
         try:
@@ -190,7 +226,7 @@ class ExchangeCollector(BaseCollector):
             candle = ohlcv[0]
             
             result = {
-                'timestamp': datetime.fromtimestamp(candle[0] / 1000),
+                'timestamp': timestamp_to_datetime(candle[0]),  # 🔧 FIX: timezone-aware
                 'open': float(candle[1]),
                 'high': float(candle[2]),
                 'low': float(candle[3]),
@@ -236,8 +272,13 @@ class ExchangeCollector(BaseCollector):
         if not self.exchange:
             raise RuntimeError(f"Exchange {self.exchange_name} not initialized")
         
+        # 🔧 FIX: Ensure timezone-aware
+        start_time = ensure_timezone_aware(start_time)
+        end_time = ensure_timezone_aware(end_time)
+        
         # Prüfe, ob Zeitbereich zu alt ist (> 10 Minuten)
-        time_diff = datetime.now() - start_time
+        now = datetime.now(timezone.utc)  # 🔧 FIX: timezone-aware
+        time_diff = now - start_time
         is_historical = time_diff > timedelta(minutes=10)
         
         if is_historical:
@@ -344,6 +385,10 @@ class ExchangeCollector(BaseCollector):
         Returns:
             Liste von synthetischen Trades
         """
+        # 🔧 FIX: Ensure timezone-aware
+        start_time = ensure_timezone_aware(start_time)
+        end_time = ensure_timezone_aware(end_time)
+        
         try:
             logger.info(f"OHLCV-Fallback aktiviert für {symbol}")
             
@@ -430,11 +475,15 @@ class ExchangeCollector(BaseCollector):
         Returns:
             Parsed Trade Dictionary
         """
+        # 🔧 FIX: Ensure timezone-aware datetime
+        if raw_trade.get('timestamp'):
+            trade_timestamp = timestamp_to_datetime(raw_trade['timestamp'])
+        else:
+            trade_timestamp = datetime.now(timezone.utc)
+        
         return {
             'id': raw_trade.get('id'),
-            'timestamp': datetime.fromtimestamp(
-                raw_trade['timestamp'] / 1000
-            ) if raw_trade.get('timestamp') else datetime.now(),
+            'timestamp': trade_timestamp,
             'trade_type': raw_trade.get('side', 'unknown'),  # 'buy' oder 'sell'
             'amount': float(raw_trade.get('amount', 0.0)),
             'price': float(raw_trade.get('price', 0.0)),
@@ -467,10 +516,14 @@ class ExchangeCollector(BaseCollector):
                 limit=limit
             )
             
+            # 🔧 FIX: Ensure timezone-aware datetime
+            if orderbook.get('timestamp'):
+                ob_timestamp = timestamp_to_datetime(orderbook['timestamp'])
+            else:
+                ob_timestamp = datetime.now(timezone.utc)
+            
             result = {
-                'timestamp': datetime.fromtimestamp(
-                    orderbook['timestamp'] / 1000
-                ) if orderbook.get('timestamp') else datetime.now(),
+                'timestamp': ob_timestamp,
                 'bids': orderbook['bids'],  # [[price, amount], ...]
                 'asks': orderbook['asks'],
                 'bid': orderbook['bids'][0][0] if orderbook['bids'] else None,
@@ -512,11 +565,15 @@ class ExchangeCollector(BaseCollector):
         try:
             ticker = await self.exchange.fetch_ticker(symbol)
             
+            # 🔧 FIX: Ensure timezone-aware datetime
+            if ticker.get('timestamp'):
+                ticker_timestamp = timestamp_to_datetime(ticker['timestamp'])
+            else:
+                ticker_timestamp = datetime.now(timezone.utc)
+            
             result = {
                 'symbol': ticker['symbol'],
-                'timestamp': datetime.fromtimestamp(
-                    ticker['timestamp'] / 1000
-                ) if ticker.get('timestamp') else datetime.now(),
+                'timestamp': ticker_timestamp,
                 'last': float(ticker['last']),
                 'bid': float(ticker['bid']) if ticker.get('bid') else None,
                 'ask': float(ticker['ask']) if ticker.get('ask') else None,
@@ -556,6 +613,10 @@ class ExchangeCollector(BaseCollector):
         if not self.exchange:
             raise RuntimeError(f"Exchange {self.exchange_name} not initialized")
         
+        # 🔧 FIX: Ensure timezone-aware
+        start_time = ensure_timezone_aware(start_time)
+        end_time = ensure_timezone_aware(end_time)
+        
         await self._rate_limit_wait()
         
         try:
@@ -579,7 +640,7 @@ class ExchangeCollector(BaseCollector):
                 for candle in ohlcv:
                     if candle[0] <= end_ms:
                         all_candles.append({
-                            'timestamp': datetime.fromtimestamp(candle[0] / 1000),
+                            'timestamp': timestamp_to_datetime(candle[0]),  # 🔧 FIX
                             'open': float(candle[1]),
                             'high': float(candle[2]),
                             'low': float(candle[3]),
@@ -631,15 +692,17 @@ class ExchangeCollector(BaseCollector):
     
     async def _rate_limit_wait(self):
         """Wartet falls Rate Limit erreicht"""
+        now = datetime.now(timezone.utc)  # 🔧 FIX: timezone-aware
+        
         if self._last_request_time:
-            elapsed = (datetime.now() - self._last_request_time).total_seconds()
+            elapsed = (now - self._last_request_time).total_seconds()
             min_interval = 60 / self.rate_limit  # Sekunden pro Request
             
             if elapsed < min_interval:
                 wait_time = min_interval - elapsed
                 await asyncio.sleep(wait_time)
         
-        self._last_request_time = datetime.now()
+        self._last_request_time = now
 
     async def fetch_aggregate_trades(
         self,
@@ -670,8 +733,13 @@ class ExchangeCollector(BaseCollector):
         if not self.exchange:
             raise RuntimeError(f"Exchange {self.exchange_name} not initialized")
         
+        # 🔧 FIX: Ensure timezone-aware
+        start_time = ensure_timezone_aware(start_time)
+        end_time = ensure_timezone_aware(end_time)
+        
         # Prüfe, ob historisch
-        time_diff = datetime.now() - start_time
+        now = datetime.now(timezone.utc)  # 🔧 FIX
+        time_diff = now - start_time
         is_historical = time_diff > timedelta(minutes=10)
         
         if is_historical:
@@ -711,6 +779,10 @@ class ExchangeCollector(BaseCollector):
         Verwendet /api/v3/aggTrades Endpoint
         Trades vom gleichen Maker sind bereits gruppiert
         """
+        # 🔧 FIX: Ensure timezone-aware
+        start_time = ensure_timezone_aware(start_time)
+        end_time = ensure_timezone_aware(end_time)
+        
         await self._rate_limit_wait()
         
         try:
@@ -741,7 +813,7 @@ class ExchangeCollector(BaseCollector):
             for agg in agg_trades_raw:
                 agg_trades.append({
                     'id': f"agg_{agg['a']}",  # Aggregate trade ID
-                    'timestamp': datetime.fromtimestamp(agg['T'] / 1000),
+                    'timestamp': timestamp_to_datetime(agg['T']),  # 🔧 FIX
                     'trade_type': 'buy' if agg['m'] else 'sell',  # m = is buyer maker
                     'amount': float(agg['q']),  # Quantity
                     'price': float(agg['p']),   # Price
