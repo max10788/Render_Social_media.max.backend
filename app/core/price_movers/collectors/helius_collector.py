@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 
 from .dex_collector import DEXCollector
-from ..utils.constants import Blockchain
+from ..utils.constants import BlockchainNetwork
 
 
 logger = logging.getLogger(__name__)
@@ -43,21 +43,30 @@ class HeliusCollector(DEXCollector):
         'orca': 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
     }
     
-    def __init__(self, api_key: str):
+    # Common Solana token addresses
+    TOKEN_MINTS = {
+        'SOL': 'So11111111111111111111111111111111111111112',  # Wrapped SOL
+        'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+        'RAY': '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R',
+        'SRM': 'SRMuApVNdxXokk5GT7XD5cUUgXMBCoAz2LHeuAoKWRt',
+    }
+    
+    def __init__(self, api_key: str, config: Optional[Dict[str, Any]] = None):
         """
         Initialize Helius Collector
         
         Args:
             api_key: Helius API Key (free: 100k req/day)
+            config: Optional configuration
         """
         super().__init__(
             dex_name="helius",
-            blockchain=Blockchain.SOLANA,
+            blockchain=BlockchainNetwork.SOLANA,
             api_key=api_key,
-            config={}
+            config=config or {}
         )
         
-        self.api_key = api_key
         self.session: Optional[aiohttp.ClientSession] = None
         
         logger.info("✅ Helius Collector initialisiert (Enhanced Solana APIs)")
@@ -68,26 +77,28 @@ class HeliusCollector(DEXCollector):
             self.session = aiohttp.ClientSession()
         return self.session
     
-    async def fetch_trades(
+    async def fetch_dex_trades(
         self,
-        symbol: str,
+        token_address: str,
         start_time: datetime,
         end_time: datetime,
         limit: Optional[int] = 1000
     ) -> List[Dict[str, Any]]:
         """
-        Fetch DEX trades via Helius Enhanced APIs
+        Fetcht DEX Trades von Helius API
+        
+        Implementation der abstrakten Methode aus DEXCollector
         
         Args:
-            symbol: Trading pair (e.g., SOL/USDC)
-            start_time: Start time
-            end_time: End time
-            limit: Max trades
+            token_address: Solana Token Mint Address
+            start_time: Start-Zeitpunkt
+            end_time: End-Zeitpunkt
+            limit: Max. Anzahl Trades
             
         Returns:
-            List of trades with wallet addresses
+            Liste von Trades mit ECHTEN Wallet-Adressen
         """
-        logger.info(f"🔗 Helius: Fetching trades for {symbol}")
+        logger.info(f"🔗 Helius: Fetching DEX trades for token {token_address[:8]}...")
         
         # Ensure timezone-aware
         if start_time.tzinfo is None:
@@ -95,25 +106,62 @@ class HeliusCollector(DEXCollector):
         if end_time.tzinfo is None:
             end_time = end_time.replace(tzinfo=timezone.utc)
         
-        # Parse symbol to get token address
-        token_mint = self._get_token_mint(symbol)
-        
         try:
             # Use Enhanced Transaction History API
             trades = await self._fetch_enhanced_transactions(
-                token_mint=token_mint,
+                token_mint=token_address,
                 start_time=start_time,
                 end_time=end_time,
                 limit=limit
             )
             
-            logger.info(f"✅ Helius: {len(trades)} trades fetched for {symbol}")
+            logger.info(f"✅ Helius: {len(trades)} DEX trades fetched")
             
             return trades
             
         except Exception as e:
-            logger.error(f"❌ Helius fetch error: {e}", exc_info=True)
+            logger.error(f"❌ Helius fetch_dex_trades error: {e}", exc_info=True)
             return []
+    
+    async def _resolve_symbol_to_address(self, symbol: str) -> Optional[str]:
+        """
+        Resolved Trading Pair Symbol zu Token Mint Address
+        
+        Implementation der abstrakten Methode aus DEXCollector
+        
+        Args:
+            symbol: Trading Pair (z.B. SOL/USDC)
+            
+        Returns:
+            Token Mint Address
+        """
+        try:
+            # Parse symbol (e.g., "SOL/USDC" -> "SOL")
+            parts = symbol.split('/')
+            
+            if len(parts) != 2:
+                logger.error(f"Ungültiges Symbol-Format: {symbol}")
+                return None
+            
+            base_token = parts[0].upper()
+            
+            # Lookup in bekannten Tokens
+            token_address = self.TOKEN_MINTS.get(base_token)
+            
+            if not token_address:
+                logger.warning(
+                    f"Token '{base_token}' nicht in bekannten Tokens. "
+                    f"Nutze SOL als Fallback..."
+                )
+                token_address = self.TOKEN_MINTS['SOL']
+            
+            logger.debug(f"Resolved {symbol} -> {token_address}")
+            
+            return token_address
+            
+        except Exception as e:
+            logger.error(f"Symbol resolution error: {e}", exc_info=True)
+            return None
     
     async def _fetch_enhanced_transactions(
         self,
@@ -140,7 +188,7 @@ class HeliusCollector(DEXCollector):
         }
         
         try:
-            async with session.get(url, params=params) as response:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     logger.error(f"Helius API error: {response.status} - {error_text}")
@@ -162,8 +210,11 @@ class HeliusCollector(DEXCollector):
             
             return trades
             
-        except Exception as e:
+        except aiohttp.ClientError as e:
             logger.error(f"Helius Enhanced Transactions error: {e}", exc_info=True)
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error in _fetch_enhanced_transactions: {e}", exc_info=True)
             return []
     
     def _parse_helius_transaction(self, tx: Dict) -> Optional[Dict[str, Any]]:
@@ -210,6 +261,11 @@ class HeliusCollector(DEXCollector):
                 wallet = wallet_address
                 trade_type = 'buy'  # Default
             
+            # Fallback if no wallet found
+            if not wallet:
+                logger.warning("Transaction ohne Wallet-Adresse gefunden")
+                return None
+            
             # Amount and price
             amount = float(transfer.get('tokenAmount', 0))
             
@@ -224,6 +280,9 @@ class HeliusCollector(DEXCollector):
                     price = sol_amount / amount
                 value_usd = sol_amount * 210  # Rough SOL price, TODO: get real price
             
+            # Determine DEX from transaction
+            dex = self._identify_dex(tx)
+            
             trade = {
                 'id': tx.get('signature', ''),
                 'timestamp': timestamp,
@@ -232,9 +291,9 @@ class HeliusCollector(DEXCollector):
                 'price': price,
                 'value_usd': value_usd,
                 'wallet_address': wallet,
-                'source': 'dex',
-                'dex': 'jupiter',  # Simplified
-                'transaction_signature': tx.get('signature'),
+                'dex': dex,
+                'signature': tx.get('signature'),
+                'blockchain': 'solana',
             }
             
             return trade
@@ -242,6 +301,33 @@ class HeliusCollector(DEXCollector):
         except Exception as e:
             logger.warning(f"Parse transaction error: {e}")
             return None
+    
+    def _identify_dex(self, tx: Dict) -> str:
+        """
+        Identify which DEX was used in transaction
+        
+        Args:
+            tx: Transaction data
+            
+        Returns:
+            DEX name (jupiter/raydium/orca/unknown)
+        """
+        try:
+            # Check instructions for DEX program IDs
+            instructions = tx.get('instructions', [])
+            
+            for instruction in instructions:
+                program_id = instruction.get('programId', '')
+                
+                for dex_name, dex_program_id in self.DEX_PROGRAMS.items():
+                    if program_id == dex_program_id:
+                        return dex_name
+            
+            # Default to Jupiter (most common on Solana)
+            return 'jupiter'
+            
+        except Exception:
+            return 'unknown'
     
     async def fetch_candle_data(
         self,
@@ -285,6 +371,7 @@ class HeliusCollector(DEXCollector):
         
         if not trades:
             # Return mock candle if no trades
+            logger.warning("Keine Trades für Candle-Aggregation verfügbar, nutze Mock-Daten")
             return {
                 'timestamp': timestamp,
                 'open': 210.0,
@@ -295,45 +382,32 @@ class HeliusCollector(DEXCollector):
             }
         
         # Aggregate to OHLCV
-        prices = [t['price'] for t in trades if t['price'] > 0]
-        volumes = [t['amount'] for t in trades]
+        prices = [t['price'] for t in trades if t.get('price', 0) > 0]
+        volumes = [t['amount'] for t in trades if t.get('amount', 0) > 0]
+        
+        if not prices:
+            logger.warning("Keine gültigen Preise in Trades, nutze Mock-Daten")
+            return {
+                'timestamp': timestamp,
+                'open': 210.0,
+                'high': 211.0,
+                'low': 209.0,
+                'close': 210.5,
+                'volume': sum(volumes) if volumes else 0.0
+            }
         
         candle = {
             'timestamp': timestamp,
-            'open': prices[0] if prices else 210.0,
-            'high': max(prices) if prices else 211.0,
-            'low': min(prices) if prices else 209.0,
-            'close': prices[-1] if prices else 210.5,
-            'volume': sum(volumes)
+            'open': prices[0],
+            'high': max(prices),
+            'low': min(prices),
+            'close': prices[-1],
+            'volume': sum(volumes) if volumes else 0.0
         }
         
         logger.info(f"✅ Helius Candle aggregated: {len(trades)} trades")
         
         return candle
-    
-    def _get_token_mint(self, symbol: str) -> str:
-        """
-        Get Solana token mint address from symbol
-        
-        Args:
-            symbol: Trading pair (e.g., SOL/USDC)
-            
-        Returns:
-            Token mint address
-        """
-        # Common Solana token addresses
-        token_mints = {
-            'SOL': 'So11111111111111111111111111111111111111112',  # Wrapped SOL
-            'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-            'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
-            'RAY': '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R',
-            'SRM': 'SRMuApVNdxXokk5GT7XD5cUUgXMBCoAz2LHeuAoKWRt',
-        }
-        
-        # Parse symbol (e.g., "SOL/USDC" -> "SOL")
-        base_token = symbol.split('/')[0].upper()
-        
-        return token_mints.get(base_token, token_mints['SOL'])
     
     async def health_check(self) -> bool:
         """Check Helius API health"""
@@ -348,7 +422,7 @@ class HeliusCollector(DEXCollector):
                 'limit': 1
             }
             
-            async with session.get(url, params=params, timeout=5) as response:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as response:
                 if response.status == 200:
                     logger.info("✅ Helius Health Check: OK")
                     return True
