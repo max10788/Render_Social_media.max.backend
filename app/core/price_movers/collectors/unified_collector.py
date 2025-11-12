@@ -117,8 +117,28 @@ class UnifiedCollector:
                 # Continue with other exchanges
     
     def _init_dex_collectors(self, api_keys: Dict[str, str]):
-        """Initialisiert DEX Collectors"""
-        # Birdeye (Solana Multi-DEX)
+        """Initialisiert DEX Collectors - PRIORITY: Helius > Birdeye > Mock"""
+        
+        # 1. Versuch Helius (BESTE Option - 100k req/day FREE!)
+        helius_key = api_keys.get('helius')
+        
+        if helius_key:
+            try:
+                from .helius_collector import HeliusCollector
+                helius = HeliusCollector(api_key=helius_key)
+                
+                # Registriere für alle Solana DEXs
+                for dex in [SupportedDEX.JUPITER, SupportedDEX.RAYDIUM, SupportedDEX.ORCA]:
+                    self.dex_collectors[dex.value] = helius
+                
+                logger.info("✅ Helius Collector created (Jupiter/Raydium/Orca)")
+                return  # Fertig! Helius funktioniert
+                
+            except Exception as e:
+                logger.error(f"✗ Helius Collector failed: {e}")
+                # Fall through to Birdeye
+        
+        # 2. Fallback: Birdeye (wenn Helius fehlt/failed)
         birdeye_key = api_keys.get('birdeye')
         
         if birdeye_key:
@@ -129,14 +149,15 @@ class UnifiedCollector:
                 for dex in [SupportedDEX.JUPITER, SupportedDEX.RAYDIUM, SupportedDEX.ORCA]:
                     self.dex_collectors[dex.value] = birdeye
                 
-                logger.info("✓ Birdeye Collector created (Jupiter/Raydium/Orca)")
+                logger.info("✅ Birdeye Collector created (Jupiter/Raydium/Orca)")
+                return
                 
             except Exception as e:
-                logger.error(f"✗ Failed to create Birdeye collector: {e}")
-        else:
-            logger.warning("⚠️ Birdeye API Key nicht konfiguriert")
+                logger.error(f"✗ Birdeye Collector failed: {e}")
         
-        # TODO: Weitere DEX Collectors (Helius, The Graph, etc.)
+        # 3. Fallback: Mock (für Development ohne API Keys)
+        logger.warning("⚠️ Keine DEX API Keys - Using MOCK DEX")
+        logger.info("💡 Tipp: Setze HELIUS_API_KEY für echte DEX Daten!")
     
     async def fetch_trades(
         self,
