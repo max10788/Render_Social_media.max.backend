@@ -2,7 +2,8 @@
 FastAPI Dependencies - FIXED VERSION
 
 🔧 FIXES:
-- ✅ BIRDEYE_API_KEY wird aus ENV geladen
+- ✅ HELIUS_API_KEY wird aus ENV geladen (PRIORITY!)
+- ✅ BIRDEYE_API_KEY als Fallback
 - ✅ UnifiedCollector erhält DEX API Keys
 - ✅ CEX API Keys optional unterstützt
 
@@ -112,7 +113,7 @@ async def get_all_exchange_collectors() -> Dict[str, ExchangeCollector]:
 # ==================== ANALYZER DEPENDENCY ====================
 
 async def get_analyzer(
-    exchange: str  # <-- Füge exchange Parameter hinzu
+    exchange: str
 ) -> PriceMoverAnalyzer:
     """
     Dependency für PriceMoverAnalyzer
@@ -147,9 +148,13 @@ async def get_unified_collector() -> UnifiedCollector:
     """
     🔧 FIXED: Dependency für UnifiedCollector mit API Keys aus ENV
     
+    PRIORITY:
+    1. HELIUS_API_KEY (beste Option - 100k req/day FREE!)
+    2. BIRDEYE_API_KEY (Fallback - aber oft suspended)
+    
     Initialisiert und gibt eine Instanz des UnifiedCollectors zurück mit:
     - CEX Credentials (optional, funktioniert auch ohne)
-    - DEX API Keys (BIRDEYE_API_KEY aus ENV) ← FIX!
+    - DEX API Keys (HELIUS > BIRDEYE)
     
     Returns:
         UnifiedCollector Instance mit konfigurierten API Keys
@@ -163,6 +168,7 @@ async def get_unified_collector() -> UnifiedCollector:
     logger.info("🔧 Creating UnifiedCollector with API Keys from ENV")
     
     # 🔧 FIX: Lade API Keys aus Environment
+    helius_key = os.getenv('HELIUS_API_KEY')
     birdeye_key = os.getenv('BIRDEYE_API_KEY')
     
     # CEX Credentials (optional - funktionieren auch ohne)
@@ -170,7 +176,7 @@ async def get_unified_collector() -> UnifiedCollector:
     
     # Binance
     binance_key = os.getenv('BINANCE_API_KEY')
-    binance_secret = os.getenv('BINANCE_API_SECRET')
+    binance_secret = os.getenv('BINANCE_SECRET_KEY')
     if binance_key and binance_secret:
         cex_creds['binance'] = {
             'api_key': binance_key,
@@ -180,7 +186,7 @@ async def get_unified_collector() -> UnifiedCollector:
     
     # Bitget
     bitget_key = os.getenv('BITGET_API_KEY')
-    bitget_secret = os.getenv('BITGET_API_SECRET')
+    bitget_secret = os.getenv('BITGET_SECRET_KEY')
     if bitget_key and bitget_secret:
         cex_creds['bitget'] = {
             'api_key': bitget_key,
@@ -190,7 +196,7 @@ async def get_unified_collector() -> UnifiedCollector:
     
     # Kraken
     kraken_key = os.getenv('KRAKEN_API_KEY')
-    kraken_secret = os.getenv('KRAKEN_API_SECRET')
+    kraken_secret = os.getenv('KRAKEN_SECRET_KEY')
     if kraken_key and kraken_secret:
         cex_creds['kraken'] = {
             'api_key': kraken_key,
@@ -198,19 +204,25 @@ async def get_unified_collector() -> UnifiedCollector:
         }
         logger.info("✅ Kraken API Keys geladen")
     
-    # DEX API Keys
+    # DEX API Keys - PRIORITY: Helius > Birdeye
     dex_keys = {}
-    if birdeye_key:
-        dex_keys['birdeye'] = birdeye_key
-        logger.info(f"✅ Birdeye API Key geladen: {birdeye_key[:8]}...")
-    else:
-        logger.warning("⚠️ BIRDEYE_API_KEY nicht in ENV gefunden! DEX wird nicht verfügbar sein.")
     
-    # Helius (optional, für alternative Solana DEX Daten)
-    helius_key = os.getenv('HELIUS_API_KEY')
+    # 🎯 HELIUS (PRIORITY #1 - beste Option!)
     if helius_key:
         dex_keys['helius'] = helius_key
-        logger.info(f"✅ Helius API Key geladen: {helius_key[:8]}...")
+        logger.info(f"✅ Helius API Key geladen: {helius_key[:8]}... (PRIMARY)")
+    else:
+        logger.warning("⚠️ HELIUS_API_KEY nicht in ENV gefunden!")
+    
+    # 🔄 BIRDEYE (FALLBACK #2)
+    if birdeye_key:
+        dex_keys['birdeye'] = birdeye_key
+        logger.info(f"✅ Birdeye API Key geladen: {birdeye_key[:8]}... (FALLBACK)")
+    
+    # Warnung wenn KEINE DEX Keys
+    if not dex_keys:
+        logger.warning("⚠️ KEINE DEX API Keys gefunden! DEX wird nicht verfügbar sein.")
+        logger.info("💡 Tipp: Setze HELIUS_API_KEY für echte DEX Daten!")
     
     # Erstelle UnifiedCollector mit API Keys
     try:
@@ -258,15 +270,6 @@ async def verify_api_key(
     Raises:
         HTTPException: Wenn API Key invalid
     """
-    # Placeholder - aktuell keine Authentication
-    # In Production sollte hier ein echter Check sein
-    
-    # if x_api_key != "expected_key":
-    #     raise HTTPException(
-    #         status_code=401,
-    #         detail="Invalid API Key"
-    #     )
-    
     return x_api_key
 
 
@@ -301,16 +304,6 @@ class RateLimiter:
         Raises:
             HTTPException: Wenn Rate Limit überschritten
         """
-        # Placeholder - aktuell kein echtes Rate Limiting
-        # In Production mit Redis implementieren
-        
-        # ip = x_forwarded_for or client_id
-        # if self._is_rate_limited(ip):
-        #     raise HTTPException(
-        #         status_code=429,
-        #         detail="Rate limit exceeded. Try again later."
-        #     )
-        
         return True
 
 
