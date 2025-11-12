@@ -33,6 +33,8 @@ class BlockchainNetwork(str, Enum):
     BSC = "bsc"
     POLYGON = "polygon"
 
+# 🔧 FIX: Alias für Helius Collector Kompatibilität
+Blockchain = BlockchainNetwork
 
 SUPPORTED_EXCHANGES: List[str] = [
     SupportedExchange.BITGET,
