@@ -1,5 +1,10 @@
 """
-HYBRID Price Mover Analyzer - CEX + DEX Combined Analysis
+HYBRID Price Mover Analyzer - CEX + DEX Combined Analysis - FIXED VERSION
+
+🔧 FIXES:
+1. ✅ JSON Serialization: float('inf') → 999.0
+2. ✅ Datetime: Added timezone awareness
+3. ✅ NaN/Inf Validation before JSON response
 
 🆕 NEUE FEATURES:
 - ✅ CEX (Bitget/Binance/Kraken) + DEX (Jupiter/Raydium/Orca) PARALLEL
@@ -16,7 +21,8 @@ ARCHITECTURE:
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+import math
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Tuple, Optional, Union
 from collections import defaultdict
 from dataclasses import dataclass
@@ -36,6 +42,44 @@ from app.core.price_movers.utils.metrics import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_float(value: float) -> float:
+    """
+    🔧 FIX: Sanitize float values for JSON compatibility
+    
+    Replaces:
+    - NaN → 0.0
+    - Infinity → 999.0
+    - -Infinity → -999.0
+    """
+    if math.isnan(value):
+        return 0.0
+    if math.isinf(value):
+        return 999.0 if value > 0 else -999.0
+    return value
+
+
+def sanitize_dict_floats(data: Dict) -> Dict:
+    """
+    🔧 FIX: Recursively sanitize all float values in a dictionary
+    """
+    sanitized = {}
+    for key, value in data.items():
+        if isinstance(value, float):
+            sanitized[key] = sanitize_float(value)
+        elif isinstance(value, dict):
+            sanitized[key] = sanitize_dict_floats(value)
+        elif isinstance(value, list):
+            sanitized[key] = [
+                sanitize_dict_floats(item) if isinstance(item, dict)
+                else sanitize_float(item) if isinstance(item, float)
+                else item
+                for item in value
+            ]
+        else:
+            sanitized[key] = value
+    return sanitized
 
 
 @dataclass
@@ -153,25 +197,20 @@ class HybridPriceMoverAnalyzer:
         Returns:
             {
                 'candle': {...},
-                'cex_analysis': {
-                    'exchange': 'bitget',
-                    'top_movers': [...],
-                    'has_wallet_ids': False
-                },
-                'dex_analysis': {
-                    'exchange': 'jupiter',
-                    'top_movers': [...],
-                    'has_wallet_ids': True
-                },
-                'correlation': {
-                    'score': 0.85,
-                    'cex_led_by_seconds': -120,  # CEX 2min before DEX
-                    'matched_patterns': [...]
-                },
+                'cex_analysis': {...},
+                'dex_analysis': {...},
+                'correlation': {...},
                 'analysis_metadata': {...}
             }
         """
-        start = datetime.now()
+        start = datetime.now(timezone.utc)  # 🔧 FIX: Use timezone-aware datetime
+        
+        # 🔧 FIX: Ensure input datetimes are timezone-aware
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        
         logger.info(
             f"🔀 HYBRID Analysis: CEX={cex_exchange} vs DEX={dex_exchange} "
             f"{symbol} {timeframe} ({start_time} - {end_time})"
@@ -189,18 +228,26 @@ class HybridPriceMoverAnalyzer:
             )
             
             # Wait for both
-            (cex_candle, cex_trades), (dex_candle, dex_trades) = await asyncio.gather(
+            results = await asyncio.gather(
                 cex_task, dex_task, return_exceptions=True
             )
             
-            # Check for errors
-            if isinstance((cex_candle, cex_trades), Exception):
-                logger.error(f"CEX fetch failed: {cex_candle}")
-                cex_candle, cex_trades = None, []
+            # Unpack results safely
+            cex_result = results[0]
+            dex_result = results[1]
             
-            if isinstance((dex_candle, dex_trades), Exception):
-                logger.error(f"DEX fetch failed: {dex_candle}")
+            # Check for errors
+            if isinstance(cex_result, Exception):
+                logger.error(f"CEX fetch error: {cex_result}")
+                cex_candle, cex_trades = None, []
+            else:
+                cex_candle, cex_trades = cex_result
+            
+            if isinstance(dex_result, Exception):
+                logger.error(f"DEX fetch error: {dex_result}")
                 dex_candle, dex_trades = None, []
+            else:
+                dex_candle, dex_trades = dex_result
             
             logger.info(
                 f"✓ Data fetched: CEX={len(cex_trades)} trades, "
@@ -235,7 +282,7 @@ class HybridPriceMoverAnalyzer:
             )
             
             # Build Response
-            duration_ms = int((datetime.now() - start).total_seconds() * 1000)
+            duration_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
             
             response = {
                 "candle": {
@@ -262,7 +309,7 @@ class HybridPriceMoverAnalyzer:
                 },
                 "correlation": correlation,
                 "analysis_metadata": {
-                    "analysis_timestamp": datetime.now(),
+                    "analysis_timestamp": datetime.now(timezone.utc),
                     "processing_duration_ms": duration_ms,
                     "total_trades_analyzed": len(cex_trades) + len(dex_trades),
                     "cex_entities_found": len(cex_movers),
@@ -272,6 +319,9 @@ class HybridPriceMoverAnalyzer:
                     "timeframe": timeframe
                 }
             }
+            
+            # 🔧 FIX: Sanitize all float values before returning
+            response = sanitize_dict_floats(response)
             
             logger.info(
                 f"✅ HYBRID Analysis complete in {duration_ms}ms. "
@@ -337,7 +387,7 @@ class HybridPriceMoverAnalyzer:
             
         except Exception as e:
             logger.error(f"CEX fetch error: {e}")
-            return await self._fetch_mock_data(start_time, end_time, "cex")
+            raise  # Re-raise to be caught in analyze_hybrid_candle
     
     async def _fetch_dex_data(
         self,
@@ -394,7 +444,7 @@ class HybridPriceMoverAnalyzer:
             
         except Exception as e:
             logger.error(f"DEX fetch error: {e}")
-            return await self._fetch_mock_data(start_time, end_time, "dex")
+            raise  # Re-raise to be caught in analyze_hybrid_candle
     
     async def _analyze_cex_trades(
         self,
@@ -474,7 +524,9 @@ class HybridPriceMoverAnalyzer:
             
             buy_volume = sum(t.amount for t in wallet_trades if t.trade_type == 'buy')
             sell_volume = sum(t.amount for t in wallet_trades if t.trade_type == 'sell')
-            buy_sell_ratio = buy_volume / sell_volume if sell_volume > 0 else float('inf')
+            
+            # 🔧 FIX: Use large number instead of inf for JSON compatibility
+            buy_sell_ratio = buy_volume / sell_volume if sell_volume > 0 else 999.0
             
             # Calculate impact score
             volume_ratio = total_volume / candle.volume if candle.volume > 0 else 0
@@ -494,13 +546,13 @@ class HybridPriceMoverAnalyzer:
                 'wallet_id': wallet_addr,
                 'wallet_address': wallet_addr,  # 🎯 REAL Address!
                 'wallet_type': wallet_type,
-                'impact_score': impact_score,
-                'total_volume': total_volume,
-                'total_value_usd': total_value,
+                'impact_score': sanitize_float(impact_score),
+                'total_volume': sanitize_float(total_volume),
+                'total_value_usd': sanitize_float(total_value),
                 'trade_count': trade_count,
-                'avg_trade_size': total_volume / trade_count if trade_count > 0 else 0,
-                'volume_ratio': volume_ratio,
-                'buy_sell_ratio': buy_sell_ratio,
+                'avg_trade_size': sanitize_float(total_volume / trade_count if trade_count > 0 else 0),
+                'volume_ratio': sanitize_float(volume_ratio),
+                'buy_sell_ratio': sanitize_float(buy_sell_ratio),
                 'blockchain': 'solana',  # or auto-detect
                 'dex': exchange
             }
@@ -532,7 +584,7 @@ class HybridPriceMoverAnalyzer:
                 'score': 0.0,
                 'cex_led_by_seconds': 0,
                 'volume_correlation': 0.0,
-                'timing_score': 0.0, # <-- Hinzugefügt
+                'timing_score': 0.0,
                 'pattern_matches': [],
                 'conclusion': 'Insufficient data for correlation'
             }
@@ -541,8 +593,13 @@ class HybridPriceMoverAnalyzer:
         cex_total_volume = sum(m['total_volume'] for m in cex_movers)
         dex_total_volume = sum(m['total_volume'] for m in dex_movers)
         
-        volume_ratio = min(cex_total_volume, dex_total_volume) / max(cex_total_volume, dex_total_volume)
-        volume_correlation = volume_ratio
+        max_volume = max(cex_total_volume, dex_total_volume)
+        if max_volume > 0:
+            volume_ratio = min(cex_total_volume, dex_total_volume) / max_volume
+        else:
+            volume_ratio = 0.0
+        
+        volume_correlation = sanitize_float(volume_ratio)
         
         # 2. Timing Correlation
         if cex_trades and dex_trades:
@@ -567,22 +624,31 @@ class HybridPriceMoverAnalyzer:
                 
                 # Check if similar
                 type_match = cex_type == dex_type
-                volume_similar = abs(cex_volume - dex_volume) / max(cex_volume, dex_volume) < 0.3
+                
+                max_vol = max(cex_volume, dex_volume)
+                if max_vol > 0:
+                    volume_similar = abs(cex_volume - dex_volume) / max_vol < 0.3
+                else:
+                    volume_similar = False
                 
                 if type_match and volume_similar:
+                    volume_diff = abs(cex_volume - dex_volume) / max_vol * 100 if max_vol > 0 else 0
                     pattern_matches.append({
                         'cex_entity': cex_mover['wallet_id'],
                         'dex_wallet': dex_mover['wallet_address'],
                         'type': cex_type,
-                        'volume_diff_pct': abs(cex_volume - dex_volume) / max(cex_volume, dex_volume) * 100,
+                        'volume_diff_pct': sanitize_float(volume_diff),
                         'confidence': 0.7  # Simplified
                     })
         
         # 4. Overall Correlation Score
-        timing_score = max(0, 1.0 - abs(time_diff) / 300)  # 5 min = 0 score
-        pattern_score = len(pattern_matches) / min(len(cex_movers), len(dex_movers))
+        timing_score = sanitize_float(max(0, 1.0 - abs(time_diff) / 300))  # 5 min = 0 score
         
-        overall_score = (
+        min_movers = min(len(cex_movers), len(dex_movers))
+        pattern_score = len(pattern_matches) / min_movers if min_movers > 0 else 0.0
+        pattern_score = sanitize_float(pattern_score)
+        
+        overall_score = sanitize_float(
             volume_correlation * 0.4 +
             timing_score * 0.3 +
             pattern_score * 0.3
@@ -602,10 +668,10 @@ class HybridPriceMoverAnalyzer:
             conclusion += f" | DEX led by {int(abs(time_diff))}s"
         
         return {
-            'score': round(overall_score, 3),
+            'score': overall_score,
             'cex_led_by_seconds': int(time_diff),
-            'volume_correlation': round(volume_correlation, 3),
-            'timing_score': round(timing_score, 3), # <-- Hinzugefügt
+            'volume_correlation': volume_correlation,
+            'timing_score': timing_score,
             'pattern_matches': pattern_matches,
             'conclusion': conclusion
         }
@@ -623,14 +689,14 @@ class HybridPriceMoverAnalyzer:
                 mover = {
                     "wallet_id": entity.entity_id,
                     "wallet_type": entity.entity_type,
-                    "impact_score": entity.impact_score,
+                    "impact_score": sanitize_float(entity.impact_score),
                     "impact_level": entity.impact_level,
-                    "total_volume": round(entity.total_volume, 4),
-                    "total_value_usd": round(entity.total_value_usd, 2),
+                    "total_volume": sanitize_float(round(entity.total_volume, 4)),
+                    "total_value_usd": sanitize_float(round(entity.total_value_usd, 2)),
                     "trade_count": entity.trade_count,
-                    "avg_trade_size": round(entity.avg_trade_size, 4),
-                    "volume_ratio": round(entity.impact_components["volume_ratio"], 3),
-                    "confidence_score": entity.confidence_score,
+                    "avg_trade_size": sanitize_float(round(entity.avg_trade_size, 4)),
+                    "volume_ratio": sanitize_float(round(entity.impact_components["volume_ratio"], 3)),
+                    "confidence_score": sanitize_float(entity.confidence_score),
                 }
             else:
                 mover = entity
@@ -647,6 +713,12 @@ class HybridPriceMoverAnalyzer:
     ) -> Tuple[Candle, List[Trade]]:
         """Generate mock data for testing"""
         import random
+        
+        # 🔧 FIX: Ensure mock timestamps are timezone-aware
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
         
         candle = Candle(
             timestamp=start_time,
@@ -715,13 +787,13 @@ class HybridPriceMoverAnalyzer:
             "correlation": {
                 'score': 0.0,
                 'cex_led_by_seconds': 0,
-                'volume_correlation': 0.0, # <-- Hinzugefügt
-                'timing_score': 0.0,       # <-- Hinzugefügt
+                'volume_correlation': 0.0,
+                'timing_score': 0.0,
                 'pattern_matches': [],
                 'conclusion': 'No data available'
             },
             "analysis_metadata": {
-                "analysis_timestamp": datetime.now(),
+                "analysis_timestamp": datetime.now(timezone.utc),
                 "processing_duration_ms": 0,
                 "total_trades_analyzed": 0,
                 "cex_entities_found": 0,
