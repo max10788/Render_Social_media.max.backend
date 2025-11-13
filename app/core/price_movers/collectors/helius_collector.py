@@ -332,8 +332,20 @@ class HeliusCollector(DEXCollector):
                 logger.warning("Transaction ohne Wallet-Adresse gefunden")
                 return None
             
-            # Amount and price
-            amount = float(transfer.get('tokenAmount', 0))
+            # 🔧 VOLUME FIX: Amount with proper decimals conversion
+            raw_amount = float(transfer.get('tokenAmount', 0))
+            
+            # Get decimals from token metadata
+            mint = transfer.get('mint', '')
+            decimals = self._get_token_decimals(mint)
+            
+            # Convert raw amount to human-readable
+            if decimals > 0:
+                amount = raw_amount / (10 ** decimals)
+            else:
+                # Fallback: Assume standard SOL decimals (9)
+                amount = raw_amount / 1e9
+                logger.debug(f"Using fallback decimals for token {mint[:8] if mint else 'unknown'}...")
             
             # Get price from native transfers (SOL)
             native_transfers = tx.get('nativeTransfers', [])
@@ -474,6 +486,34 @@ class HeliusCollector(DEXCollector):
         logger.info(f"✅ Helius Candle aggregated: {len(trades)} trades")
         
         return candle
+    
+    def _get_token_decimals(self, mint: str) -> int:
+        """
+        Get token decimals for a given mint address
+        
+        Common Solana tokens and their decimals
+        
+        Args:
+            mint: Token mint address
+            
+        Returns:
+            Decimals (default: 9 for SOL)
+        """
+        # Known token decimals
+        KNOWN_DECIMALS = {
+            'So11111111111111111111111111111111111111112': 9,   # Wrapped SOL
+            'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 6,  # USDC
+            'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 6,  # USDT
+            '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R': 6,  # RAY
+            'SRMuApVNdxXokk5GT7XD5cUUgXMBCoAz2LHeuAoKWRt': 6,  # SRM
+        }
+        
+        # Check known tokens
+        if mint in KNOWN_DECIMALS:
+            return KNOWN_DECIMALS[mint]
+        
+        # Default: Most Solana tokens use 9 decimals
+        return 9
     
     async def health_check(self) -> bool:
         """Check Helius API health"""
