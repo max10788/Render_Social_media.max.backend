@@ -21,7 +21,7 @@ ARCHITECTURE:
 
 import asyncio
 import logging
-import math
+import math  # Füge diese Zeile hinzu falls noch nicht vorhanden
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Tuple, Optional, Union
 from collections import defaultdict
@@ -563,21 +563,263 @@ class HybridPriceMoverAnalyzer:
         entities.sort(key=lambda e: e['impact_score'], reverse=True)
         
         return entities[:top_n]
+
+    # ============================================================
+    # SCHRITT 1: Füge 4 neue Methoden VOR der close() Methode hinzu
+    # ============================================================
+
+    def _calculate_1to1_pattern_matches(
+        self,
+        cex_movers: List[Dict],
+        dex_movers: List[Dict],
+        cex_trades: List,
+        dex_trades: List
+    ) -> List[Dict]:
+        """
+        🆕 1:1 Pattern Matching zwischen CEX Entities und DEX Wallets
+        
+        Vergleicht jeden CEX Entity mit jedem DEX Wallet und findet ähnliche Patterns.
+        """
+        if not cex_movers or not dex_movers:
+            return []
+        
+        logger.info(f"🔍 Starting 1:1 Pattern Matching: {len(cex_movers)} CEX entities vs {len(dex_movers)} DEX wallets")
+        
+        matches = []
+        
+        # Compare each CEX entity with each DEX wallet
+        for cex_entity in cex_movers[:10]:  # Top 10 CEX
+            best_match = None
+            best_score = 0.0
+            
+            for dex_wallet in dex_movers[:20]:  # Top 20 DEX
+                # Calculate similarity score
+                similarity = self._calculate_entity_similarity(
+                    cex_entity, dex_wallet, cex_trades, dex_trades
+                )
+                
+                if similarity['overall_score'] > best_score:
+                    best_score = similarity['overall_score']
+                    best_match = {
+                        'cex_entity': cex_entity['wallet_id'],
+                        'dex_wallet': dex_wallet['wallet_address'],
+                        'type': cex_entity.get('wallet_type', 'unknown'),
+                        'confidence': best_score,
+                        'similarity_breakdown': similarity,
+                        'cex_volume': cex_entity.get('total_volume', 0),
+                        'dex_volume': dex_wallet.get('total_volume', 0),
+                        'volume_diff_pct': abs(
+                            cex_entity.get('total_volume', 0) - dex_wallet.get('total_volume', 0)
+                        ) / max(cex_entity.get('total_volume', 1), dex_wallet.get('total_volume', 1)) * 100
+                    }
+            
+            # Only keep matches with confidence > 0.5 (50%)
+            if best_match and best_match['confidence'] > 0.5:
+                matches.append(best_match)
+                logger.debug(
+                    f"✓ Match found: {best_match['cex_entity']} <-> {best_match['dex_wallet'][:8]}... "
+                    f"(confidence: {best_match['confidence']:.2%})"
+                )
+        
+        # Sort by confidence
+        matches.sort(key=lambda m: m['confidence'], reverse=True)
+        
+        logger.info(f"✅ 1:1 Matching complete: {len(matches)} high-confidence matches found")
+        
+        return matches
     
+    def _calculate_entity_similarity(
+        self,
+        cex_entity: Dict,
+        dex_wallet: Dict,
+        cex_trades: List,
+        dex_trades: List
+    ) -> Dict:
+        """
+        Berechnet Ähnlichkeit zwischen CEX Entity und DEX Wallet
+        """
+        # 1. Volume Similarity
+        cex_vol = cex_entity.get('total_volume', 0)
+        dex_vol = dex_wallet.get('total_volume', 0)
+        
+        if cex_vol == 0 and dex_vol == 0:
+            vol_similarity = 1.0
+        elif cex_vol == 0 or dex_vol == 0:
+            vol_similarity = 0.0
+        else:
+            max_vol = max(cex_vol, dex_vol)
+            min_vol = min(cex_vol, dex_vol)
+            vol_similarity = min_vol / max_vol
+        
+        # 2. Trade Count Similarity
+        cex_count = cex_entity.get('trade_count', 0)
+        dex_count = dex_wallet.get('trade_count', 0)
+        
+        if cex_count == 0 and dex_count == 0:
+            count_similarity = 1.0
+        elif cex_count == 0 or dex_count == 0:
+            count_similarity = 0.0
+        else:
+            count_diff = abs(cex_count - dex_count)
+            count_similarity = max(0, 1.0 - (count_diff / 10.0))
+        
+        # 3. Timing Overlap
+        timing_overlap = self._calculate_timing_overlap(
+            cex_entity, dex_wallet, cex_trades, dex_trades
+        )
+        
+        # 4. Trade Size Pattern Similarity
+        size_similarity = self._calculate_size_pattern_similarity(
+            cex_entity, dex_wallet
+        )
+        
+        # Overall Score (weighted average)
+        overall_score = sanitize_float(
+            vol_similarity * 0.40 +
+            count_similarity * 0.20 +
+            timing_overlap * 0.30 +
+            size_similarity * 0.10
+        )
+        
+        return {
+            'overall_score': overall_score,
+            'volume_similarity': vol_similarity,
+            'count_similarity': count_similarity,
+            'timing_overlap': timing_overlap,
+            'size_pattern_similarity': size_similarity
+        }
+    
+    def _calculate_timing_overlap(
+        self,
+        cex_entity: Dict,
+        dex_wallet: Dict,
+        cex_trades: List,
+        dex_trades: List
+    ) -> float:
+        """
+        Berechnet zeitliche Überlappung der Trading-Aktivität
+        """
+        try:
+            # Get entity IDs
+            cex_id = cex_entity.get('wallet_id', '')
+            dex_addr = dex_wallet.get('wallet_address', '')
+            
+            # Filter trades for this entity/wallet
+            cex_entity_trades = [
+                t for t in cex_trades 
+                if hasattr(t, 'entity_id') and t.entity_id == cex_id
+            ]
+            
+            dex_wallet_trades = [
+                t for t in dex_trades 
+                if hasattr(t, 'wallet_address') and t.wallet_address == dex_addr
+            ]
+            
+            if not cex_entity_trades or not dex_wallet_trades:
+                return 0.0
+            
+            # Get timestamps
+            cex_timestamps = [t.timestamp.timestamp() for t in cex_entity_trades]
+            dex_timestamps = [t.timestamp.timestamp() for t in dex_wallet_trades]
+            
+            # Calculate time ranges
+            cex_start = min(cex_timestamps)
+            cex_end = max(cex_timestamps)
+            dex_start = min(dex_timestamps)
+            dex_end = max(dex_timestamps)
+            
+            # Calculate overlap
+            overlap_start = max(cex_start, dex_start)
+            overlap_end = min(cex_end, dex_end)
+            
+            if overlap_end <= overlap_start:
+                # No overlap - check if they're close in time
+                time_gap = min(
+                    abs(cex_start - dex_end),
+                    abs(dex_start - cex_end)
+                )
+                
+                if time_gap < 60:  # Within 1 minute
+                    return 1.0 - (time_gap / 60.0)
+                else:
+                    return 0.0
+            
+            # Calculate overlap percentage
+            overlap_duration = overlap_end - overlap_start
+            total_duration = max(cex_end - cex_start, dex_end - dex_start)
+            
+            if total_duration == 0:
+                return 1.0
+            
+            overlap_score = overlap_duration / total_duration
+            
+            return min(1.0, max(0.0, overlap_score))
+            
+        except Exception as e:
+            logger.warning(f"Timing overlap calculation error: {e}")
+            return 0.0
+    
+    def _calculate_size_pattern_similarity(
+        self,
+        cex_entity: Dict,
+        dex_wallet: Dict
+    ) -> float:
+        """
+        Vergleicht Trade-Size Patterns
+        """
+        try:
+            # Average Trade Size Similarity
+            cex_avg = cex_entity.get('avg_trade_size', 0)
+            dex_avg = dex_wallet.get('avg_trade_size', 0)
+            
+            if cex_avg == 0 and dex_avg == 0:
+                size_sim = 1.0
+            elif cex_avg == 0 or dex_avg == 0:
+                size_sim = 0.0
+            else:
+                size_ratio = min(cex_avg, dex_avg) / max(cex_avg, dex_avg)
+                size_sim = size_ratio
+            
+            # Buy/Sell Ratio Similarity
+            cex_ratio = cex_entity.get('buy_sell_ratio', 1.0)
+            dex_ratio = dex_wallet.get('buy_sell_ratio', 1.0)
+            
+            # Handle infinity
+            if math.isinf(cex_ratio):
+                cex_ratio = 100.0
+            if math.isinf(dex_ratio):
+                dex_ratio = 100.0
+            
+            if cex_ratio == 0 and dex_ratio == 0:
+                ratio_sim = 1.0
+            elif cex_ratio == 0 or dex_ratio == 0:
+                ratio_sim = 0.0
+            else:
+                ratio_similarity = min(cex_ratio, dex_ratio) / max(cex_ratio, dex_ratio)
+                ratio_sim = ratio_similarity
+            
+            # Combined pattern similarity
+            pattern_sim = (size_sim * 0.6 + ratio_sim * 0.4)
+            
+            return pattern_sim
+            
+        except Exception as e:
+            logger.warning(f"Size pattern calculation error: {e}")
+            return 0.0
+
+    # ============================================================
+    # SCHRITT 3: Ersetze die _calculate_correlation() Methode
+    # ============================================================
+
     def _calculate_correlation(
         self,
         cex_movers: List[Dict],
         dex_movers: List[Dict],
-        cex_trades: List[Trade],
-        dex_trades: List[Trade]
+        cex_trades: List,
+        dex_trades: List
     ) -> Dict:
         """
-        Calculate cross-exchange correlation
-        
-        Checks:
-        1. Volume correlation (are volumes similar?)
-        2. Timing correlation (who moved first?)
-        3. Pattern matching (similar entity types?)
+        Calculate cross-exchange correlation - ENHANCED with 1:1 Matching
         """
         if not cex_movers or not dex_movers:
             return {
@@ -605,60 +847,41 @@ class HybridPriceMoverAnalyzer:
         if cex_trades and dex_trades:
             cex_avg_time = sum((t.timestamp.timestamp() for t in cex_trades)) / len(cex_trades)
             dex_avg_time = sum((t.timestamp.timestamp() for t in dex_trades)) / len(dex_trades)
-            
-            time_diff = cex_avg_time - dex_avg_time  # Positive = CEX first
+            time_diff = cex_avg_time - dex_avg_time
         else:
             time_diff = 0
         
-        # 3. Pattern Matching
-        pattern_matches = []
-        
-        for cex_mover in cex_movers[:5]:  # Top 5 CEX
-            cex_type = cex_mover['wallet_type']
-            cex_volume = cex_mover['total_volume']
-            
-            # Find similar DEX movers
-            for dex_mover in dex_movers[:10]:  # Top 10 DEX
-                dex_type = dex_mover['wallet_type']
-                dex_volume = dex_mover['total_volume']
-                
-                # Check if similar
-                type_match = cex_type == dex_type
-                
-                max_vol = max(cex_volume, dex_volume)
-                if max_vol > 0:
-                    volume_similar = abs(cex_volume - dex_volume) / max_vol < 0.3
-                else:
-                    volume_similar = False
-                
-                if type_match and volume_similar:
-                    volume_diff = abs(cex_volume - dex_volume) / max_vol * 100 if max_vol > 0 else 0
-                    pattern_matches.append({
-                        'cex_entity': cex_mover['wallet_id'],
-                        'dex_wallet': dex_mover['wallet_address'],
-                        'type': cex_type,
-                        'volume_diff_pct': sanitize_float(volume_diff),
-                        'confidence': 0.7  # Simplified
-                    })
-        
-        # 4. Overall Correlation Score
-        timing_score = sanitize_float(max(0, 1.0 - abs(time_diff) / 300))  # 5 min = 0 score
-        
-        min_movers = min(len(cex_movers), len(dex_movers))
-        pattern_score = len(pattern_matches) / min_movers if min_movers > 0 else 0.0
-        pattern_score = sanitize_float(pattern_score)
-        
-        overall_score = sanitize_float(
-            volume_correlation * 0.4 +
-            timing_score * 0.3 +
-            pattern_score * 0.3
+        # 🆕 3. 1:1 Pattern Matching
+        pattern_matches = self._calculate_1to1_pattern_matches(
+            cex_movers, dex_movers, cex_trades, dex_trades
         )
         
-        # 5. Conclusion
+        # Calculate pattern score based on matches
+        if len(pattern_matches) > 0:
+            # Average confidence of all matches
+            avg_confidence = sum(m['confidence'] for m in pattern_matches) / len(pattern_matches)
+            # Weighted by number of matches found
+            match_ratio = len(pattern_matches) / min(len(cex_movers), len(dex_movers))
+            pattern_score = avg_confidence * 0.7 + match_ratio * 0.3
+        else:
+            pattern_score = 0.0
+        
+        pattern_score = sanitize_float(pattern_score)
+        
+        # 4. Overall Correlation Score (UPDATED weights)
+        timing_score = sanitize_float(max(0, 1.0 - abs(time_diff) / 300))
+        
+        overall_score = sanitize_float(
+            volume_correlation * 0.30 +  # Reduced from 0.40
+            timing_score * 0.20 +         # Reduced from 0.30
+            pattern_score * 0.50          # NEW! Most important
+        )
+        
+        # 5. Conclusion (ENHANCED)
         if overall_score > 0.7:
-            conclusion = "Strong correlation - CEX and DEX activity aligned"
+            conclusion = f"Strong correlation - {len(pattern_matches)} entity matches found"
         elif overall_score > 0.4:
-            conclusion = "Moderate correlation - some alignment detected"
+            conclusion = f"Moderate correlation - {len(pattern_matches)} potential matches"
         else:
             conclusion = "Weak correlation - independent activity"
         
@@ -672,7 +895,8 @@ class HybridPriceMoverAnalyzer:
             'cex_led_by_seconds': int(time_diff),
             'volume_correlation': volume_correlation,
             'timing_score': timing_score,
-            'pattern_matches': pattern_matches,
+            'pattern_matches': pattern_matches,  # Now contains 1:1 matches!
+            'pattern_score': pattern_score,      # NEW!
             'conclusion': conclusion
         }
     
