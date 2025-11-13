@@ -1,12 +1,10 @@
 """
-Helius Collector - Solana DEX Data via Helius Enhanced APIs
+Helius Collector - Solana DEX Data via Helius Enhanced APIs - FIXED VERSION
 
-✅ VORTEILE gegenüber Birdeye:
-- 100,000 requests/day FREE (Birdeye: paid only)
-- Parse Transaction History API
-- Enhanced Transaction API
-- Webhook support
-- Bessere Dokumentation
+🔧 FIXES:
+1. ✅ API Parameter Fix: before/until erwarten Signatures, nicht Timestamps
+2. ✅ Client-side Time Filtering implementiert
+3. ✅ Pagination für große Datenmengen
 
 API Docs: https://docs.helius.dev/welcome/what-is-helius
 """
@@ -25,10 +23,10 @@ logger = logging.getLogger(__name__)
 
 class HeliusCollector(DEXCollector):
     """
-    Helius Collector für Solana DEX Daten
+    Helius Collector für Solana DEX Daten - FIXED VERSION
     
     Nutzt:
-    - Enhanced Transactions API
+    - Enhanced Transactions API (mit korrektem before/until)
     - Parse Transaction History
     - Token Transactions API
     """
@@ -107,7 +105,7 @@ class HeliusCollector(DEXCollector):
             end_time = end_time.replace(tzinfo=timezone.utc)
         
         try:
-            # Use Enhanced Transaction History API
+            # Use Enhanced Transaction History API (FIXED)
             trades = await self._fetch_enhanced_transactions(
                 token_mint=token_address,
                 start_time=start_time,
@@ -171,44 +169,112 @@ class HeliusCollector(DEXCollector):
         limit: int
     ) -> List[Dict[str, Any]]:
         """
-        Fetch transactions via Helius Enhanced Transactions API
+        🔧 FIXED: Fetch transactions via Helius Enhanced Transactions API
         
         Uses: /v0/addresses/{address}/transactions
+        
+        ⚠️ WICHTIG: Helius API nutzt Transaction Signatures für Pagination,
+        NICHT Timestamps! Daher holen wir Trades und filtern client-seitig.
+        
+        Pagination:
+        - before: Transaction Signature (String) für Pagination
+        - limit: Max 100 per request
+        - type: SWAP für DEX trades
         """
         session = await self._get_session()
         
         url = f"{self.API_BASE}/v0/addresses/{token_mint}/transactions"
         
+        # Initial params - OHNE before/until (die erwarten Signatures, nicht Timestamps)
         params = {
             'api-key': self.api_key,
             'limit': min(limit, 100),  # Max 100 per request
-            'before': int(end_time.timestamp()),
-            'until': int(start_time.timestamp()),
             'type': 'SWAP',  # Filter for swaps only
         }
         
+        all_trades = []
+        before_signature = None
+        max_iterations = 10  # Sicherheits-Limit für Pagination
+        iterations_done = 0
+        
         try:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Helius API error: {response.status} - {error_text}")
-                    return []
+            # Pagination Loop - hole Trades bis wir genug haben oder keine mehr kommen
+            for iteration in range(max_iterations):
+                iterations_done = iteration + 1
                 
-                data = await response.json()
+                # Füge before-Signature für Pagination hinzu (falls vorhanden)
+                current_params = params.copy()
+                if before_signature:
+                    current_params['before'] = before_signature
+                
+                async with session.get(url, params=current_params, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Helius API error: {response.status} - {error_text}")
+                        break
+                    
+                    data = await response.json()
+                
+                # Wenn keine Daten mehr kommen, stop
+                if not data or len(data) == 0:
+                    logger.debug(f"Helius: No more transactions available (iteration {iteration})")
+                    break
+                
+                # Parse transactions
+                batch_trades = []
+                for tx in data:
+                    try:
+                        trade = self._parse_helius_transaction(tx)
+                        if trade:
+                            batch_trades.append(trade)
+                    except Exception as e:
+                        logger.warning(f"Failed to parse transaction: {e}")
+                        continue
+                
+                # Client-side time filtering
+                filtered_trades = [
+                    t for t in batch_trades
+                    if start_time <= t['timestamp'] <= end_time
+                ]
+                
+                all_trades.extend(filtered_trades)
+                
+                logger.debug(
+                    f"Helius batch {iteration + 1}: {len(batch_trades)} trades, "
+                    f"{len(filtered_trades)} in time range [{start_time.isoformat()} - {end_time.isoformat()}]"
+                )
+                
+                # Check if we have enough trades
+                if len(all_trades) >= limit:
+                    logger.info(f"Helius: Reached limit of {limit} trades")
+                    all_trades = all_trades[:limit]  # Trim to exact limit
+                    break
+                
+                # Check if we should continue pagination
+                # Wenn ALLE Trades zu alt sind (vor start_time), können wir stoppen
+                if batch_trades and all(t['timestamp'] < start_time for t in batch_trades):
+                    logger.info(f"Helius: All trades are before start_time, stopping pagination")
+                    break
+                
+                # Update before_signature for next iteration
+                # Letzter Trade im Batch = ältester Trade
+                if data:
+                    before_signature = data[-1].get('signature')
+                    if not before_signature:
+                        logger.warning("No signature found for pagination, stopping")
+                        break
+                
+                # Wenn weniger als limit zurückkam, gibt's wahrscheinlich keine mehr
+                if len(data) < current_params['limit']:
+                    logger.info(f"Helius: Received less than limit ({len(data)} < {current_params['limit']}), probably no more data")
+                    break
             
-            # Parse transactions
-            trades = []
+            logger.info(
+                f"✅ Helius: {len(all_trades)} trades fetched and filtered in {iterations_done} iterations "
+                f"(from {start_time.strftime('%H:%M:%S')} to {end_time.strftime('%H:%M:%S')})"
+            )
             
-            for tx in data:
-                try:
-                    trade = self._parse_helius_transaction(tx)
-                    if trade:
-                        trades.append(trade)
-                except Exception as e:
-                    logger.warning(f"Failed to parse transaction: {e}")
-                    continue
-            
-            return trades
+            return all_trades
             
         except aiohttp.ClientError as e:
             logger.error(f"Helius Enhanced Transactions error: {e}", exc_info=True)
