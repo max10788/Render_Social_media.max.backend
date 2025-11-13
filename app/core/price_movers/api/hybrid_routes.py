@@ -1,17 +1,23 @@
 """
-Hybrid Analysis Routes - CEX + DEX Combined Analysis
+Hybrid Analysis Routes - CEX + DEX Combined Analysis - ENHANCED VERSION
+
+🆕 NEUE FEATURES:
+1. ✅ Separate Zeiträume für CEX und DEX
+2. ✅ Analysis Modes: trades / candles / auto
+3. ✅ Validation für historische CEX-Daten
+4. ✅ Smart Defaults und Warnings
 
 Neue Endpoints:
-- POST /api/v1/hybrid/analyze - Parallel CEX + DEX Analyse
+- POST /api/v1/hybrid/analyze - Parallel CEX + DEX Analyse (ENHANCED)
 - POST /api/v1/hybrid/track-wallet - Tracke CEX Pattern auf DEX
 - GET /api/v1/hybrid/correlation - Correlation History
 """
 
 import logging
 from typing import Dict, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Depends, status, Body
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 from app.core.price_movers.api.test_schemas import (
     ExchangeEnum,
@@ -40,16 +46,99 @@ router = APIRouter(
 
 # ==================== SCHEMAS ====================
 
+class AnalysisMode(str):
+    """Analysis Mode Enum"""
+    TRADES = "trades"  # Trade-level analysis (nur für frische Daten)
+    CANDLES = "candles"  # Nur OHLCV-Vergleich
+    AUTO = "auto"  # Automatische Auswahl
+
+
 class HybridAnalysisRequest(BaseModel):
-    """Request für Hybrid CEX/DEX Analyse"""
+    """
+    Request für Hybrid CEX/DEX Analyse - ENHANCED VERSION
+    
+    🆕 Neue Features:
+    - Separate Zeiträume für CEX und DEX (optional)
+    - Analysis Mode (trades/candles/auto)
+    - Auto-Validation
+    """
+    # Exchanges
     cex_exchange: ExchangeEnum = Field(..., description="CEX Exchange (bitget/binance/kraken)")
     dex_exchange: str = Field(..., description="DEX Exchange (jupiter/raydium/orca)")
     symbol: str = Field(..., description="Trading pair (e.g., SOL/USDT)")
     timeframe: TimeframeEnum = Field(..., description="Candle timeframe")
-    start_time: datetime = Field(..., description="Start time")
-    end_time: datetime = Field(..., description="End time")
+    
+    # Zeiträume - Default (für beide gleich)
+    start_time: Optional[datetime] = Field(None, description="Default start time (for both CEX and DEX)")
+    end_time: Optional[datetime] = Field(None, description="Default end time (for both CEX and DEX)")
+    
+    # 🆕 Separate Zeiträume (optional)
+    cex_start_time: Optional[datetime] = Field(None, description="CEX-specific start time (overrides start_time)")
+    cex_end_time: Optional[datetime] = Field(None, description="CEX-specific end time (overrides end_time)")
+    dex_start_time: Optional[datetime] = Field(None, description="DEX-specific start time (overrides start_time)")
+    dex_end_time: Optional[datetime] = Field(None, description="DEX-specific end time (overrides end_time)")
+    
+    # 🆕 Analysis Mode
+    analysis_mode: str = Field(
+        default="auto",
+        description="Analysis mode: 'trades' (trade-level), 'candles' (OHLCV only), 'auto' (automatic)"
+    )
+    
+    # Settings
     min_impact_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
     top_n_wallets: int = Field(default=10, ge=1, le=100)
+    
+    @validator('analysis_mode')
+    def validate_analysis_mode(cls, v):
+        """Validate analysis mode"""
+        valid_modes = ['trades', 'candles', 'auto']
+        if v not in valid_modes:
+            raise ValueError(f"analysis_mode must be one of {valid_modes}")
+        return v
+    
+    def get_cex_timerange(self) -> tuple[datetime, datetime]:
+        """Get effective CEX time range"""
+        start = self.cex_start_time or self.start_time
+        end = self.cex_end_time or self.end_time
+        
+        if not start or not end:
+            # Default: Last 5 minutes (fresh CEX data)
+            now = datetime.now(timezone.utc)
+            end = now
+            start = now - timedelta(minutes=5)
+        
+        return start, end
+    
+    def get_dex_timerange(self) -> tuple[datetime, datetime]:
+        """Get effective DEX time range"""
+        start = self.dex_start_time or self.start_time
+        end = self.dex_end_time or self.end_time
+        
+        if not start or not end:
+            # Default: Same as CEX
+            return self.get_cex_timerange()
+        
+        return start, end
+    
+    def is_cex_historical(self) -> bool:
+        """Check if CEX timerange is historical (>10 minutes old)"""
+        _, cex_end = self.get_cex_timerange()
+        now = datetime.now(timezone.utc)
+        age = (now - cex_end).total_seconds()
+        return age > 600  # 10 minutes
+    
+    def get_effective_mode(self) -> str:
+        """Get effective analysis mode based on data freshness"""
+        if self.analysis_mode == "trades":
+            return "trades"
+        elif self.analysis_mode == "candles":
+            return "candles"
+        else:  # auto
+            # Auto: Use trades if CEX is fresh, otherwise candles
+            if self.is_cex_historical():
+                return "candles"
+            else:
+                return "trades"
     
     class Config:
         json_schema_extra = {
@@ -60,6 +149,7 @@ class HybridAnalysisRequest(BaseModel):
                 "timeframe": "5m",
                 "start_time": "2025-11-11T10:00:00Z",
                 "end_time": "2025-11-11T10:05:00Z",
+                "analysis_mode": "auto",
                 "min_impact_threshold": 0.05,
                 "top_n_wallets": 10
             }
@@ -73,6 +163,8 @@ class CEXAnalysis(BaseModel):
     has_wallet_ids: bool = False
     data_source: str = "pattern_based"
     trade_count: int
+    is_historical: bool = False
+    warning: Optional[str] = None
 
 
 class DEXAnalysis(BaseModel):
@@ -113,6 +205,10 @@ class HybridAnalysisMetadata(BaseModel):
     exchanges: str
     symbol: str
     timeframe: str
+    analysis_mode: str  # 🆕
+    cex_timerange: str  # 🆕
+    dex_timerange: str  # 🆕
+    warnings: List[str] = []  # 🆕
 
 
 class HybridAnalysisResponse(BaseModel):
@@ -141,7 +237,8 @@ class HybridAnalysisResponse(BaseModel):
                     "top_movers": [],
                     "has_wallet_ids": False,
                     "data_source": "pattern_based",
-                    "trade_count": 1250
+                    "trade_count": 1250,
+                    "is_historical": False
                 },
                 "dex_analysis": {
                     "exchange": "jupiter",
@@ -166,7 +263,10 @@ class HybridAnalysisResponse(BaseModel):
                     "dex_wallets_found": 8,
                     "exchanges": "bitget+jupiter",
                     "symbol": "SOL/USDT",
-                    "timeframe": "5m"
+                    "timeframe": "5m",
+                    "analysis_mode": "trades",
+                    "cex_timerange": "10:00:00-10:05:00",
+                    "dex_timerange": "10:00:00-10:05:00"
                 }
             }
         }
@@ -196,79 +296,141 @@ class WalletTrackingResponse(BaseModel):
     "/analyze",
     response_model=HybridAnalysisResponse,
     status_code=status.HTTP_200_OK,
-    summary="Hybrid CEX + DEX Analysis",
-    description="Analysiert CEX und DEX parallel und findet Korrelationen"
+    summary="Hybrid CEX + DEX Analysis (Enhanced)",
+    description="Analysiert CEX und DEX mit flexiblen Zeiträumen und Modes"
 )
 async def analyze_hybrid(
     request: HybridAnalysisRequest = Body(...),
     request_id: str = Depends(log_request)
 ) -> HybridAnalysisResponse:
     """
-    ## 🔀 Hybrid CEX + DEX Analyse
+    ## 🔀 Hybrid CEX + DEX Analyse - ENHANCED VERSION
     
-    Analysiert CEX und DEX im selben Zeitraum und findet:
+    ### 🆕 Neue Features:
     
-    ### CEX Analysis (Pattern-based):
-    - Identifiziert virtuelle Entities (Whales, Bots, Market Makers)
-    - Basiert auf Trading-Pattern
-    - KEINE echten Wallet-IDs
+    #### 1. Separate Zeiträume
+    Du kannst nun unterschiedliche Zeiträume für CEX und DEX angeben:
+    ```json
+    {
+        "cex_start_time": "2025-11-11T10:00:00Z",  // Letzte 5 Min (frisch!)
+        "cex_end_time": "2025-11-11T10:05:00Z",
+        "dex_start_time": "2025-11-10T10:00:00Z",  // Gestern (historisch)
+        "dex_end_time": "2025-11-10T10:05:00Z"
+    }
+    ```
     
-    ### DEX Analysis (Wallet-based):
-    - Identifiziert echte On-Chain Wallets
-    - Echte Wallet-Adressen
-    - Blockchain-Explorer Links
+    #### 2. Analysis Modes
+    - **"trades"**: Trade-level Analyse (nur bei frischen CEX-Daten <10 Min)
+    - **"candles"**: Nur OHLCV-Vergleich (immer möglich, auch historisch)
+    - **"auto"**: Automatische Auswahl (empfohlen)
     
-    ### Cross-Exchange Correlation:
-    - Volume Correlation
-    - Timing Analysis (wer bewegte sich zuerst?)
-    - Pattern Matching (CEX Whale = DEX Whale?)
+    #### 3. Auto-Validation
+    - Warnung wenn CEX-Zeitraum historisch ist (>10 Min)
+    - Auto-Fallback zu "candles" Mode
     
-    ### Use Case:
-    Finde heraus, ob große CEX-Trader auch auf DEX aktiv sind!
+    ### Use Cases:
     
-    ### Beispiel Request:
+    **Live Price Mover Analysis** (letzte 5-10 Min):
     ```json
     {
         "cex_exchange": "bitget",
         "dex_exchange": "jupiter",
         "symbol": "SOL/USDT",
         "timeframe": "5m",
-        "start_time": "2025-11-11T10:00:00Z",
-        "end_time": "2025-11-11T10:05:00Z"
+        "analysis_mode": "trades"  // Trade-level mit Entities
+    }
+    ```
+    
+    **Historical Candle Comparison**:
+    ```json
+    {
+        "cex_exchange": "bitget",
+        "dex_exchange": "jupiter",
+        "symbol": "SOL/USDT",
+        "timeframe": "5m",
+        "start_time": "2025-11-10T10:00:00Z",  // Gestern
+        "end_time": "2025-11-10T10:05:00Z",
+        "analysis_mode": "candles"  // Nur OHLCV
+    }
+    ```
+    
+    **Mixed Timeframes** (frischer CEX, historischer DEX):
+    ```json
+    {
+        "cex_start_time": "2025-11-11T10:00:00Z",  // Jetzt
+        "cex_end_time": "2025-11-11T10:05:00Z",
+        "dex_start_time": "2025-11-10T10:00:00Z",  // Gestern
+        "dex_end_time": "2025-11-10T10:05:00Z",
+        "analysis_mode": "auto"
     }
     ```
     """
     try:
+        # Get effective timeranges
+        cex_start, cex_end = request.get_cex_timerange()
+        dex_start, dex_end = request.get_dex_timerange()
+        effective_mode = request.get_effective_mode()
+        
+        # Warnings
+        warnings = []
+        if request.is_cex_historical():
+            warnings.append(
+                f"⚠️ CEX timerange is historical (>10 min old). "
+                f"Trade-level entity analysis may be limited. "
+                f"Consider using analysis_mode='candles' for historical data."
+            )
+        
+        if effective_mode != request.analysis_mode:
+            warnings.append(
+                f"ℹ️ Analysis mode auto-adjusted from '{request.analysis_mode}' "
+                f"to '{effective_mode}' based on data freshness."
+            )
+        
         logger.info(
             f"[{request_id}] Hybrid analysis: "
-            f"CEX={request.cex_exchange} vs DEX={request.dex_exchange} "
-            f"{request.symbol} {request.timeframe}"
+            f"CEX={request.cex_exchange} [{cex_start.strftime('%H:%M:%S')}-{cex_end.strftime('%H:%M:%S')}] vs "
+            f"DEX={request.dex_exchange} [{dex_start.strftime('%H:%M:%S')}-{dex_end.strftime('%H:%M:%S')}] "
+            f"{request.symbol} {request.timeframe} (mode={effective_mode})"
         )
         
         # Get Unified Collector via dependency
         from app.core.price_movers.api.dependencies import get_unified_collector
-        unified_collector = await get_unified_collector() # Holt den Collector aus der Dependency
+        unified_collector = await get_unified_collector()
 
         # Initialize Hybrid Analyzer with the real collector
         from app.core.price_movers.services.analyzer_hybrid import HybridPriceMoverAnalyzer
 
         analyzer = HybridPriceMoverAnalyzer(
-            unified_collector=unified_collector, # <-- Jetzt wird der echte Collector übergeben
+            unified_collector=unified_collector,
             use_lightweight=True
         )
         
-        # Perform hybrid analysis
+        # Perform hybrid analysis with separate timeranges
         result = await analyzer.analyze_hybrid_candle(
             cex_exchange=request.cex_exchange,
             dex_exchange=request.dex_exchange,
             symbol=request.symbol,
             timeframe=request.timeframe,
-            start_time=request.start_time,
-            end_time=request.end_time,
+            cex_start_time=cex_start,  # 🆕 Separate
+            cex_end_time=cex_end,      # 🆕 Separate
+            dex_start_time=dex_start,  # 🆕 Separate
+            dex_end_time=dex_end,      # 🆕 Separate
+            analysis_mode=effective_mode,  # 🆕 Mode
             min_impact_threshold=request.min_impact_threshold,
             top_n_wallets=request.top_n_wallets,
             include_trades=False
         )
+        
+        # Add warnings to result
+        result['analysis_metadata']['warnings'] = warnings
+        result['analysis_metadata']['analysis_mode'] = effective_mode
+        result['analysis_metadata']['cex_timerange'] = f"{cex_start.strftime('%H:%M:%S')}-{cex_end.strftime('%H:%M:%S')}"
+        result['analysis_metadata']['dex_timerange'] = f"{dex_start.strftime('%H:%M:%S')}-{dex_end.strftime('%H:%M:%S')}"
+        
+        # Add historical flag to CEX analysis
+        result['cex_analysis']['is_historical'] = request.is_cex_historical()
+        if warnings:
+            result['cex_analysis']['warning'] = warnings[0]
         
         # Convert to response format
         response = HybridAnalysisResponse(
@@ -283,7 +445,8 @@ async def analyze_hybrid(
             f"[{request_id}] Hybrid analysis complete: "
             f"Correlation={result['correlation']['score']:.2f}, "
             f"CEX={len(result['cex_analysis']['top_movers'])} movers, "
-            f"DEX={len(result['dex_analysis']['top_movers'])} wallets"
+            f"DEX={len(result['dex_analysis']['top_movers'])} wallets, "
+            f"Mode={effective_mode}"
         )
         
         return response
@@ -307,50 +470,7 @@ async def track_wallet_across_exchanges(
     request: TrackWalletRequest = Body(...),
     request_id: str = Depends(log_request)
 ) -> WalletTrackingResponse:
-    """
-    ## 🔍 Cross-Exchange Wallet Tracking
-    
-    Identifiziert potenzielle DEX-Wallets, die einem CEX-Entity-Pattern entsprechen.
-    
-    ### Wie es funktioniert:
-    1. Analysiert das CEX-Trading-Pattern (z.B. "whale_5")
-    2. Sucht auf DEX nach Wallets mit ähnlichen Charakteristiken:
-       - Ähnliche Trade-Größen
-       - Ähnliches Timing
-       - Ähnliche Buy/Sell Ratios
-    3. Gibt Liste potentieller Matches mit Confidence-Score
-    
-    ### Use Case:
-    "Dieser Whale auf Bitget... ist das derselbe auf Jupiter?"
-    
-    ### Beispiel Request:
-    ```json
-    {
-        "cex_exchange": "bitget",
-        "cex_entity_pattern": "whale_5",
-        "dex_exchange": "jupiter",
-        "symbol": "SOL/USDT",
-        "time_range_hours": 24
-    }
-    ```
-    
-    ### Beispiel Response:
-    ```json
-    {
-        "success": true,
-        "cex_entity": "whale_5",
-        "potential_dex_wallets": [
-            {
-                "wallet_address": "7xKXtg2CW87d97TXJSDpb...",
-                "confidence": 0.85,
-                "reason": "Similar volume pattern, timing aligned",
-                "explorer_url": "https://solscan.io/account/7xKXt..."
-            }
-        ],
-        "conclusion": "Found 1 high-confidence match on Jupiter"
-    }
-    ```
-    """
+    """Cross-Exchange Wallet Tracking - siehe Original-Doku"""
     try:
         logger.info(
             f"[{request_id}] Wallet tracking: "
@@ -359,13 +479,6 @@ async def track_wallet_across_exchanges(
         )
         
         # TODO: Implement actual tracking logic
-        # This would:
-        # 1. Analyze CEX pattern characteristics
-        # 2. Fetch DEX trades in timeframe
-        # 3. Find similar patterns
-        # 4. Return matches with confidence scores
-        
-        # Placeholder response
         response = WalletTrackingResponse(
             cex_entity=request.cex_entity_pattern,
             potential_dex_wallets=[],
@@ -397,22 +510,7 @@ async def get_correlation_history(
     hours_back: int = 24,
     request_id: str = Depends(log_request)
 ):
-    """
-    ## 📊 Correlation History
-    
-    Zeigt historische Korrelation zwischen CEX und DEX über Zeit.
-    
-    ### Query Parameters:
-    - **cex_exchange**: CEX (bitget/binance/kraken)
-    - **dex_exchange**: DEX (jupiter/raydium/orca)
-    - **symbol**: Trading Pair
-    - **hours_back**: Zeitraum in Stunden
-    
-    ### Returns:
-    - Zeitreihe der Korrelations-Scores
-    - Durchschnittliche Korrelation
-    - Leader-Board (wer bewegte sich zuerst?)
-    """
+    """Correlation History - siehe Original-Doku"""
     try:
         logger.info(
             f"[{request_id}] Correlation history: "
@@ -420,7 +518,6 @@ async def get_correlation_history(
         )
         
         # TODO: Implement correlation history
-        
         return {
             "success": True,
             "cex_exchange": cex_exchange,
@@ -450,11 +547,7 @@ async def get_correlation_history(
     summary="Get Supported DEX Exchanges"
 )
 async def get_supported_dexs():
-    """
-    ## 📋 Unterstützte DEX Exchanges
-    
-    Liste aller unterstützten DEX-Exchanges für Hybrid-Analyse.
-    """
+    """Liste aller unterstützten DEX-Exchanges"""
     from app.core.price_movers.utils.constants import SUPPORTED_DEXS, DEX_CONFIGS
     
     dex_list = []
