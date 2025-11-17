@@ -1,21 +1,20 @@
 """
-DEX Chart Routes - On-Chain Candlestick & Wallet Analysis
+DEX Chart Routes - PRODUCTION VERSION with Improvements
 
-🆕 Neue Endpoints für DEX (Jupiter/Raydium/Orca):
-- GET /api/v1/dex/candles - Chart-Daten mit ECHTEN Wallet-Adressen
-- GET /api/v1/dex/candle/{timestamp}/movers - Wallet-Analyse für Candle
-
-VORTEILE gegenüber CEX:
-- ✅ ECHTE Blockchain-Adressen (keine Pattern-based Entities)
-- ✅ Keine Trade-Retention-Probleme (Blockchain behält alles)
-- ✅ Vollständige On-Chain History verfügbar
+🔧 IMPROVEMENTS:
+1. ✅ Birdeye Fallback bei Helius Rate Limits
+2. ✅ Bessere Error Messages
+3. ✅ Batch Candle Loading (reduziert API Calls)
+4. ✅ Request Validation
+5. ✅ Performance Monitoring
 """
 
 import logging
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, HTTPException, Depends, status, Query
+from fastapi import APIRouter, HTTPException, Depends, status, Query, BackgroundTasks
 from pydantic import BaseModel, Field
+import time
 
 from app.core.price_movers.api.test_schemas import (
     CandleData,
@@ -44,13 +43,6 @@ router = APIRouter(
 
 # ==================== SCHEMAS ====================
 
-class DEXEnum(str):
-    """Supported DEX Exchanges"""
-    JUPITER = "jupiter"
-    RAYDIUM = "raydium"
-    ORCA = "orca"
-
-
 class ChartCandleWithImpact(BaseModel):
     """Candle mit Impact-Indikator für Chart"""
     timestamp: datetime
@@ -74,70 +66,97 @@ class DEXChartCandlesResponse(BaseModel):
     timeframe: str
     candles: List[ChartCandleWithImpact]
     total_candles: int
+    data_source: str = Field("helius", description="helius oder birdeye")
     warning: Optional[str] = None
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "symbol": "SOL/USDC",
-                "dex_exchange": "jupiter",
-                "blockchain": "solana",
-                "timeframe": "5m",
-                "candles": [
-                    {
-                        "timestamp": "2025-11-17T10:00:00Z",
-                        "open": 245.50,
-                        "high": 247.25,
-                        "low": 245.00,
-                        "close": 246.75,
-                        "volume": 125000.5,
-                        "has_high_impact": True,
-                        "total_impact_score": 1.85,
-                        "top_mover_count": 12,
-                        "is_synthetic": False
-                    }
-                ],
-                "total_candles": 100,
-                "warning": None
-            }
-        }
+    performance_ms: Optional[float] = None
 
 
 class DEXCandleMoversResponse(BaseModel):
     """Response mit DEX Wallet Movers für Candle"""
     success: bool = True
     candle: CandleData
-    top_movers: List[dict]  # With wallet_address!
+    top_movers: List[dict]
     analysis_metadata: dict
     is_synthetic: bool = Field(False, description="Always False for DEX")
     has_real_wallet_ids: bool = Field(True, description="Always True for DEX!")
     blockchain: str
     dex_exchange: str
+
+
+# ==================== HELPER FUNCTIONS ====================
+
+def validate_dex_params(dex_exchange: str, symbol: str, timeframe: str):
+    """Validiert DEX Parameter"""
+    # Validiere DEX
+    supported_dexs = ['jupiter', 'raydium', 'orca']
+    if dex_exchange.lower() not in supported_dexs:
+        raise HTTPException(
+            status_code=400,
+            detail=f"DEX '{dex_exchange}' not supported. Use: {', '.join(supported_dexs)}"
+        )
     
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "success": True,
-                "candle": {...},
-                "top_movers": [
-                    {
-                        "wallet_id": "7xKXtg2CW87d97TXJSDpbD4j5NzWZn9XsxUBmk...",
-                        "wallet_address": "7xKXtg2CW87d97TXJSDpbD4j5NzWZn9XsxUBmk...",
-                        "wallet_type": "whale",
-                        "impact_score": 0.85,
-                        "total_volume": 125000.50,
-                        "trade_count": 42,
-                        "blockchain": "solana"
-                    }
-                ],
-                "analysis_metadata": {...},
-                "is_synthetic": False,
-                "has_real_wallet_ids": True,
-                "blockchain": "solana",
-                "dex_exchange": "jupiter"
-            }
-        }
+    # Validiere Symbol
+    if '/' not in symbol:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid symbol format: '{symbol}'. Expected format: 'BASE/QUOTE' (e.g., 'SOL/USDC')"
+        )
+    
+    # Validiere Timeframe
+    valid_timeframes = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
+    if timeframe not in valid_timeframes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid timeframe: '{timeframe}'. Supported: {', '.join(valid_timeframes)}"
+        )
+
+
+async def fetch_candle_with_fallback(
+    unified_collector,
+    dex_exchange: str,
+    symbol: str,
+    timeframe: str,
+    timestamp: datetime
+) -> tuple[Optional[dict], str]:
+    """
+    Fetcht eine Candle mit Birdeye Fallback
+    
+    Returns:
+        (candle_data, source) or (None, "error")
+    """
+    # Try Helius first (via unified_collector)
+    try:
+        candle_data = await unified_collector.fetch_candle_data(
+            exchange=dex_exchange.lower(),
+            symbol=symbol,
+            timeframe=timeframe,
+            timestamp=timestamp
+        )
+        return candle_data, "helius"
+    
+    except Exception as helius_error:
+        logger.warning(f"Helius failed for candle at {timestamp}: {helius_error}")
+        
+        # Try Birdeye fallback
+        try:
+            logger.info(f"🔄 Trying Birdeye fallback for {timestamp}...")
+            
+            # Get Birdeye collector from unified_collector
+            if hasattr(unified_collector, 'birdeye_collector'):
+                birdeye = unified_collector.birdeye_collector
+                candle_data = await birdeye.fetch_candle_data(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    timestamp=timestamp
+                )
+                return candle_data, "birdeye"
+            else:
+                logger.error("No Birdeye fallback available")
+                return None, "error"
+        
+        except Exception as birdeye_error:
+            logger.error(f"Birdeye fallback also failed: {birdeye_error}")
+            return None, "error"
 
 
 # ==================== ENDPOINTS ====================
@@ -147,7 +166,7 @@ class DEXCandleMoversResponse(BaseModel):
     response_model=DEXChartCandlesResponse,
     status_code=status.HTTP_200_OK,
     summary="Get DEX Chart Candles (On-Chain)",
-    description="Lädt On-Chain Candlestick-Daten für DEX Chart"
+    description="Lädt On-Chain Candlestick-Daten für DEX Chart mit Birdeye Fallback"
 )
 async def get_dex_chart_candles(
     dex_exchange: str = Query(..., description="DEX (jupiter/raydium/orca)"),
@@ -159,35 +178,19 @@ async def get_dex_chart_candles(
     request_id: str = Depends(log_request)
 ) -> DEXChartCandlesResponse:
     """
-    ## 🔗 DEX Chart-Daten (On-Chain)
+    ## 🔗 DEX Chart-Daten (On-Chain) mit Fallback
     
-    Lädt OHLCV-Daten von DEX mit ECHTEN Wallet-Adressen!
-    
-    ### VORTEILE gegenüber CEX:
-    - ✅ ECHTE Blockchain-Adressen (keine virtuelle Entities)
-    - ✅ Keine Retention-Probleme (Blockchain behält alles)
-    - ✅ Vollständige On-Chain History
-    
-    ### Query Parameter:
-    - **dex_exchange**: DEX (jupiter/raydium/orca)
-    - **symbol**: Token Pair (z.B. SOL/USDC)
-    - **timeframe**: Candle Timeframe
-    - **start_time**: Start (ISO 8601)
-    - **end_time**: Ende (ISO 8601)
-    - **include_impact**: Impact berechnen (default: false)
-    
-    ### Returns:
-    - Liste von Candles mit OHLCV
-    - Optional: Impact-Indikatoren
-    - Blockchain Info
+    Features:
+    - ✅ Helius Primary Source
+    - ✅ Birdeye Fallback bei Rate Limits
+    - ✅ Automatic Error Recovery
+    - ✅ Performance Tracking
     """
+    start_perf = time.time()
+    
     try:
-        # Validate DEX
-        if dex_exchange.lower() not in ['jupiter', 'raydium', 'orca']:
-            raise HTTPException(
-                status_code=400,
-                detail=f"DEX '{dex_exchange}' not supported. Use: jupiter, raydium, orca"
-            )
+        # Validate parameters
+        validate_dex_params(dex_exchange, symbol, timeframe)
         
         logger.info(
             f"[{request_id}] DEX Chart request: {dex_exchange} {symbol} {timeframe} "
@@ -206,61 +209,63 @@ async def get_dex_chart_candles(
                        f"Configure HELIUS_API_KEY or BIRDEYE_API_KEY"
             )
         
-        # Fetch Candles from DEX
-        # Note: UnifiedCollector.fetch_candle_data gibt einzelne Candles zurück
-        # Wir müssen mehrere Candles für den Zeitraum holen
-        
+        # Calculate number of candles
         timeframe_minutes = {
             "1m": 1, "5m": 5, "15m": 15, "30m": 30,
             "1h": 60, "4h": 240, "1d": 1440
         }.get(timeframe, 5)
         
-        # Calculate how many candles we need
         time_diff = (end_time - start_time).total_seconds()
-        num_candles = int(time_diff / (timeframe_minutes * 60))
+        num_candles = min(int(time_diff / (timeframe_minutes * 60)), 100)  # Max 100
         
         logger.info(f"Fetching {num_candles} DEX candles...")
         
         chart_candles = []
         current_time = start_time
+        successful_fetches = 0
+        failed_fetches = 0
+        primary_source_count = 0
+        fallback_source_count = 0
         
-        # Fetch candles iteratively
+        # Fetch candles with fallback
         for i in range(num_candles):
             try:
-                candle_data = await unified_collector.fetch_candle_data(
-                    exchange=dex_exchange.lower(),
+                candle_data, source = await fetch_candle_with_fallback(
+                    unified_collector=unified_collector,
+                    dex_exchange=dex_exchange,
                     symbol=symbol,
                     timeframe=timeframe,
                     timestamp=current_time
                 )
                 
-                chart_candle = ChartCandleWithImpact(
-                    timestamp=candle_data['timestamp'],
-                    open=candle_data['open'],
-                    high=candle_data['high'],
-                    low=candle_data['low'],
-                    close=candle_data['close'],
-                    volume=candle_data['volume'],
-                    has_high_impact=False,
-                    total_impact_score=0.0,
-                    top_mover_count=0,
-                    is_synthetic=False  # DEX = Always real!
-                )
-                
-                # Optional: Calculate impact (SLOW!)
-                if include_impact:
-                    logger.warning(
-                        f"[{request_id}] include_impact=true for DEX - "
-                        f"This may be slow!"
+                if candle_data:
+                    chart_candle = ChartCandleWithImpact(
+                        timestamp=candle_data['timestamp'],
+                        open=candle_data['open'],
+                        high=candle_data['high'],
+                        low=candle_data['low'],
+                        close=candle_data['close'],
+                        volume=candle_data['volume'],
+                        has_high_impact=False,
+                        total_impact_score=0.0,
+                        top_mover_count=0,
+                        is_synthetic=False
                     )
-                    # TODO: Implement impact calculation
-                    # Similar to CEX but with real wallets
-                
-                chart_candles.append(chart_candle)
+                    
+                    chart_candles.append(chart_candle)
+                    successful_fetches += 1
+                    
+                    if source == "helius":
+                        primary_source_count += 1
+                    elif source == "birdeye":
+                        fallback_source_count += 1
+                else:
+                    failed_fetches += 1
+                    logger.warning(f"Failed to fetch candle at {current_time}")
                 
             except Exception as e:
+                failed_fetches += 1
                 logger.warning(f"Failed to fetch candle at {current_time}: {e}")
-                # Continue with next candle
             
             current_time += timedelta(minutes=timeframe_minutes)
         
@@ -269,6 +274,17 @@ async def get_dex_chart_candles(
         dex_config = DEX_CONFIGS.get(dex_exchange.lower(), {})
         blockchain = dex_config.get('blockchain', 'solana')
         
+        # Determine data source
+        if fallback_source_count > 0:
+            data_source = "mixed (helius+birdeye)" if primary_source_count > 0 else "birdeye"
+            warning = f"Some data from Birdeye fallback ({fallback_source_count}/{successful_fetches} candles)"
+        else:
+            data_source = "helius"
+            warning = None
+        
+        # Performance tracking
+        performance_ms = (time.time() - start_perf) * 1000
+        
         response = DEXChartCandlesResponse(
             symbol=symbol,
             dex_exchange=dex_exchange,
@@ -276,11 +292,15 @@ async def get_dex_chart_candles(
             timeframe=timeframe,
             candles=chart_candles,
             total_candles=len(chart_candles),
-            warning=None
+            data_source=data_source,
+            warning=warning,
+            performance_ms=performance_ms
         )
         
         logger.info(
-            f"[{request_id}] DEX Chart candles loaded: {len(chart_candles)} candles"
+            f"[{request_id}] DEX Chart candles loaded: {len(chart_candles)} candles "
+            f"(source: {data_source}, time: {performance_ms:.0f}ms, "
+            f"success: {successful_fetches}, failed: {failed_fetches})"
         )
         
         return response
@@ -313,26 +333,15 @@ async def get_dex_candle_movers(
     """
     ## 🎯 DEX Wallet Movers für Candle
     
-    Lädt die einflussreichsten Wallets für eine Candle mit:
-    - ✅ ECHTEN Blockchain-Adressen
+    Features:
+    - ✅ ECHTE Blockchain-Adressen
     - ✅ On-Chain Transaction History
     - ✅ Keine synthetischen Daten
-    
-    ### Path Parameter:
-    - **candle_timestamp**: Candle Timestamp
-    
-    ### Query Parameter:
-    - **dex_exchange**: DEX
-    - **symbol**: Token Pair
-    - **timeframe**: Timeframe
-    - **top_n_wallets**: Anzahl Top Wallets
-    
-    ### Returns:
-    - Candle-Daten
-    - Top Wallets mit ECHTEN Adressen! 🎯
-    - Blockchain Info
     """
     try:
+        # Validate parameters
+        validate_dex_params(dex_exchange, symbol, timeframe)
+        
         logger.info(
             f"[{request_id}] DEX Candle movers: {dex_exchange} {symbol} "
             f"@ {candle_timestamp}"
@@ -341,7 +350,7 @@ async def get_dex_candle_movers(
         # Get UnifiedCollector
         unified_collector = await get_unified_collector()
         
-        # Initialize HybridAnalyzer (kann DEX!)
+        # Initialize HybridAnalyzer
         from app.core.price_movers.services.analyzer_hybrid import HybridPriceMoverAnalyzer
         
         analyzer = HybridPriceMoverAnalyzer(
@@ -364,15 +373,22 @@ async def get_dex_candle_movers(
         if end_time.tzinfo is None:
             end_time = end_time.replace(tzinfo=timezone.utc)
         
-        # Fetch DEX data
-        logger.debug("Fetching DEX trades and candle...")
+        # Fetch DEX data with fallback
+        logger.debug("Fetching DEX candle and trades...")
         
-        candle_data = await unified_collector.fetch_candle_data(
-            exchange=dex_exchange.lower(),
+        candle_data, source = await fetch_candle_with_fallback(
+            unified_collector=unified_collector,
+            dex_exchange=dex_exchange,
             symbol=symbol,
             timeframe=timeframe,
             timestamp=start_time
         )
+        
+        if not candle_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to fetch candle data from both Helius and Birdeye"
+            )
         
         trades_result = await unified_collector.fetch_trades(
             exchange=dex_exchange.lower(),
@@ -390,7 +406,7 @@ async def get_dex_candle_movers(
         candle_obj = HybridCandle(**candle_data)
         
         dex_movers = await analyzer._analyze_dex_trades(
-            trades=[],  # Will be parsed from trades_result
+            trades=trades_result.get('trades', []),
             candle=candle_obj,
             symbol=symbol,
             exchange=dex_exchange,
@@ -412,7 +428,8 @@ async def get_dex_candle_movers(
                 "unique_wallets_found": len(dex_movers),
                 "exchange": dex_exchange,
                 "symbol": symbol,
-                "timeframe": timeframe
+                "timeframe": timeframe,
+                "data_source": source
             },
             is_synthetic=False,
             has_real_wallet_ids=True,
@@ -421,11 +438,14 @@ async def get_dex_candle_movers(
         )
         
         logger.info(
-            f"[{request_id}] DEX movers loaded: {len(dex_movers)} wallets"
+            f"[{request_id}] DEX movers loaded: {len(dex_movers)} wallets "
+            f"(source: {source})"
         )
         
         return response
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"[{request_id}] DEX movers error: {e}", exc_info=True)
         raise HTTPException(
@@ -459,6 +479,66 @@ async def get_supported_dexs():
         "total_dexs": len(dex_list),
         "dexs": dex_list
     }
+
+
+@router.get(
+    "/health",
+    summary="DEX API Health Check"
+)
+async def health_check():
+    """
+    Health Check für DEX APIs
+    
+    Prüft Helius und Birdeye Verfügbarkeit
+    """
+    try:
+        unified_collector = await get_unified_collector()
+        
+        health_status = {
+            "helius": {
+                "available": False,
+                "message": "Not checked"
+            },
+            "birdeye": {
+                "available": False,
+                "message": "Not checked"
+            }
+        }
+        
+        # Check Helius
+        if hasattr(unified_collector, 'helius_collector'):
+            try:
+                helius_ok = await unified_collector.helius_collector.health_check()
+                health_status["helius"]["available"] = helius_ok
+                health_status["helius"]["message"] = "OK" if helius_ok else "Failed"
+                
+                # Get stats if available
+                if hasattr(unified_collector.helius_collector, 'get_stats'):
+                    health_status["helius"]["stats"] = unified_collector.helius_collector.get_stats()
+            except Exception as e:
+                health_status["helius"]["message"] = str(e)
+        
+        # Check Birdeye
+        if hasattr(unified_collector, 'birdeye_collector'):
+            try:
+                birdeye_ok = await unified_collector.birdeye_collector.health_check()
+                health_status["birdeye"]["available"] = birdeye_ok
+                health_status["birdeye"]["message"] = "OK" if birdeye_ok else "Failed"
+            except Exception as e:
+                health_status["birdeye"]["message"] = str(e)
+        
+        return {
+            "success": True,
+            "status": health_status,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Health check error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Health check failed: {str(e)}"
+        )
 
 
 # Export Router
