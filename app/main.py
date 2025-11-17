@@ -31,6 +31,7 @@ from app.core.price_movers.api.routes import router as price_movers_router
 from app.core.price_movers.api.analyze_routes import router as analyze_router  # ← DIESE ZEILE HINZUFÜGEN
 from app.core.price_movers.api.wallet_detail_routes import router as wallet_detail_router
 from app.core.price_movers.api.hybrid_routes import router as hybrid_router
+from app.core.price_movers.api import routes_dex_chart
 
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
