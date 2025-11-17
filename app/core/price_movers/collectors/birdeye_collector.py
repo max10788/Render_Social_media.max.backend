@@ -458,6 +458,105 @@ class BirdeyeCollector(DEXCollector):
             logger.error(f"✗ Birdeye Health Check error: {e}")
             return False
     
+    async def fetch_ohlcv_batch(
+        self,
+        token_address: str,
+        timeframe: str,
+        start_time: datetime,
+        end_time: datetime,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetcht BATCH OHLCV Daten von Birdeye
+        
+        VIEL effizienter als 100 einzelne Calls!
+        
+        Args:
+            token_address: Token Mint
+            timeframe: 1m, 5m, 15m, 1h, etc.
+            start_time: Start
+            end_time: Ende
+            limit: Max Candles (bis zu 1000!)
+            
+        Returns:
+            Liste von OHLCV Candles
+        """
+        await self._rate_limit_wait()
+        
+        try:
+            url = f"{self.BASE_URL}{API_ENDPOINTS['birdeye']['ohlcv']}"
+            
+            headers = {
+                "X-API-KEY": self.api_key,
+                "Accept": "application/json"
+            }
+            
+            # Birdeye Timeframe Mapping
+            timeframe_map = {
+                '1m': '1m',
+                '5m': '5m',
+                '15m': '15m',
+                '30m': '30m',
+                '1h': '1H',
+                '4h': '4H',
+                '1d': '1D',
+            }
+            
+            birdeye_timeframe = timeframe_map.get(timeframe, '5m')
+            
+            params = {
+                "address": token_address,
+                "type": birdeye_timeframe,
+                "time_from": int(start_time.timestamp()),
+                "time_to": int(end_time.timestamp())
+            }
+            
+            logger.info(
+                f"📊 Birdeye: Fetching BATCH OHLCV "
+                f"(timeframe={birdeye_timeframe}, from={start_time.strftime('%H:%M')} "
+                f"to={end_time.strftime('%H:%M')})"
+            )
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise Exception(f"Birdeye OHLCV error: {response.status} - {error_text}")
+                    
+                    data = await response.json()
+                    
+                    if not data.get('success'):
+                        raise Exception(f"Birdeye API unsuccessful: {data}")
+                    
+                    items = data.get('data', {}).get('items', [])
+                    
+                    # Parse zu unserem Format
+                    candles = []
+                    for item in items:
+                        candle = {
+                            'timestamp': datetime.fromtimestamp(item['unixTime'], tz=timezone.utc),
+                            'open': float(item['o']),
+                            'high': float(item['h']),
+                            'low': float(item['l']),
+                            'close': float(item['c']),
+                            'volume': float(item['v']),
+                        }
+                        candles.append(candle)
+                    
+                    logger.info(f"✅ Birdeye: {len(candles)} OHLCV candles fetched in 1 call!")
+                    
+                    return candles
+                    
+        except Exception as e:
+            logger.error(f"❌ Birdeye OHLCV batch error: {e}", exc_info=True)
+            return []
+    
     async def _rate_limit_wait(self):
         """Wartet falls Rate Limit erreicht"""
         if self._last_request_time:
