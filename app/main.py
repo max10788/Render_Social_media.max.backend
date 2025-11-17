@@ -250,6 +250,7 @@ app.include_router(price_movers_router)
 app.include_router(analyze_router)  # ← DIESE ZEILE HINZUFÜGEN
 app.include_router(wallet_detail_router)
 app.include_router(hybrid_router)
+app.include_router(routes_dex_chart.router)
 
 # ------------------------------------------------------------------
 # WebSocket Endpoint
