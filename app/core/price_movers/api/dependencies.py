@@ -1,23 +1,22 @@
 """
-FastAPI Dependencies - FIXED VERSION
+FastAPI Dependencies - FINAL MERGED VERSION
 
-🔧 FIXES:
-- ✅ HELIUS_API_KEY wird aus ENV geladen (PRIORITY!)
-- ✅ BIRDEYE_API_KEY als Fallback
-- ✅ UnifiedCollector erhält DEX API Keys
-- ✅ CEX API Keys optional unterstützt
+✅ Loads API Keys from ENV (Birdeye + Helius)
+✅ Creates UnifiedCollector with proper initialization
+✅ CEX + DEX support
 
-Dependency Injection für:
-- Exchange Collectors
+Dependencies:
+- Exchange Collectors (CEX)
+- Unified Collector (CEX + DEX)
 - Analyzer
-- Authentication (future)
-- Rate Limiting (future)
+- Request Logging
 """
 
 import logging
 from typing import Dict, Optional
 from fastapi import HTTPException, Header, Depends
 from datetime import datetime
+import uuid
 
 import sys
 import os
@@ -34,14 +33,138 @@ logger = logging.getLogger(__name__)
 
 # ==================== GLOBAL INSTANCES ====================
 
-# Cache für Exchange Collectors (wiederverwendbar)
+# Cache für Exchange Collectors
 _exchange_collectors: Dict[str, ExchangeCollector] = {}
 
-# Cache für Analyzer (wiederverwendbar)
+# Cache für Analyzer
 _analyzer_instance: Optional[PriceMoverAnalyzer] = None
 
-# Cache für UnifiedCollector (wiederverwendbar)
+# Cache für UnifiedCollector
 _unified_collector_instance: Optional[UnifiedCollector] = None
+
+
+# ==================== UNIFIED COLLECTOR DEPENDENCY (FIXED) ====================
+
+async def get_unified_collector() -> UnifiedCollector:
+    """
+    🔧 FIXED: Dependency für UnifiedCollector mit API Keys aus ENV
+    
+    PRIORITY für DEX:
+    1. BIRDEYE_API_KEY (für OHLCV Charts - FASTEST!)
+    2. HELIUS_API_KEY (für Wallet-Analyse)
+    
+    Returns:
+        UnifiedCollector Instance mit konfigurierten API Keys
+    """
+    global _unified_collector_instance
+    
+    # Verwende gecachte Instance wenn vorhanden
+    if _unified_collector_instance is not None:
+        return _unified_collector_instance
+    
+    logger.info("🔧 Creating UnifiedCollector with API Keys from ENV")
+    
+    # ==================== Load API Keys ====================
+    
+    # DEX API Keys - PRIORITY: Birdeye > Helius
+    birdeye_key = os.getenv('BIRDEYE_API_KEY')
+    helius_key = os.getenv('HELIUS_API_KEY')
+    
+    # CEX Credentials (optional)
+    binance_key = os.getenv('BINANCE_API_KEY')
+    binance_secret = os.getenv('BINANCE_API_SECRET')
+    bitget_key = os.getenv('BITGET_API_KEY')
+    bitget_secret = os.getenv('BITGET_API_SECRET')
+    bitget_passphrase = os.getenv('BITGET_PASSPHRASE')
+    kraken_key = os.getenv('KRAKEN_API_KEY')
+    kraken_secret = os.getenv('KRAKEN_API_SECRET')
+    
+    # ==================== Log Loaded Keys (Masked) ====================
+    
+    # CEX Keys
+    if binance_key:
+        logger.info("✅ Binance API Keys geladen")
+    if bitget_key:
+        logger.info("✅ Bitget API Keys geladen")
+    if kraken_key:
+        logger.info("✅ Kraken API Keys geladen")
+    
+    # DEX Keys
+    if birdeye_key:
+        logger.info(f"✅ Birdeye API Key geladen: {birdeye_key[:8]}... (PRIMARY for OHLCV)")
+    else:
+        logger.warning("⚠️ BIRDEYE_API_KEY not found - Charts will be slow!")
+    
+    if helius_key:
+        logger.info(f"✅ Helius API Key geladen: {helius_key[:8]}... (SECONDARY for Wallets)")
+    else:
+        logger.warning("⚠️ HELIUS_API_KEY not found")
+    
+    # ==================== Build Credentials ====================
+    
+    # CEX Credentials
+    cex_creds = {}
+    
+    if binance_key and binance_secret:
+        cex_creds['binance'] = {
+            'api_key': binance_key,
+            'api_secret': binance_secret
+        }
+    
+    if bitget_key and bitget_secret:
+        cex_creds['bitget'] = {
+            'api_key': bitget_key,
+            'api_secret': bitget_secret
+        }
+        if bitget_passphrase:
+            cex_creds['bitget']['passphrase'] = bitget_passphrase
+    
+    if kraken_key and kraken_secret:
+        cex_creds['kraken'] = {
+            'api_key': kraken_key,
+            'api_secret': kraken_secret
+        }
+    
+    # DEX API Keys
+    dex_keys = {}
+    
+    if birdeye_key:
+        dex_keys['birdeye'] = birdeye_key
+    
+    if helius_key:
+        dex_keys['helius'] = helius_key
+    
+    # Warnung wenn KEINE DEX Keys
+    if not dex_keys:
+        logger.warning("⚠️ KEINE DEX API Keys gefunden! DEX wird nicht verfügbar sein.")
+        logger.info("💡 Tipp: Setze BIRDEYE_API_KEY und/oder HELIUS_API_KEY")
+    
+    # ==================== Create UnifiedCollector ====================
+    
+    try:
+        collector = UnifiedCollector(
+            cex_credentials=cex_creds if cex_creds else None,
+            dex_api_keys=dex_keys if dex_keys else None
+        )
+        
+        # Cache die Instance
+        _unified_collector_instance = collector
+        
+        # Log verfügbare Exchanges
+        available = collector.list_available_exchanges()
+        logger.info(
+            f"✅ UnifiedCollector initialisiert: "
+            f"CEX={available['cex']}, DEX={available['dex']}"
+        )
+        
+        return collector
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to create UnifiedCollector: {e}", exc_info=True)
+        # Erstelle fallback ohne API Keys
+        collector = UnifiedCollector()
+        _unified_collector_instance = collector
+        return collector
 
 
 # ==================== COLLECTOR DEPENDENCIES ====================
@@ -49,8 +172,6 @@ _unified_collector_instance: Optional[UnifiedCollector] = None
 async def get_exchange_collector(exchange: str) -> ExchangeCollector:
     """
     Dependency für Exchange Collector
-    
-    Erstellt oder gibt einen gecachten Exchange Collector zurück
     
     Args:
         exchange: Exchange Name (bitget/binance/kraken)
@@ -119,7 +240,7 @@ async def get_analyzer(
     Dependency für PriceMoverAnalyzer
     
     Args:
-        exchange: Exchange name (wird automatisch aus Query/Body extrahiert)
+        exchange: Exchange name
     
     Returns:
         PriceMoverAnalyzer Instance
@@ -142,113 +263,26 @@ async def get_analyzer(
     return _analyzer_instance
 
 
-# ==================== UNIFIED COLLECTOR DEPENDENCY (FIXED) ====================
+# ==================== REQUEST LOGGING ====================
 
-async def get_unified_collector() -> UnifiedCollector:
+async def log_request(
+    request_id: Optional[str] = Header(None, alias="X-Request-ID")
+) -> str:
     """
-    🔧 FIXED: Dependency für UnifiedCollector mit API Keys aus ENV
+    Dependency für Request Logging
     
-    PRIORITY:
-    1. HELIUS_API_KEY (beste Option - 100k req/day FREE!)
-    2. BIRDEYE_API_KEY (Fallback - aber oft suspended)
-    
-    Initialisiert und gibt eine Instanz des UnifiedCollectors zurück mit:
-    - CEX Credentials (optional, funktioniert auch ohne)
-    - DEX API Keys (HELIUS > BIRDEYE)
-    
+    Args:
+        request_id: Request ID aus Header
+        
     Returns:
-        UnifiedCollector Instance mit konfigurierten API Keys
+        Request ID (generiert wenn nicht vorhanden)
     """
-    global _unified_collector_instance
+    if not request_id:
+        request_id = str(uuid.uuid4())
     
-    # Verwende gecachte Instance wenn vorhanden
-    if _unified_collector_instance is not None:
-        return _unified_collector_instance
+    logger.info(f"Request ID: {request_id}")
     
-    logger.info("🔧 Creating UnifiedCollector with API Keys from ENV")
-    
-    # 🔧 FIX: Lade API Keys aus Environment
-    helius_key = os.getenv('HELIUS_API_KEY')
-    birdeye_key = os.getenv('BIRDEYE_API_KEY')
-    
-    # CEX Credentials (optional - funktionieren auch ohne)
-    cex_creds = {}
-    
-    # Binance
-    binance_key = os.getenv('BINANCE_API_KEY')
-    binance_secret = os.getenv('BINANCE_SECRET_KEY')
-    if binance_key and binance_secret:
-        cex_creds['binance'] = {
-            'api_key': binance_key,
-            'api_secret': binance_secret
-        }
-        logger.info("✅ Binance API Keys geladen")
-    
-    # Bitget
-    bitget_key = os.getenv('BITGET_API_KEY')
-    bitget_secret = os.getenv('BITGET_SECRET_KEY')
-    if bitget_key and bitget_secret:
-        cex_creds['bitget'] = {
-            'api_key': bitget_key,
-            'api_secret': bitget_secret
-        }
-        logger.info("✅ Bitget API Keys geladen")
-    
-    # Kraken
-    kraken_key = os.getenv('KRAKEN_API_KEY')
-    kraken_secret = os.getenv('KRAKEN_SECRET_KEY')
-    if kraken_key and kraken_secret:
-        cex_creds['kraken'] = {
-            'api_key': kraken_key,
-            'api_secret': kraken_secret
-        }
-        logger.info("✅ Kraken API Keys geladen")
-    
-    # DEX API Keys - PRIORITY: Helius > Birdeye
-    dex_keys = {}
-    
-    # 🎯 HELIUS (PRIORITY #1 - beste Option!)
-    if helius_key:
-        dex_keys['helius'] = helius_key
-        logger.info(f"✅ Helius API Key geladen: {helius_key[:8]}... (PRIMARY)")
-    else:
-        logger.warning("⚠️ HELIUS_API_KEY nicht in ENV gefunden!")
-    
-    # 🔄 BIRDEYE (FALLBACK #2)
-    if birdeye_key:
-        dex_keys['birdeye'] = birdeye_key
-        logger.info(f"✅ Birdeye API Key geladen: {birdeye_key[:8]}... (FALLBACK)")
-    
-    # Warnung wenn KEINE DEX Keys
-    if not dex_keys:
-        logger.warning("⚠️ KEINE DEX API Keys gefunden! DEX wird nicht verfügbar sein.")
-        logger.info("💡 Tipp: Setze HELIUS_API_KEY für echte DEX Daten!")
-    
-    # Erstelle UnifiedCollector mit API Keys
-    try:
-        collector = UnifiedCollector(
-            cex_credentials=cex_creds if cex_creds else None,
-            dex_api_keys=dex_keys if dex_keys else None
-        )
-        
-        # Cache die Instance
-        _unified_collector_instance = collector
-        
-        # Log verfügbare Exchanges
-        available = collector.list_available_exchanges()
-        logger.info(
-            f"✅ UnifiedCollector initialisiert: "
-            f"CEX={available['cex']}, DEX={available['dex']}"
-        )
-        
-        return collector
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to create UnifiedCollector: {e}", exc_info=True)
-        # Erstelle fallback ohne API Keys
-        collector = UnifiedCollector()
-        _unified_collector_instance = collector
-        return collector
+    return request_id
 
 
 # ==================== AUTHENTICATION (FUTURE) ====================
@@ -266,9 +300,6 @@ async def verify_api_key(
         
     Returns:
         API Key wenn valid, None wenn nicht required
-        
-    Raises:
-        HTTPException: Wenn API Key invalid
     """
     return x_api_key
 
@@ -276,11 +307,7 @@ async def verify_api_key(
 # ==================== RATE LIMITING (FUTURE) ====================
 
 class RateLimiter:
-    """
-    Rate Limiter für API Endpoints
-    
-    TODO: Implementiere echtes Rate Limiting mit Redis
-    """
+    """Rate Limiter für API Endpoints"""
     
     def __init__(self, requests_per_minute: int = 60):
         self.requests_per_minute = requests_per_minute
@@ -291,38 +318,17 @@ class RateLimiter:
         client_id: str,
         x_forwarded_for: Optional[str] = Header(None)
     ) -> bool:
-        """
-        Prüft Rate Limit
-        
-        Args:
-            client_id: Client Identifier (IP oder User ID)
-            x_forwarded_for: Forwarded IP Header
-            
-        Returns:
-            True wenn unter Limit
-            
-        Raises:
-            HTTPException: Wenn Rate Limit überschritten
-        """
+        """Prüft Rate Limit"""
         return True
 
 
-# Rate Limiter Instance
 rate_limiter = RateLimiter(requests_per_minute=60)
 
 
 async def check_rate_limit(
     x_forwarded_for: Optional[str] = Header(None)
 ) -> bool:
-    """
-    Dependency für Rate Limiting
-    
-    Args:
-        x_forwarded_for: Client IP
-        
-    Returns:
-        True wenn OK
-    """
+    """Dependency für Rate Limiting"""
     client_id = x_forwarded_for or "default"
     return await rate_limiter.check_rate_limit(client_id, x_forwarded_for)
 
@@ -362,25 +368,36 @@ async def cleanup_dependencies():
     logger.info("Cleanup complete")
 
 
-# ==================== REQUEST LOGGING ====================
+# ==================== STARTUP/SHUTDOWN EVENTS ====================
 
-async def log_request(
-    request_id: Optional[str] = Header(None, alias="X-Request-ID")
-) -> str:
-    """
-    Dependency für Request Logging
+async def startup_event():
+    """Application startup handler"""
+    logger.info("🚀 Starting up application...")
     
-    Args:
-        request_id: Request ID aus Header
+    try:
+        # Initialize UnifiedCollector
+        collector = await get_unified_collector()
         
-    Returns:
-        Request ID (generiert wenn nicht vorhanden)
-    """
-    import uuid
+        # Run health check
+        health = await collector.health_check()
+        logger.info(f"📊 Health Check Results: {health}")
+        
+        if health['overall'] != 'healthy':
+            logger.warning(f"⚠️ Some collectors are unhealthy: {health}")
+        
+        logger.info("✅ Application startup complete")
+        
+    except Exception as e:
+        logger.error(f"❌ Startup error: {e}", exc_info=True)
+        raise
+
+
+async def shutdown_event():
+    """Application shutdown handler"""
+    logger.info("🛑 Shutting down application...")
     
-    if not request_id:
-        request_id = str(uuid.uuid4())
-    
-    logger.info(f"Request ID: {request_id}")
-    
-    return request_id
+    try:
+        await cleanup_dependencies()
+        logger.info("✅ Application shutdown complete")
+    except Exception as e:
+        logger.error(f"❌ Shutdown error: {e}", exc_info=True)
