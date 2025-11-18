@@ -461,54 +461,60 @@ class UnifiedCollector:
                 results['cex'][name] = False
                 results['overall'] = 'degraded'
         
-        # Check DEX - Birdeye (unverändert)
+        # DEX Checks
+        if self.dexscreener_collector:
+            try:
+                results['dex']['dexscreener'] = await self.dexscreener_collector.health_check()
+                if not results['dex']['dexscreener']:
+                    results['overall'] = 'degraded'
+            except Exception as e:
+                logger.error(f"Dexscreener health check failed: {e}")
+                results['dex']['dexscreener'] = False
+                results['overall'] = 'degraded'
+
         if self.birdeye_collector:
             try:
-                is_healthy = await self.birdeye_collector.health_check()
-                results['dex']['birdeye'] = is_healthy
-                if not is_healthy:
+                results['dex']['birdeye'] = await self.birdeye_collector.health_check()
+                if not results['dex']['birdeye']:
                     results['overall'] = 'degraded'
             except Exception as e:
                 logger.error(f"Birdeye health check failed: {e}")
                 results['dex']['birdeye'] = False
                 results['overall'] = 'degraded'
-        
-        # Check DEX - Helius (unverändert)
+
         if self.helius_collector:
             try:
-                is_healthy = await self.helius_collector.health_check()
-                results['dex']['helius'] = is_healthy
-                if not is_healthy:
+                results['dex']['helius'] = await self.helius_collector.health_check()
+                if not results['dex']['helius']:
                     results['overall'] = 'degraded'
             except Exception as e:
                 logger.error(f"Helius health check failed: {e}")
                 results['dex']['helius'] = False
                 results['overall'] = 'degraded'
 
-        # Check DEX - SolanaDex (Bitquery) (Neu)
         if self.solana_dex_collector:
             try:
-                is_healthy = await self.solana_dex_collector.health_check()
-                results['dex']['solana_bitquery'] = is_healthy
-                if not is_healthy:
+                results['dex']['solana_bitquery'] = await self.solana_dex_collector.health_check()
+                if not results['dex']['solana_bitquery']:
                     results['overall'] = 'degraded'
             except Exception as e:
                 logger.error(f"SolanaDex (Bitquery) health check failed: {e}")
                 results['dex']['solana_bitquery'] = False
                 results['overall'] = 'degraded'
-        
-        # DEX Exchanges inherit health from their primary collectors
+
+        # DEX Exchanges inherit health
+        # Hier könntest du entscheiden, welche Quelle die "Gesundheit" bestimmt.
+        # Annahme: Die Quelle, die für Trades zuständig ist, bestimmt die Gesundheit.
         for dex_name in self.dex_collectors.keys():
-            primary_collector = self.dex_collectors[dex_name]
+            primary_trade_collector = self.dex_collectors[dex_name]
             collector_name_key = 'unknown'
-            if primary_collector == self.birdeye_collector:
-                collector_name_key = 'birdeye'
-            elif primary_collector == self.helius_collector:
+            if primary_trade_collector == self.helius_collector:
                 collector_name_key = 'helius'
-            elif primary_collector == self.solana_dex_collector:
+            elif primary_trade_collector == self.solana_dex_collector:
                 collector_name_key = 'solana_bitquery'
+            # Wenn Dexscreener nur für OHLCV genutzt wird, beeinflusst es die Trade-Gesundheit nicht direkt.
             results['dex'][dex_name] = results['dex'].get(collector_name_key, False)
-        
+
         return results
     
     async def close(self):
@@ -521,31 +527,14 @@ class UnifiedCollector:
             except Exception as e:
                 logger.error(f"Error closing CEX collector {name}: {e}")
         
-        # Close Birdeye (unverändert)
-        if self.birdeye_collector:
-            try:
-                await self.birdeye_collector.close()
-                logger.debug("Closed Birdeye collector")
-            except Exception as e:
-                logger.error(f"Error closing Birdeye collector: {e}")
-        
-        # Close Helius (unverändert)
-        if self.helius_collector:
-            try:
-                await self.helius_collector.close()
-                logger.debug("Closed Helius collector")
-            except Exception as e:
-                logger.error(f"Error closing Helius collector: {e}")
+        # Schließe DEX Collector
+        for collector in [self.dexscreener_collector, self.birdeye_collector, self.helius_collector, self.solana_dex_collector]:
+            if collector:
+                try: await collector.close()
+                except: pass
 
-        # Close SolanaDex (Bitquery) (Neu)
-        if self.solana_dex_collector:
-            try:
-                await self.solana_dex_collector.close()
-                logger.debug("Closed SolanaDex collector")
-            except Exception as e:
-                logger.error(f"Error closing SolanaDex collector: {e}")
-        
         logger.info("✓ All collectors closed")
+
     
     def __str__(self) -> str:
         dex_info = []
