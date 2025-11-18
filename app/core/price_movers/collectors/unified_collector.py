@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Union
 
+from .dexscreener_collector import DexscreenerCollector # Import hinzufügen
 from .exchange_collector import ExchangeCollector, ExchangeCollectorFactory
 from .birdeye_collector import BirdeyeCollector
 from .dex_collector import DEXCollector
