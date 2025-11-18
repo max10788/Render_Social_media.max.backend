@@ -1,5 +1,6 @@
 # app/core/price_movers/collectors/unified_collector.py (korrigierte und vollständige Version)
 
+import os
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Union
