@@ -260,6 +260,7 @@ class UnifiedCollector:
             'blockchain': getattr(collector, 'blockchain', 'solana').value,
         }
     
+
     async def fetch_candle_data(
         self,
         exchange: str,
@@ -268,11 +269,11 @@ class UnifiedCollector:
         timestamp: datetime
     ) -> Dict[str, Any]:
         """
-        Fetcht Candle-Daten mit automatischem Routing
-        WICHTIG: Für DEX wird BIRDEYE bevorzugt (falls verfügbar), sonst der Collector in `dex_collectors`.
+        Fetcht Candle-Daten mit automatischem Routing.
+        Wenn Birdeye für DEX fehlschlägt, versucht es den SolanaDexCollector (Bitquery) als Fallback für OHLCV.
         """
         exchange = exchange.lower()
-        
+
         # CEX: Direct routing (unverändert)
         if exchange in self.cex_collectors:
             collector = self.cex_collectors[exchange]
@@ -281,16 +282,32 @@ class UnifiedCollector:
                 timeframe=timeframe,
                 timestamp=timestamp
             )
-        
+
         # DEX: Prefer Birdeye für OHLCV!
         elif exchange in self.dex_collectors:
             if self.birdeye_collector:
                 logger.info("📊 Using Birdeye for OHLCV (faster!)")
-                return await self.birdeye_collector.fetch_candle_data(
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    timestamp=timestamp
-                )
+                try:
+                    # Versuche Birdeye OHLCV
+                    return await self.birdeye_collector.fetch_candle_data(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        timestamp=timestamp
+                    )
+                except Exception as e:
+                    logger.warning(f"Birdeye OHLCV failed: {e}. Falling back to SolanaDex (Bitquery) OHLCV if available.")
+                    # Wenn Birdeye fehlschlägt UND SolanaDexCollector verfügbar ist, nutze diesen als Fallback für OHLCV
+                    if self.solana_dex_collector:
+                         logger.info("📊 Using SolanaDexCollector (Bitquery) for OHLCV (fallback).")
+                         return await self.solana_dex_collector.fetch_candle_data(
+                             symbol=symbol,
+                             timeframe=timeframe,
+                             timestamp=timestamp
+                         )
+                    else:
+                        # Kein Fallback verfügbar, werfe Fehler oder gib leere Candle zurück
+                        logger.error(f"No fallback OHLCV collector available after Birdeye failed for {exchange}.")
+                        raise e # Re-raise den ursprünglichen Fehler
             else:
                 # Kein Birdeye -> Nutze den Collector, der in `dex_collectors` eingetragen ist
                 # Dies ist entweder SolanaDex (Bitquery) oder Helius
@@ -301,7 +318,7 @@ class UnifiedCollector:
                     timeframe=timeframe,
                     timestamp=timestamp
                 )
-        
+
         else:
             raise ValueError(f"Exchange '{exchange}' nicht verfügbar")
     
