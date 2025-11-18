@@ -31,7 +31,7 @@ from app.core.price_movers.api.routes import router as price_movers_router
 from app.core.price_movers.api.analyze_routes import router as analyze_router  # ← DIESE ZEILE HINZUFÜGEN
 from app.core.price_movers.api.wallet_detail_routes import router as wallet_detail_router
 from app.core.price_movers.api.hybrid_routes import router as hybrid_router
-from app.core.price_movers.api import routes_dex_chart
+from app.core.price_movers.api.routes_dex_chart import router as dex_chart_router
 
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
@@ -250,7 +250,7 @@ app.include_router(price_movers_router)
 app.include_router(analyze_router)  # ← DIESE ZEILE HINZUFÜGEN
 app.include_router(wallet_detail_router)
 app.include_router(hybrid_router)
-app.include_router(routes_dex_chart.router)
+app.include_router(dex_chart_router, prefix="/api/v1")
 
 # ------------------------------------------------------------------
 # WebSocket Endpoint
