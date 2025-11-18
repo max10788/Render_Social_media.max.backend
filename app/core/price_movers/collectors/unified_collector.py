@@ -1,15 +1,4 @@
-"""
-Unified Collector - FINAL MERGED VERSION
-
-Hybrid CEX/DEX Router mit Birdeye Priority für OHLCV Charts.
-
-Features:
-- ✅ CEX: Bitget, Binance, Kraken
-- ✅ DEX: Jupiter, Raydium, Orca (via Helius/Birdeye)
-- ✅ Birdeye FIRST für Charts (1 call = 100 candles!)
-- ✅ Helius für Wallet-Analyse
-- ✅ Automatisches Routing
-"""
+# app/core/price_movers/collectors/unified_collector.py (korrigierte und vollständige Version)
 
 import logging
 from datetime import datetime
@@ -18,6 +7,7 @@ from typing import List, Dict, Any, Optional, Union
 from .exchange_collector import ExchangeCollector, ExchangeCollectorFactory
 from .birdeye_collector import BirdeyeCollector
 from .dex_collector import DEXCollector
+from .bitquery_collector import SolanaDexCollector # Import hinzufügen
 from ..utils.constants import (
     SupportedExchange,
     SupportedDEX,
@@ -32,41 +22,7 @@ logger = logging.getLogger(__name__)
 
 class UnifiedCollector:
     """
-    Unified Collector für CEX + DEX mit optimierter DEX Strategie
-    
-    WICHTIG - DEX Strategie:
-    ========================
-    1. BIRDEYE für Charts (OHLCV)
-       - 1 API Call = bis zu 1000 Candles
-       - Schnell (<1s)
-       - Keine Rate Limits
-    
-    2. HELIUS für Wallet-Analyse
-       - Nur bei Candle-Click
-       - Trade-Details mit Wallet-Adressen
-       - Caching + Rate Limiting
-    
-    CEX (Bitget/Binance/Kraken):
-    ├─ Pattern-based Analysis
-    ├─ Keine echten Wallet-IDs
-    └─ OHLCV direkt verfügbar
-    
-    DEX (Jupiter/Raydium/Orca):
-    ├─ Birdeye: OHLCV Charts (PRIMARY)
-    ├─ Helius: Wallet-Analyse (SECONDARY)
-    └─ On-chain Data (permanent)
-    
-    Usage:
-        collector = UnifiedCollector(
-            cex_credentials={...},
-            dex_api_keys={'birdeye': '...', 'helius': '...'}
-        )
-        
-        # Chart laden (nutzt Birdeye)
-        candles = await collector.birdeye_collector.fetch_ohlcv_batch(...)
-        
-        # Wallet-Analyse (nutzt Helius)
-        trades = await collector.fetch_trades(exchange='jupiter', ...)
+    Unified Collector für CEX + DEX mit integriertem Bitquery Support.
     """
     
     def __init__(
@@ -77,43 +33,32 @@ class UnifiedCollector:
     ):
         """
         Initialisiert Unified Collector
-        
         Args:
             cex_credentials: CEX API Credentials
-                {
-                    'binance': {'api_key': '...', 'api_secret': '...'},
-                    'bitget': {'api_key': '...', 'api_secret': '...'},
-                    'kraken': {'api_key': '...', 'api_secret': '...'}
-                }
-            
-            dex_api_keys: DEX API Keys
-                {
-                    'birdeye': 'YOUR_BIRDEYE_API_KEY',  # PRIMARY für Charts
-                    'helius': 'YOUR_HELIUS_API_KEY'     # SECONDARY für Wallets
-                }
-            
-            config: Zusätzliche Konfiguration
+            dex_api_keys: DEX API Keys {'birdeye': '...', 'helius': '...', 'bitquery': '...'}
         """
         self.config = config or {}
         
-        # CEX Collectors
+        # CEX Collectors (unverändert)
         self.cex_collectors: Dict[str, ExchangeCollector] = {}
         self._init_cex_collectors(cex_credentials or {})
         
         # DEX Collectors - BIRDEYE FIRST!
         self.birdeye_collector: Optional[BirdeyeCollector] = None
         self.helius_collector: Optional[DEXCollector] = None
+        self.solana_dex_collector: Optional[SolanaDexCollector] = None # Neu
         self.dex_collectors: Dict[str, DEXCollector] = {}
         self._init_dex_collectors(dex_api_keys or {})
         
         logger.info(
             f"✓ Unified Collector initialisiert: "
-            f"CEX={list(self.cex_collectors.keys())}, "
-            f"DEX={list(self.dex_collectors.keys())}"
+            f"CEX={len(self.cex_collectors)}, "
+            f"DEX={len(self.dex_collectors)}, "
+            f"Sources=[birdeye={self.birdeye_collector is not None}, helius={self.helius_collector is not None}, bitquery={self.solana_dex_collector is not None}]"
         )
     
     def _init_cex_collectors(self, credentials: Dict[str, Dict[str, str]]):
-        """Initialisiert CEX Collectors"""
+        """Initialisiert CEX Collectors (unverändert)"""
         for exchange in SupportedExchange:
             creds = credentials.get(exchange.value, {})
             
@@ -129,19 +74,16 @@ class UnifiedCollector:
             except Exception as e:
                 logger.warning(f"✗ Failed to create CEX collector {exchange.value}: {e}")
                 # Continue with other exchanges
-    
+
     def _init_dex_collectors(self, api_keys: Dict[str, str]):
         """
         Initialisiert DEX Collectors
-        
-        PRIORITY:
-        1. BIRDEYE (für Charts - FASTEST!)
-        2. HELIUS (für Wallet-Analyse)
+        Priorität für OHLCV: Birdeye > SolanaDex (Bitquery) > Helius
+        Priorität für Trades mit Wallets: Helius > SolanaDex (wenn Helius als Fallback)
         """
         
-        # 1️⃣ BIRDEYE FIRST (für OHLCV Charts)
+        # 1. Birdeye
         birdeye_key = api_keys.get('birdeye')
-        
         if birdeye_key:
             try:
                 self.birdeye_collector = BirdeyeCollector(
@@ -154,10 +96,9 @@ class UnifiedCollector:
                 self.birdeye_collector = None
         else:
             logger.warning("⚠️ Birdeye API Key not provided - Charts will be slow!")
-        
-        # 2️⃣ HELIUS (für Wallet-Analyse mit Birdeye Fallback)
+
+        # 2. Helius
         helius_key = api_keys.get('helius')
-        
         if helius_key:
             try:
                 from .helius_collector import create_helius_collector
@@ -175,27 +116,44 @@ class UnifiedCollector:
                 self.helius_collector = None
         else:
             logger.warning("⚠️ Helius API Key not provided")
-        
-        # Registriere für alle Solana DEXs
-        if self.helius_collector or self.birdeye_collector:
-            # Prefer Helius for trade fetching (has wallet addresses)
-            # But Birdeye for OHLCV (much faster)
-            primary_collector = self.helius_collector or self.birdeye_collector
-            
+
+        # 3. Bitquery (SolanaDexCollector)
+        bitquery_key = api_keys.get('bitquery')
+        if bitquery_key or os.getenv("BITQUERY_API_KEY"):
+            try:
+                solana_config = {
+                    'bitquery_api_key': bitquery_key,
+                    'helius_collector_instance': self.helius_collector # Als Fallback für Trades mit Wallets
+                }
+                self.solana_dex_collector = SolanaDexCollector(config=solana_config)
+                logger.info("✅ SolanaDexCollector (Bitquery) initialized")
+            except Exception as e:
+                logger.error(f"❌ SolanaDexCollector (Bitquery) failed: {e}")
+                self.solana_dex_collector = None
+        else:
+            logger.info("ℹ️ Bitquery API Key not provided.")
+
+        # --- DEX Zuweisung Logik ---
+        # Wenn Birdeye da: dex_collectors bekommt Trade-Collector (Helius > SolanaDex)
+        # Wenn Birdeye NICHT da: dex_collectors bekommt OHLCV-Collector (SolanaDex > Helius)
+        primary_dex_collector = None
+        if self.birdeye_collector:
+            # Birdeye ist da -> es wird für OHLCV genutzt
+            # `dex_collectors` bekommt den besten Trade-Collector
+            primary_dex_collector = self.helius_collector or self.solana_dex_collector
+        else:
+            # Birdeye ist nicht da -> OHLCV geht an Collector in `dex_collectors`
+            # `dex_collectors` bekommt den besten OHLCV-Collector
+            primary_dex_collector = self.solana_dex_collector or self.helius_collector
+
+        if primary_dex_collector:
             for dex in [SupportedDEX.JUPITER, SupportedDEX.RAYDIUM, SupportedDEX.ORCA]:
-                self.dex_collectors[dex.value] = primary_collector
-            
-            dex_list = []
-            if self.helius_collector:
-                dex_list.append("helius")
-            if self.birdeye_collector:
-                dex_list.append("birdeye")
-            
-            logger.info(f"✅ DEX Collectors available: {dex_list}")
+                self.dex_collectors[dex.value] = primary_dex_collector
+            logger.info(f"✅ DEX Collectors set to: {primary_dex_collector.__class__.__name__}")
         else:
             logger.warning("⚠️ No DEX API Keys - DEX functionality disabled!")
-            logger.info("💡 Set BIRDEYE_API_KEY and/or HELIUS_API_KEY for DEX data")
-    
+            logger.info("💡 Set BIRDEYE_API_KEY, HELIUS_API_KEY, or BITQUERY_API_KEY for DEX data")
+
     async def fetch_trades(
         self,
         exchange: str,
@@ -205,22 +163,7 @@ class UnifiedCollector:
         limit: Optional[int] = 1000
     ) -> Dict[str, Any]:
         """
-        Fetcht Trades mit automatischem Routing
-        
-        Args:
-            exchange: Exchange Name (bitget/binance/jupiter/raydium/etc.)
-            symbol: Trading Pair
-            start_time: Start
-            end_time: Ende
-            limit: Max Trades
-            
-        Returns:
-            {
-                'trades': List[Dict],
-                'has_wallet_ids': bool,  # ← KEY Unterschied!
-                'data_source': 'cex' oder 'dex',
-                'exchange': str
-            }
+        Fetcht Trades mit automatischem Routing (unverändert)
         """
         exchange = exchange.lower()
         
@@ -243,7 +186,7 @@ class UnifiedCollector:
                 f"Exchange '{exchange}' nicht verfügbar. "
                 f"CEX: {available_cex}, DEX: {available_dex}"
             )
-    
+
     async def _fetch_from_cex(
         self,
         exchange: str,
@@ -253,8 +196,7 @@ class UnifiedCollector:
         limit: int
     ) -> Dict[str, Any]:
         """
-        Fetcht von CEX
-        
+        Fetcht von CEX (unverändert)
         CEX = Keine echten Wallet-IDs
         """
         collector = self.cex_collectors[exchange]
@@ -285,13 +227,12 @@ class UnifiedCollector:
         limit: int
     ) -> Dict[str, Any]:
         """
-        Fetcht von DEX (nutzt Helius für Trades)
-        
-        DEX = ECHTE Wallet-IDs! 🎯
+        Fetcht von DEX.
+        Berücksichtigt, ob der verwendete Collector Wallet-IDs liefert.
         """
         collector = self.dex_collectors[exchange]
         
-        logger.info(f"🔗 Fetching from DEX: {exchange}")
+        logger.info(f"🔗 Fetching from DEX using {collector.__class__.__name__}: {exchange}")
         
         trades = await collector.fetch_trades(
             symbol=symbol,
@@ -299,13 +240,23 @@ class UnifiedCollector:
             end_time=end_time,
             limit=limit
         )
-        
+
+        # Bestimme has_wallet_ids basierend auf dem Collector-Typ
+        has_wallets = False
+        if hasattr(collector, 'provides_wallet_ids'):
+             # Nutze Methode aus SolanaDexCollector
+             has_wallets = collector.provides_wallet_ids()
+        elif hasattr(collector, '__class__') and collector.__class__.__name__ == 'DEXCollector': # Vermutlich Helius
+             has_wallets = True # Helius-basierter Collector liefert angenommen Trades mit Wallets
+
+        logger.info(f"🔗 Fetched {len(trades)} trades. Has wallet IDs: {has_wallets}")
+
         return {
             'trades': trades,
-            'has_wallet_ids': True,  # ← DEX = ECHTE Wallet IDs! 🎯
+            'has_wallet_ids': has_wallets, # <-- Dynamisch basierend auf Collector
             'data_source': 'dex',
             'exchange': exchange,
-            'blockchain': collector.blockchain.value,
+            'blockchain': getattr(collector, 'blockchain', 'solana').value,
         }
     
     async def fetch_candle_data(
@@ -317,21 +268,11 @@ class UnifiedCollector:
     ) -> Dict[str, Any]:
         """
         Fetcht Candle-Daten mit automatischem Routing
-        
-        WICHTIG: Für DEX wird BIRDEYE bevorzugt (falls verfügbar)
-        
-        Args:
-            exchange: Exchange Name
-            symbol: Trading Pair
-            timeframe: Timeframe
-            timestamp: Candle-Zeitpunkt
-            
-        Returns:
-            Candle Dictionary
+        WICHTIG: Für DEX wird BIRDEYE bevorzugt (falls verfügbar), sonst der Collector in `dex_collectors`.
         """
         exchange = exchange.lower()
         
-        # CEX: Direct routing
+        # CEX: Direct routing (unverändert)
         if exchange in self.cex_collectors:
             collector = self.cex_collectors[exchange]
             return await collector.fetch_candle_data(
@@ -350,8 +291,10 @@ class UnifiedCollector:
                     timestamp=timestamp
                 )
             else:
-                # Fallback zu Helius
+                # Kein Birdeye -> Nutze den Collector, der in `dex_collectors` eingetragen ist
+                # Dies ist entweder SolanaDex (Bitquery) oder Helius
                 collector = self.dex_collectors[exchange]
+                logger.info(f"📊 Using {collector.__class__.__name__} for OHLCV (no Birdeye)")
                 return await collector.fetch_candle_data(
                     symbol=symbol,
                     timeframe=timeframe,
@@ -363,17 +306,11 @@ class UnifiedCollector:
     
     def get_exchange_info(self, exchange: str) -> Dict[str, Any]:
         """
-        Gibt Info über Exchange zurück
-        
-        Args:
-            exchange: Exchange Name
-            
-        Returns:
-            Exchange Info Dictionary
+        Gibt Info über Exchange zurück (angepasst für neue Collector)
         """
         exchange = exchange.lower()
         
-        # Check CEX
+        # Check CEX (unverändert)
         if exchange in self.cex_collectors:
             config = EXCHANGE_CONFIGS.get(exchange, {})
             return {
@@ -384,17 +321,26 @@ class UnifiedCollector:
                 'config': config
             }
         
-        # Check DEX
+        # Check DEX (angepasst)
         elif exchange in self.dex_collectors:
             config = DEX_CONFIGS.get(exchange, {})
+            # Bestimme, ob der zugewiesene Collector Wallets liefert
+            collector = self.dex_collectors[exchange]
+            has_wallets = False
+            if hasattr(collector, 'provides_wallet_ids'):
+                has_wallets = collector.provides_wallet_ids()
+            elif collector.__class__.__name__ == 'DEXCollector': # Vermutlich Helius
+                has_wallets = True
+
             return {
                 'exchange': exchange,
                 'type': 'dex',
-                'has_wallet_ids': True,  # 🎯
+                'has_wallet_ids': has_wallets,  # Dynamisch
                 'available': True,
-                'blockchain': config.get('blockchain'),
+                'blockchain': getattr(config.get('blockchain'), 'value', 'solana'), # Annahme
                 'has_birdeye': self.birdeye_collector is not None,
                 'has_helius': self.helius_collector is not None,
+                'has_bitquery': self.solana_dex_collector is not None, # Neu
                 'config': config
             }
         
@@ -408,13 +354,7 @@ class UnifiedCollector:
     
     def list_available_exchanges(self) -> Dict[str, List[str]]:
         """
-        Listet alle verfügbaren Exchanges
-        
-        Returns:
-            {
-                'cex': ['bitget', 'binance', ...],
-                'dex': ['jupiter', 'raydium', ...]
-            }
+        Listet alle verfügbaren Exchanges (unverändert)
         """
         return {
             'cex': list(self.cex_collectors.keys()),
@@ -423,19 +363,7 @@ class UnifiedCollector:
     
     async def health_check(self) -> Dict[str, Any]:
         """
-        Prüft Health aller Collectors
-        
-        Returns:
-            {
-                'cex': {'bitget': True, 'binance': True, ...},
-                'dex': {
-                    'birdeye': True,
-                    'helius': True,
-                    'jupiter': True,
-                    ...
-                },
-                'overall': 'healthy' | 'degraded' | 'unhealthy'
-            }
+        Prüft Health aller Collectors (angepasst für neuen Collector)
         """
         results = {
             'cex': {},
@@ -443,7 +371,7 @@ class UnifiedCollector:
             'overall': 'healthy'
         }
         
-        # Check CEX
+        # Check CEX (unverändert)
         for name, collector in self.cex_collectors.items():
             try:
                 is_healthy = await collector.health_check()
@@ -455,7 +383,7 @@ class UnifiedCollector:
                 results['cex'][name] = False
                 results['overall'] = 'degraded'
         
-        # Check DEX - Birdeye
+        # Check DEX - Birdeye (unverändert)
         if self.birdeye_collector:
             try:
                 is_healthy = await self.birdeye_collector.health_check()
@@ -467,7 +395,7 @@ class UnifiedCollector:
                 results['dex']['birdeye'] = False
                 results['overall'] = 'degraded'
         
-        # Check DEX - Helius
+        # Check DEX - Helius (unverändert)
         if self.helius_collector:
             try:
                 is_healthy = await self.helius_collector.health_check()
@@ -478,19 +406,36 @@ class UnifiedCollector:
                 logger.error(f"Helius health check failed: {e}")
                 results['dex']['helius'] = False
                 results['overall'] = 'degraded'
+
+        # Check DEX - SolanaDex (Bitquery) (Neu)
+        if self.solana_dex_collector:
+            try:
+                is_healthy = await self.solana_dex_collector.health_check()
+                results['dex']['solana_bitquery'] = is_healthy
+                if not is_healthy:
+                    results['overall'] = 'degraded'
+            except Exception as e:
+                logger.error(f"SolanaDex (Bitquery) health check failed: {e}")
+                results['dex']['solana_bitquery'] = False
+                results['overall'] = 'degraded'
         
-        # DEX Exchanges inherit health from their collectors
+        # DEX Exchanges inherit health from their primary collectors
         for dex_name in self.dex_collectors.keys():
-            if self.birdeye_collector:
-                results['dex'][dex_name] = results['dex'].get('birdeye', False)
-            elif self.helius_collector:
-                results['dex'][dex_name] = results['dex'].get('helius', False)
+            primary_collector = self.dex_collectors[dex_name]
+            collector_name_key = 'unknown'
+            if primary_collector == self.birdeye_collector:
+                collector_name_key = 'birdeye'
+            elif primary_collector == self.helius_collector:
+                collector_name_key = 'helius'
+            elif primary_collector == self.solana_dex_collector:
+                collector_name_key = 'solana_bitquery'
+            results['dex'][dex_name] = results['dex'].get(collector_name_key, False)
         
         return results
     
     async def close(self):
-        """Schließt alle Collectors"""
-        # Close CEX
+        """Schließt alle Collectors (angepasst für neuen Collector)"""
+        # Close CEX (unverändert)
         for name, collector in self.cex_collectors.items():
             try:
                 await collector.close()
@@ -498,7 +443,7 @@ class UnifiedCollector:
             except Exception as e:
                 logger.error(f"Error closing CEX collector {name}: {e}")
         
-        # Close Birdeye
+        # Close Birdeye (unverändert)
         if self.birdeye_collector:
             try:
                 await self.birdeye_collector.close()
@@ -506,13 +451,21 @@ class UnifiedCollector:
             except Exception as e:
                 logger.error(f"Error closing Birdeye collector: {e}")
         
-        # Close Helius
+        # Close Helius (unverändert)
         if self.helius_collector:
             try:
                 await self.helius_collector.close()
                 logger.debug("Closed Helius collector")
             except Exception as e:
                 logger.error(f"Error closing Helius collector: {e}")
+
+        # Close SolanaDex (Bitquery) (Neu)
+        if self.solana_dex_collector:
+            try:
+                await self.solana_dex_collector.close()
+                logger.debug("Closed SolanaDex collector")
+            except Exception as e:
+                logger.error(f"Error closing SolanaDex collector: {e}")
         
         logger.info("✓ All collectors closed")
     
@@ -522,7 +475,9 @@ class UnifiedCollector:
             dex_info.append("birdeye")
         if self.helius_collector:
             dex_info.append("helius")
-        
+        if self.solana_dex_collector:
+            dex_info.append("solana_bitquery") # Neu
+
         return (
             f"UnifiedCollector("
             f"CEX={len(self.cex_collectors)}, "
