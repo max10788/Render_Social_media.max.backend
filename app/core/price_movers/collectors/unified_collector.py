@@ -45,11 +45,12 @@ class UnifiedCollector:
         self.cex_collectors: Dict[str, ExchangeCollector] = {}
         self._init_cex_collectors(cex_credentials or {})
         
-        # DEX Collectors - BIRDEYE FIRST!
+        # DEX Collectors - NEUE Reihenfolge/Logik
         self.birdeye_collector: Optional[BirdeyeCollector] = None
         self.helius_collector: Optional[DEXCollector] = None
-        self.solana_dex_collector: Optional[SolanaDexCollector] = None # Neu
-        self.dex_collectors: Dict[str, DEXCollector] = {}
+        self.solana_dex_collector: Optional[SolanaDexCollector] = None
+        self.dexscreener_collector: Optional[DexscreenerCollector] = None # Neu
+        self.dex_collectors: Dict[str, DEXCollector] = {} # Für Trades
         self._init_dex_collectors(dex_api_keys or {})
         
         logger.info(
