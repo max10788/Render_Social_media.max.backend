@@ -369,3 +369,279 @@ async def dex_health_check():
             status_code=500,
             detail=f"Health check failed: {str(e)}"
         )
+
+
+# ==================== Helper Functions ====================
+
+async def fetch_candle_with_fallback(
+    unified_collector,
+    dex_exchange: str,
+    symbol: str,
+    timeframe: TimeframeEnum,
+    timestamp: datetime
+) -> tuple[Optional[Dict], str]:
+    """
+    Fetch candle data with Birdeye -> Helius fallback
+    
+    Returns:
+        (candle_data, source) - candle dict and source name
+    """
+    # Parse symbol
+    base_token, quote_token = symbol.split('/')
+    if base_token.upper() == 'SOL':
+        token_for_chart = quote_token.upper()
+    else:
+        token_for_chart = base_token.upper()
+    
+    # Try Birdeye first
+    if unified_collector.birdeye_collector:
+        try:
+            logger.debug("Trying Birdeye for candle...")
+            token_address = await unified_collector.birdeye_collector._resolve_symbol_to_address(
+                f"{token_for_chart}/USDC"
+            )
+            
+            if token_address:
+                candles = await unified_collector.birdeye_collector.fetch_ohlcv_batch(
+                    token_address=token_address,
+                    timeframe=str(timeframe.value),
+                    start_time=timestamp,
+                    end_time=timestamp + timedelta(minutes=5),
+                    limit=1
+                )
+                
+                if candles and len(candles) > 0:
+                    candle = candles[0]
+                    return {
+                        'timestamp': candle.get('timestamp', timestamp),
+                        'open': float(candle.get('open', 0)),
+                        'high': float(candle.get('high', 0)),
+                        'low': float(candle.get('low', 0)),
+                        'close': float(candle.get('close', 0)),
+                        'volume': float(candle.get('volume', 0)),
+                        'price_change_pct': 0.0
+                    }, "birdeye"
+        except Exception as e:
+            logger.warning(f"Birdeye candle fetch failed: {e}")
+    
+    # Fallback to Helius
+    if unified_collector.helius_collector:
+        try:
+            logger.debug("Falling back to Helius for candle...")
+            
+            timeframe_seconds = {
+                '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
+                '1h': 3600, '4h': 14400, '1d': 86400,
+            }.get(str(timeframe.value), 300)
+            
+            end_time = timestamp + timedelta(seconds=timeframe_seconds)
+            
+            trades_result = await unified_collector.helius_collector.fetch_dex_trades(
+                symbol=symbol,
+                start_time=timestamp,
+                end_time=end_time,
+                limit=100
+            )
+            
+            trades = trades_result if isinstance(trades_result, list) else []
+            
+            if trades:
+                prices = [t.get('price', 0) for t in trades if t.get('price')]
+                volumes = [t.get('value_usd', 0) for t in trades if t.get('value_usd')]
+                
+                if prices:
+                    open_price = prices[0]
+                    close_price = prices[-1]
+                    price_change_pct = ((close_price - open_price) / open_price * 100) if open_price > 0 else 0.0
+                    
+                    return {
+                        'timestamp': timestamp,
+                        'open': open_price,
+                        'high': max(prices),
+                        'low': min(prices),
+                        'close': close_price,
+                        'volume': sum(volumes) if volumes else 0,
+                        'price_change_pct': price_change_pct
+                    }, "helius"
+        except Exception as e:
+            logger.error(f"Helius candle fetch failed: {e}")
+    
+    return None, "none"
+
+
+# ==================== Additional Models for Wallet Movers ====================
+
+class DEXCandleMoversResponse(BaseModel):
+    """Response for DEX candle wallet movers"""
+    candle: CandleData
+    top_movers: List[Dict] = Field(..., description="Top wallet movers with real addresses")
+    analysis_metadata: Dict[str, Any]
+    is_synthetic: bool = False
+    has_real_wallet_ids: bool = True
+    blockchain: str
+    dex_exchange: str
+
+
+# ==================== Wallet Movers Endpoint ====================
+
+@router.get(
+    "/candle/{candle_timestamp}/movers",
+    response_model=DEXCandleMoversResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get DEX Wallet Movers for Candle",
+    description="Lädt ECHTE Wallet-Adressen für eine Candle (On-Chain)"
+)
+async def get_dex_candle_movers(
+    candle_timestamp: datetime,
+    dex_exchange: str = Query(..., description="DEX exchange"),
+    symbol: str = Query(..., description="Token pair"),
+    timeframe: TimeframeEnum = Query(..., description="Timeframe"),
+    top_n_wallets: int = Query(default=10, ge=1, le=100),
+    request_id: str = Depends(log_request)
+) -> DEXCandleMoversResponse:
+    """
+    ## 🎯 DEX Wallet Movers für Candle
+    
+    Features:
+    - ✅ ECHTE Blockchain-Adressen
+    - ✅ On-Chain Transaction History
+    - ✅ Keine synthetischen Daten
+    
+    ### Path Parameters:
+    - **candle_timestamp**: Candle timestamp (ISO 8601)
+    
+    ### Query Parameters:
+    - **dex_exchange**: DEX name (jupiter/raydium/orca)
+    - **symbol**: Trading pair (e.g., SOL/USDC)
+    - **timeframe**: Candle timeframe
+    - **top_n_wallets**: Number of top wallets to return
+    
+    ### Example:
+    ```
+    GET /dex/candle/2025-11-18T10:00:00Z/movers
+        ?dex_exchange=jupiter
+        &symbol=SOL/USDC
+        &timeframe=5m
+        &top_n_wallets=10
+    ```
+    """
+    start_perf = time.time()
+    
+    try:
+        # Validate parameters
+        validate_dex_params(dex_exchange, symbol, timeframe)
+        
+        logger.info(
+            f"[{request_id}] DEX Candle movers: {dex_exchange} {symbol} "
+            f"@ {candle_timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        # Get UnifiedCollector
+        unified_collector = await get_unified_collector()
+
+        # Initialize HybridAnalyzer
+        from app.core.price_movers.services.analyzer_hybrid import HybridPriceMoverAnalyzer
+        
+        analyzer = HybridPriceMoverAnalyzer(
+            unified_collector=unified_collector,
+            use_lightweight=True
+        )
+
+        # Calculate timeframe
+        timeframe_minutes = {
+            "1m": 1, "5m": 5, "15m": 15, "30m": 30,
+            "1h": 60, "4h": 240, "1d": 1440
+        }.get(str(timeframe.value), 5)
+
+        start_time = candle_timestamp
+        end_time = candle_timestamp + timedelta(minutes=timeframe_minutes)
+        
+        # Ensure timezone-aware
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+
+        # Fetch DEX data with fallback
+        logger.debug("Fetching DEX candle and trades...")
+
+        candle_data, source = await fetch_candle_with_fallback(
+            unified_collector=unified_collector,
+            dex_exchange=dex_exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            timestamp=start_time
+        )
+        
+        if not candle_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to fetch candle data from both Helius and Birdeye"
+            )
+        
+        trades_result = await unified_collector.fetch_trades(
+            exchange=dex_exchange.lower(),
+            symbol=symbol,
+            start_time=start_time,
+            end_time=end_time,
+            limit=5000
+        )
+
+        # Analyze DEX trades
+        logger.debug("Analyzing DEX trades...")
+
+        # Import Candle class from analyzer_hybrid
+        from app.core.price_movers.services.analyzer_hybrid import Candle as HybridCandle
+
+        candle_obj = HybridCandle(**candle_data)
+
+        dex_movers = await analyzer._analyze_dex_trades(
+            trades=trades_result.get('trades', []),
+            candle=candle_obj,
+            symbol=symbol,
+            exchange=dex_exchange,
+            top_n=top_n_wallets
+        )
+
+        # Get blockchain
+        from app.core.price_movers.utils.constants import DEX_CONFIGS
+        dex_config = DEX_CONFIGS.get(dex_exchange.lower(), {})
+        blockchain = dex_config.get('blockchain', 'solana')
+
+        performance_ms = (time.time() - start_perf) * 1000
+
+        response = DEXCandleMoversResponse(
+            candle=CandleData(**candle_data),
+            top_movers=dex_movers,
+            analysis_metadata={
+                "analysis_timestamp": datetime.now(timezone.utc),
+                "processing_duration_ms": int(performance_ms),
+                "total_trades_analyzed": len(trades_result.get('trades', [])),
+                "unique_wallets_found": len(dex_movers),
+                "exchange": dex_exchange,
+                "symbol": symbol,
+                "timeframe": str(timeframe.value),
+                "data_source": source
+            },
+            is_synthetic=False,
+            has_real_wallet_ids=True,
+            blockchain=blockchain.value if hasattr(blockchain, 'value') else str(blockchain),
+            dex_exchange=dex_exchange
+        )
+        
+        logger.info(
+            f"[{request_id}] ✅ DEX movers loaded: {len(dex_movers)} wallets "
+            f"from {len(trades_result.get('trades', []))} trades "
+            f"(source: {source}, {performance_ms:.0f}ms)"
+        )
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[{request_id}] ❌ DEX movers error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load DEX movers: {str(e)}"
+        )
