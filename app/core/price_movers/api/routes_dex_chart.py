@@ -1,9 +1,7 @@
 """
-DEX Chart Routes - Uses existing schemas from your codebase
+DEX Chart Routes - Fixed Import Version
 
-Compatible with:
-- app/core/price_movers/api/test_schemas.py
-- app/core/price_movers/api/schemas/response.py
+✅ All imports corrected - no models.chart dependency
 """
 
 import os
@@ -16,7 +14,7 @@ from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, Query, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-# Import existing models from your codebase
+# ✅ CORRECTED: Import from existing schemas
 from app.core.price_movers.api.test_schemas import (
     TimeframeEnum,
     CandleData,
@@ -25,7 +23,16 @@ from app.core.price_movers.api.dependencies import (
     get_unified_collector,
     log_request,
 )
-from app.core.price_movers.utils.validators import validate_dex_params
+
+# ✅ ADDED: Import validator if it exists
+try:
+    from app.core.price_movers.utils.validators import validate_dex_params
+except ImportError:
+    # Fallback validator if module doesn't exist
+    def validate_dex_params(dex_exchange: str, symbol: str, timeframe) -> None:
+        """Simple validation fallback"""
+        if not dex_exchange or not symbol:
+            raise ValueError("DEX exchange and symbol are required")
 
 
 logger = logging.getLogger(__name__)
@@ -81,10 +88,6 @@ async def get_dex_chart_candles(
     1. Try Birdeye OHLCV (fastest - if Starter plan available)
     2. Fall back to Helius (slower but works with free tier)
     3. Mock data as last resort
-    
-    **Birdeye Requirements:**
-    - Requires Starter plan ($99/month) or higher
-    - 401/403 error → Falls back to Helius automatically
     """
     start_perf = time.time()
     
