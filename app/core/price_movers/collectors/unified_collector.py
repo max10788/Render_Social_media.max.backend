@@ -86,21 +86,21 @@ class UnifiedCollector:
         2. BIRDEYE (wenn nicht suspended)
         3. SOLANADEX (Bitquery)
         4. HELIUS (als letzter Fallback für OHLCV)
-
+    
         Priorität für Trades (in _fetch_from_dex):
         1. HELIUS (wenn verfügbar)
         2. SOLANADEX (wenn Helius als Fallback gesetzt)
-        3. (anderer Collector)
         """
         
         # 1. Dexscreener (immer verfügbar, keine Auth)
+        # NUR FÜR OHLCV, NICHT FÜR TRADES!
         try:
             self.dexscreener_collector = DexscreenerCollector()
             logger.info("✅ Dexscreener Collector initialized (OHLCV only)")
         except Exception as e:
             logger.error(f"❌ Dexscreener Collector failed: {e}")
             self.dexscreener_collector = None
-
+    
         # 2. Birdeye
         birdeye_key = api_keys.get('birdeye')
         if birdeye_key:
@@ -109,22 +109,8 @@ class UnifiedCollector:
                     api_key=birdeye_key,
                     config={'max_requests_per_minute': 100}
                 )
-                # Führe einen schnellen Health Check durch, um Suspended zu erkennen
-                import asyncio
-                try:
-                    # Dies ist eine vereinfachte Prüfung, da sync/async komplex ist.
-                    # In der Praxis würde man den Health-Check asynchron machen.
-                    # Hier: Versuche einen einfachen Aufruf innerhalb einer temporären Loop.
-                    async def check():
-                        return await self.birdeye_collector.health_check()
-                    # Achtung: asyncio.run() funktioniert nur, wenn keine Loop läuft.
-                    # In FastAPI-Umgebung läuft eine Loop -> das schlägt fehl.
-                    # Also: Setze birdeye_healthy = True und handle Fehler in fetch_candle_data
-                    self.birdeye_healthy_at_init = True
-                    logger.info("✅ Birdeye Collector initialized (Solana OHLCV)")
-                except:
-                    self.birdeye_healthy_at_init = False
-                    logger.warning("⚠️ Birdeye Collector failed initial health check.")
+                self.birdeye_healthy_at_init = True
+                logger.info("✅ Birdeye Collector initialized (Solana OHLCV)")
             except Exception as e:
                 logger.error(f"❌ Birdeye Collector failed init: {e}")
                 self.birdeye_collector = None
@@ -132,7 +118,7 @@ class UnifiedCollector:
         else:
             self.birdeye_healthy_at_init = False
             logger.info("ℹ️ Birdeye API Key not provided.")
-
+    
         # 3. Helius
         helius_key = api_keys.get('helius')
         if helius_key:
@@ -150,14 +136,14 @@ class UnifiedCollector:
             except Exception as e:
                 logger.error(f"❌ Helius Collector failed: {e}")
                 self.helius_collector = None
-
+    
         # 4. Bitquery (SolanaDexCollector)
         bitquery_key = api_keys.get('bitquery')
         if bitquery_key or os.getenv("BITQUERY_API_KEY"):
             try:
                 solana_config = {
-                    'bitquery_api_key': bitquery_key,
-                    'helius_collector_instance': self.helius_collector # Als Fallback für Trades mit Wallets
+                    'bitquery_api_key': bitquery_key or os.getenv("BITQUERY_API_KEY"),
+                    'helius_collector_instance': self.helius_collector
                 }
                 self.solana_dex_collector = SolanaDexCollector(config=solana_config)
                 logger.info("✅ SolanaDexCollector (Bitquery) initialized")
@@ -166,28 +152,25 @@ class UnifiedCollector:
                 self.solana_dex_collector = None
         else:
             logger.info("ℹ️ Bitquery API Key not provided.")
-
-        # --- DEX Zuweisung Logik für Trades (unverändert oder leicht angepasst) ---
-        # Wähle den besten Collector für *Trades* (mit oder ohne Wallet-IDs)
-        # Priorität: Helius > SolanaDex (wenn Helius als Fallback)
+    
+        # --- DEX Trade Collectors Zuweisung ---
+        # WICHTIG: Nur Helius und SolanaDex können Trades liefern!
+        # Dexscreener und Birdeye sind NUR für OHLCV!
+        
         primary_trade_collector = self.helius_collector or self.solana_dex_collector
-
+    
         if primary_trade_collector:
+            # Weise den Trade-Collector allen DEX-Exchanges zu
             for dex in [SupportedDEX.JUPITER, SupportedDEX.RAYDIUM, SupportedDEX.ORCA]:
                 self.dex_collectors[dex.value] = primary_trade_collector
-            logger.info(f"✅ DEX Trade Collectors set to: {primary_trade_collector.__class__.__name__}")
+            
+            logger.info(
+                f"✅ DEX Trade Collectors set to: {primary_trade_collector.__class__.__name__}"
+            )
         else:
             logger.warning("⚠️ No DEX Trade Collectors available!")
-            # Hier könnten auch andere Collector-Typen berücksichtigt werden.
-
-        if primary_dex_collector:
-            for dex in [SupportedDEX.JUPITER, SupportedDEX.RAYDIUM, SupportedDEX.ORCA]:
-                self.dex_collectors[dex.value] = primary_dex_collector
-            logger.info(f"✅ DEX Collectors set to: {primary_dex_collector.__class__.__name__}")
-        else:
-            logger.warning("⚠️ No DEX API Keys - DEX functionality disabled!")
-            logger.info("💡 Set BIRDEYE_API_KEY, HELIUS_API_KEY, or BITQUERY_API_KEY for DEX data")
-
+            logger.info("💡 Set HELIUS_API_KEY or BITQUERY_API_KEY for DEX trade data")
+        
     async def fetch_trades(
         self,
         exchange: str,
