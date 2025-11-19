@@ -115,7 +115,54 @@ async def get_dex_chart_candles(
         data_source = "unknown"
         warning = None
         
-        # ==================== STRATEGY 1: Try Birdeye ====================
+        # ==================== STRATEGY 1: Try Dexscreener (FREE!) ====================
+        
+        if unified_collector.dexscreener_collector:
+            try:
+                logger.info("🎯 Trying Dexscreener OHLCV (FREE!)...")
+                
+                # Dexscreener doesn't have batch endpoint, so we need to iterate
+                timeframe_seconds = {
+                    '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
+                    '1h': 3600, '4h': 14400, '1d': 86400,
+                }.get(str(timeframe.value), 300)
+                
+                current_time = start_time
+                dexscreener_candles = []
+                
+                while current_time < end_time and len(dexscreener_candles) < 100:
+                    try:
+                        candle = await unified_collector.dexscreener_collector.fetch_candle_data(
+                            symbol=symbol,
+                            timeframe=str(timeframe.value),
+                            timestamp=current_time
+                        )
+                        
+                        # Check if valid data
+                        if candle and candle.get('open', 0) > 0:
+                            dexscreener_candles.append(candle)
+                        
+                        current_time = current_time + timedelta(seconds=timeframe_seconds)
+                        
+                        # Rate limit: small delay
+                        if len(dexscreener_candles) % 5 == 0:
+                            await asyncio.sleep(0.1)
+                            
+                    except Exception as e:
+                        logger.debug(f"Dexscreener single candle failed: {e}")
+                        current_time = current_time + timedelta(seconds=timeframe_seconds)
+                        continue
+                
+                if dexscreener_candles:
+                    candles_data = dexscreener_candles
+                    data_source = "dexscreener"
+                    logger.info(f"✅ Dexscreener: {len(candles_data)} candles (FREE!)")
+                    
+            except Exception as e:
+                error_str = str(e).lower()
+                logger.warning(f"⚠️ Dexscreener failed: {e}")
+        
+        # ==================== STRATEGY 2: Try Birdeye ====================
         
         if unified_collector.birdeye_collector:
             try:
@@ -381,7 +428,7 @@ async def fetch_candle_with_fallback(
     timestamp: datetime
 ) -> tuple[Optional[Dict], str]:
     """
-    Fetch candle data with Birdeye -> Helius fallback
+    Fetch candle data with Dexscreener -> Birdeye -> Helius fallback
     
     Returns:
         (candle_data, source) - candle dict and source name
@@ -393,7 +440,37 @@ async def fetch_candle_with_fallback(
     else:
         token_for_chart = base_token.upper()
     
-    # Try Birdeye first
+    # Try Dexscreener first (FREE!)
+    if unified_collector.dexscreener_collector:
+        try:
+            logger.debug("🎯 Trying Dexscreener for candle (FREE!)...")
+            candle = await unified_collector.dexscreener_collector.fetch_candle_data(
+                symbol=symbol,
+                timeframe=str(timeframe.value),
+                timestamp=timestamp
+            )
+            
+            # Check if we got valid data (not empty candle)
+            if candle and candle.get('open', 0) > 0:
+                open_price = float(candle.get('open', 0))
+                close_price = float(candle.get('close', 0))
+                price_change_pct = ((close_price - open_price) / open_price * 100) if open_price > 0 else 0.0
+                
+                return {
+                    'timestamp': candle.get('timestamp', timestamp),
+                    'open': open_price,
+                    'high': float(candle.get('high', 0)),
+                    'low': float(candle.get('low', 0)),
+                    'close': close_price,
+                    'volume': float(candle.get('volume', 0)),
+                    'price_change_pct': price_change_pct
+                }, "dexscreener"
+            else:
+                logger.debug("Dexscreener returned empty candle, trying next source...")
+        except Exception as e:
+            logger.warning(f"Dexscreener candle fetch failed: {e}")
+    
+    # Try Birdeye second
     if unified_collector.birdeye_collector:
         try:
             logger.debug("Trying Birdeye for candle...")
