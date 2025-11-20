@@ -22,6 +22,7 @@ from app.core.price_movers.api.dependencies import (
     get_unified_collector,
     log_request,
 )
+from app.core.price_movers.utils.constants import DEX_CONFIGS
 
 # Import validator if it exists
 try:
@@ -343,6 +344,13 @@ async def get_dex_chart_candles(
                 try:
                     logger.info("🔄 Helius fallback - aggregating trades into candles...")
                     
+                    # Verify Helius is properly configured for this DEX
+                    dex_config = DEX_CONFIGS.get(dex_exchange.lower(), {})
+                    blockchain = dex_config.get('blockchain', 'solana')
+                    
+                    if str(blockchain) != 'solana' and not hasattr(blockchain, 'value'):
+                        logger.warning(f"Helius may not support blockchain: {blockchain}")
+                    
                     timeframe_seconds = {
                         '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
                         '1h': 3600, '4h': 14400, '1d': 86400,
@@ -351,26 +359,30 @@ async def get_dex_chart_candles(
                     total_seconds = (end_time - start_time).total_seconds()
                     num_candles = min(int(total_seconds / timeframe_seconds), 100)  # Limit to 100 for performance
                     
-                    logger.info(f"📊 Aggregating {num_candles} candles from trades...")
+                    logger.info(f"📊 Aggregating {num_candles} candles from trades (symbol={symbol}, dex={dex_exchange})...")
                     
                     # Parallel processing for faster aggregation
-                    async def fetch_single_candle(candle_start: datetime) -> Optional[Dict]:
+                    async def fetch_single_candle(candle_start: datetime, candle_index: int) -> Optional[Dict]:
                         candle_end = candle_start + timedelta(seconds=timeframe_seconds)
                         try:
-                            trades_result = await unified_collector.helius_collector.fetch_dex_trades(
+                            # Use fetch_trades instead of fetch_dex_trades
+                            trades_result = await unified_collector.fetch_trades(
+                                exchange=dex_exchange.lower(),
                                 symbol=symbol,
                                 start_time=candle_start,
                                 end_time=candle_end,
                                 limit=100
                             )
                             
-                            trades = trades_result if isinstance(trades_result, list) else []
+                            # Extract trades from result
+                            trades = trades_result.get('trades', []) if isinstance(trades_result, dict) else trades_result
                             
                             if trades:
                                 prices = [t.get('price', 0) for t in trades if t.get('price')]
                                 volumes = [t.get('value_usd', 0) for t in trades if t.get('value_usd')]
                                 
                                 if prices:
+                                    logger.debug(f"Candle {candle_index}: {len(trades)} trades, price range {min(prices):.2f}-{max(prices):.2f}")
                                     return {
                                         'timestamp': candle_start,
                                         'open': prices[0],
@@ -379,37 +391,53 @@ async def get_dex_chart_candles(
                                         'close': prices[-1],
                                         'volume': sum(volumes) if volumes else 0,
                                     }
+                                else:
+                                    logger.debug(f"Candle {candle_index}: No valid prices in {len(trades)} trades")
+                            else:
+                                logger.debug(f"Candle {candle_index}: No trades found")
                         except Exception as e:
-                            logger.debug(f"Candle fetch error @ {candle_start}: {e}")
+                            logger.warning(f"Candle {candle_index} fetch error @ {candle_start.strftime('%Y-%m-%d %H:%M')}: {e}")
                         return None
                     
                     # Fetch candles in parallel batches of 5
                     batch_size = 5
+                    successful_candles = 0
+                    failed_candles = 0
+                    
                     for batch_start in range(0, num_candles, batch_size):
                         batch_end = min(batch_start + batch_size, num_candles)
                         tasks = []
                         
                         for i in range(batch_start, batch_end):
                             candle_time = start_time + timedelta(seconds=i * timeframe_seconds)
-                            tasks.append(fetch_single_candle(candle_time))
+                            tasks.append(fetch_single_candle(candle_time, i + 1))
                         
+                        logger.info(f"Fetching batch {batch_start//batch_size + 1}/{(num_candles-1)//batch_size + 1} ({batch_end - batch_start} candles)...")
                         results = await asyncio.gather(*tasks, return_exceptions=True)
                         
                         for result in results:
                             if isinstance(result, dict) and result:
                                 candles_data.append(result)
+                                successful_candles += 1
+                            else:
+                                failed_candles += 1
+                        
+                        logger.info(f"Batch result: {len([r for r in results if isinstance(r, dict)])} successful, {len([r for r in results if not isinstance(r, dict) or not r])} failed")
                         
                         # Rate limiting between batches
                         if batch_end < num_candles:
-                            await asyncio.sleep(0.2)
-                        
-                        logger.debug(f"Batch {batch_start//batch_size + 1}/{(num_candles-1)//batch_size + 1}: {len([r for r in results if isinstance(r, dict)])} candles")
+                            await asyncio.sleep(0.3)
+                    
+                    logger.info(f"Helius aggregation complete: {successful_candles} successful, {failed_candles} failed")
                     
                     if candles_data:
                         data_source = "helius"
                         data_quality = "aggregated"
                         logger.info(f"✅ Helius: {len(candles_data)} candles from trade aggregation")
                         warning = f"Data aggregated from {len(candles_data)} trade periods (Helius)"
+                    else:
+                        logger.warning(f"❌ Helius: No candles aggregated from {num_candles} attempts")
+                        logger.info("Possible reasons: No trades in time range, API rate limits, or incorrect symbol format")
                         
                 except Exception as e:
                     logger.error(f"❌ Helius aggregation failed: {e}")
