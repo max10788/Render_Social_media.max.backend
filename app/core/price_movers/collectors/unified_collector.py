@@ -314,12 +314,22 @@ class UnifiedCollector:
         timestamp: datetime
     ) -> Dict[str, Any]:
         """
-        Fetcht Candle-Daten mit neuer Priorität.
-        Priorität: Dexscreener > Birdeye (wenn healthy) > SolanaDex (Bitquery) > Helius
+        Fetcht Candle-Daten mit Multi-Chain Support
+        
+        Priorität für Solana:
+        1. Dexscreener (current only)
+        2. Moralis (historical)
+        3. Birdeye (wenn healthy)
+        4. SolanaDex (Bitquery)
+        5. Helius (last resort)
+        
+        Priorität für Ethereum:
+        1. Moralis (primary)
+        2. (weitere Quellen können hier hinzugefügt werden)
         """
         exchange = exchange.lower()
-
-        # CEX: Direct routing (unverändert)
+    
+        # CEX: Direct routing
         if exchange in self.cex_collectors:
             collector = self.cex_collectors[exchange]
             return await collector.fetch_candle_data(
@@ -327,58 +337,142 @@ class UnifiedCollector:
                 timeframe=timeframe,
                 timestamp=timestamp
             )
-
-        # DEX: Neue Prioritäts-Logik
-        elif exchange in self.dex_collectors: # DEX-Collector ist hier für Trades, aber wir nutzen die Liste zur Validierung
-            # 1. Versuche Dexscreener (kostenlos)
-            if self.dexscreener_collector:
-                logger.info("📊 Using Dexscreener for OHLCV (free!)")
-                try:
-                    return await self.dexscreener_collector.fetch_candle_data(
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        timestamp=timestamp
-                    )
-                except Exception as e:
-                    logger.warning(f"Dexscreener OHLCV failed: {e}")
-
-            # 2. Versuche Birdeye, wenn vorhanden und gesund
-            if self.birdeye_collector and getattr(self, 'birdeye_healthy_at_init', True): # Berücksichtige init-Status
-                logger.info("📊 Using Birdeye for OHLCV (faster, if working!)")
-                try:
-                    return await self.birdeye_collector.fetch_candle_data(
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        timestamp=timestamp
-                    )
-                except Exception as e:
-                    logger.warning(f"Birdeye OHLCV failed: {e}. This might indicate a suspended key.")
-
-            # 3. Versuche SolanaDex (Bitquery)
-            if self.solana_dex_collector:
-                logger.info("📊 Using SolanaDexCollector (Bitquery) for OHLCV (fallback).")
-                try:
-                    return await self.solana_dex_collector.fetch_candle_data(
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        timestamp=timestamp
-                    )
-                except Exception as e:
-                    logger.warning(f"SolanaDex (Bitquery) OHLCV failed: {e}")
-
-            # 4. Fallback zu Helius (wenn es OHLCV kann)
-            if self.helius_collector:
-                logger.info("📊 Using Helius for OHLCV (last resort).")
-                try:
-                    return await self.helius_collector.fetch_candle_data(
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        timestamp=timestamp
-                    )
-                except Exception as e:
-                    logger.warning(f"Helius OHLCV failed: {e}")
-
-            # Wenn alle fehlschlagen
+    
+        # DEX: Multi-Chain Routing
+        elif exchange in self.dex_collectors or exchange in ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap']:
+            
+            # Detect blockchain from DEX name
+            solana_dexes = ['jupiter', 'raydium', 'orca']
+            ethereum_dexes = ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap']
+            
+            if exchange in solana_dexes:
+                blockchain = 'solana'
+            elif exchange in ethereum_dexes:
+                blockchain = 'ethereum'
+            else:
+                # Default fallback
+                blockchain = 'solana'
+                logger.warning(f"Unknown DEX '{exchange}', defaulting to Solana")
+            
+            logger.info(f"🔍 Fetching {symbol} from {exchange} on {blockchain}")
+            
+            # Calculate time range
+            now = datetime.now(timezone.utc)
+            time_diff = (now - timestamp).total_seconds() / 3600
+            is_recent = time_diff < 1  # Within last hour
+            
+            # ============ SOLANA CHAIN ============
+            if blockchain == 'solana':
+                
+                # 1. Try Dexscreener for current data
+                if is_recent and self.dexscreener_collector:
+                    logger.info("🎯 Strategy: Dexscreener (Solana, current)")
+                    try:
+                        candle = await self.dexscreener_collector.fetch_candle_data(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            timestamp=timestamp
+                        )
+                        
+                        if candle and candle.get('open', 0) > 0:
+                            logger.info("✅ Dexscreener: Got current candle")
+                            return candle
+                    except Exception as e:
+                        logger.debug(f"Dexscreener failed: {e}")
+                
+                # 2. Try Moralis for historical Solana data
+                if self.moralis_collector:
+                    logger.info("🎯 Strategy: Moralis (Solana, historical)")
+                    try:
+                        candle = await self.moralis_collector.fetch_candle_data(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            timestamp=timestamp,
+                            blockchain='solana',
+                            dex_exchange=exchange
+                        )
+                        
+                        if candle and candle.get('open', 0) > 0:
+                            logger.info("✅ Moralis: Got Solana candle")
+                            return candle
+                    except Exception as e:
+                        logger.warning(f"Moralis Solana failed: {e}")
+                
+                # 3. Try Birdeye
+                if self.birdeye_collector and getattr(self, 'birdeye_healthy_at_init', True):
+                    logger.info("🎯 Strategy: Birdeye (Solana)")
+                    try:
+                        candle = await self.birdeye_collector.fetch_candle_data(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            timestamp=timestamp
+                        )
+                        
+                        if candle and candle.get('open', 0) > 0:
+                            logger.info("✅ Birdeye: Got Solana candle")
+                            return candle
+                    except Exception as e:
+                        logger.warning(f"Birdeye failed: {e}")
+                
+                # 4. Try SolanaDex (Bitquery)
+                if self.solana_dex_collector:
+                    logger.info("🎯 Strategy: SolanaDex/Bitquery")
+                    try:
+                        candle = await self.solana_dex_collector.fetch_candle_data(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            timestamp=timestamp
+                        )
+                        
+                        if candle and candle.get('open', 0) > 0:
+                            logger.info("✅ SolanaDex: Got candle")
+                            return candle
+                    except Exception as e:
+                        logger.warning(f"SolanaDex failed: {e}")
+                
+                # 5. Last resort: Helius
+                if self.helius_collector:
+                    logger.info("🎯 Strategy: Helius (last resort)")
+                    try:
+                        candle = await self.helius_collector.fetch_candle_data(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            timestamp=timestamp
+                        )
+                        
+                        if candle and candle.get('open', 0) > 0:
+                            logger.info("✅ Helius: Got candle")
+                            return candle
+                    except Exception as e:
+                        logger.warning(f"Helius failed: {e}")
+            
+            # ============ ETHEREUM CHAIN ============
+            elif blockchain == 'ethereum':
+                
+                # 1. Try Moralis (primary for Ethereum)
+                if self.moralis_collector:
+                    logger.info("🎯 Strategy: Moralis (Ethereum)")
+                    try:
+                        candle = await self.moralis_collector.fetch_candle_data(
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            timestamp=timestamp,
+                            blockchain='ethereum',
+                            dex_exchange=exchange
+                        )
+                        
+                        if candle and candle.get('open', 0) > 0:
+                            logger.info("✅ Moralis: Got Ethereum candle")
+                            return candle
+                    except Exception as e:
+                        logger.warning(f"Moralis Ethereum failed: {e}")
+                
+                # TODO: Add more Ethereum data sources here
+                # - The Graph
+                # - Dune Analytics
+                # - CoinGecko
+            
+            # No data from any source
             logger.error(f"All OHLCV collectors failed for {exchange} {symbol} {timeframe} @ {timestamp}")
             return {
                 'timestamp': timestamp,
@@ -390,7 +484,7 @@ class UnifiedCollector:
                 'volume_usd': 0.0,
                 'trade_count': 0
             }
-
+        
         else:
             raise ValueError(f"Exchange '{exchange}' nicht verfügbar")
     
