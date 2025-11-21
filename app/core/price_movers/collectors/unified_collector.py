@@ -100,6 +100,29 @@ class UnifiedCollector:
         except Exception as e:
             logger.error(f"❌ Dexscreener Collector failed: {e}")
             self.dexscreener_collector = None
+            
+        # 1.5 Moralis (zwischen Dexscreener und Birdeye)
+        moralis_keys = [
+            api_keys.get('moralis'),
+            api_keys.get('moralis_fallback'),
+            api_keys.get('moralis_fallback2')
+        ]
+        moralis_keys = [k for k in moralis_keys if k]  # Remove None
+        
+        if moralis_keys:
+            try:
+                from .moralis_collector import MoralisCollector
+                self.moralis_collector = MoralisCollector(
+                    api_keys=moralis_keys,
+                    config={'max_requests_per_minute': 100}
+                )
+                logger.info(f"✅ Moralis Collector initialized with {len(moralis_keys)} keys")
+            except Exception as e:
+                logger.error(f"❌ Moralis Collector failed: {e}")
+                self.moralis_collector = None
+        else:
+            self.moralis_collector = None
+            logger.info("ℹ️ Moralis API Keys not provided")
     
         # 2. Birdeye
         birdeye_key = api_keys.get('birdeye')
