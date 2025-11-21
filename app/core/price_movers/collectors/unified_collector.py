@@ -80,28 +80,29 @@ class UnifiedCollector:
 
     def _init_dex_collectors(self, api_keys: Dict[str, str]):
         """
-        Initialisiert DEX Collectors
-        Priorität für OHLCV (in fetch_candle_data):
-        1. DEXSCREENER (kostenlos, begrenzte Timeframes)
-        2. BIRDEYE (wenn nicht suspended)
-        3. SOLANADEX (Bitquery)
-        4. HELIUS (als letzter Fallback für OHLCV)
-    
-        Priorität für Trades (in _fetch_from_dex):
-        1. HELIUS (wenn verfügbar)
-        2. SOLANADEX (wenn Helius als Fallback gesetzt)
+        Initialisiert DEX Collectors mit ETH + Solana Support
+        
+        Priorität für OHLCV:
+        1. DEXSCREENER (kostenlos, current only)
+        2. MORALIS (Solana + Ethereum, historisch!)
+        3. BIRDEYE (Solana only, wenn nicht suspended)
+        4. SOLANADEX (Bitquery)
+        5. HELIUS (Solana fallback)
+        
+        Priorität für Trades:
+        1. HELIUS (Solana)
+        2. SOLANADEX (Bitquery Solana)
         """
         
-        # 1. Dexscreener (immer verfügbar, keine Auth)
-        # NUR FÜR OHLCV, NICHT FÜR TRADES!
+        # 1. Dexscreener (OHLCV only, no trades)
         try:
             self.dexscreener_collector = DexscreenerCollector()
             logger.info("✅ Dexscreener Collector initialized (OHLCV only)")
         except Exception as e:
             logger.error(f"❌ Dexscreener Collector failed: {e}")
             self.dexscreener_collector = None
-            
-        # 1.5 Moralis (zwischen Dexscreener und Birdeye)
+        
+        # 2. Moralis (OHLCV for Solana + Ethereum!)
         moralis_keys = [
             api_keys.get('moralis'),
             api_keys.get('moralis_fallback'),
@@ -116,15 +117,15 @@ class UnifiedCollector:
                     api_keys=moralis_keys,
                     config={'max_requests_per_minute': 100}
                 )
-                logger.info(f"✅ Moralis Collector initialized with {len(moralis_keys)} keys")
+                logger.info(f"✅ Moralis Collector initialized with {len(moralis_keys)} keys (Solana + Ethereum)")
             except Exception as e:
                 logger.error(f"❌ Moralis Collector failed: {e}")
                 self.moralis_collector = None
         else:
             self.moralis_collector = None
             logger.info("ℹ️ Moralis API Keys not provided")
-    
-        # 2. Birdeye
+        
+        # 3. Birdeye (Solana OHLCV only)
         birdeye_key = api_keys.get('birdeye')
         if birdeye_key:
             try:
@@ -140,27 +141,29 @@ class UnifiedCollector:
                 self.birdeye_healthy_at_init = False
         else:
             self.birdeye_healthy_at_init = False
-            logger.info("ℹ️ Birdeye API Key not provided.")
-    
-        # 3. Helius
+            logger.info("ℹ️ Birdeye API Key not provided")
+        
+        # 4. Helius (Solana Trades + OHLCV fallback)
         helius_key = api_keys.get('helius')
         if helius_key:
             try:
                 from .helius_collector import create_helius_collector
                 self.helius_collector = create_helius_collector(
                     api_key=helius_key,
-                    birdeye_collector=self.birdeye_collector,  # Fallback!
+                    birdeye_collector=self.birdeye_collector,
                     config={
                         'max_requests_per_second': 5,
                         'cache_ttl_seconds': 300,
                     }
                 )
-                logger.info("✅ Helius Collector initialized (with Birdeye fallback)")
+                logger.info("✅ Helius Collector initialized (Solana Trades + OHLCV)")
             except Exception as e:
                 logger.error(f"❌ Helius Collector failed: {e}")
                 self.helius_collector = None
-    
-        # 4. Bitquery (SolanaDexCollector)
+        else:
+            self.helius_collector = None
+        
+        # 5. Bitquery (SolanaDexCollector for Solana)
         bitquery_key = api_keys.get('bitquery')
         if bitquery_key or os.getenv("BITQUERY_API_KEY"):
             try:
@@ -174,25 +177,28 @@ class UnifiedCollector:
                 logger.error(f"❌ SolanaDexCollector (Bitquery) failed: {e}")
                 self.solana_dex_collector = None
         else:
-            logger.info("ℹ️ Bitquery API Key not provided.")
-    
-        # --- DEX Trade Collectors Zuweisung ---
-        # WICHTIG: Nur Helius und SolanaDex können Trades liefern!
-        # Dexscreener und Birdeye sind NUR für OHLCV!
+            self.solana_dex_collector = None
+            logger.info("ℹ️ Bitquery API Key not provided")
         
+        # --- Assign Trade Collectors to DEX Exchanges ---
         primary_trade_collector = self.helius_collector or self.solana_dex_collector
-    
+        
         if primary_trade_collector:
-            # Weise den Trade-Collector allen DEX-Exchanges zu
+            # Solana DEXes
             for dex in [SupportedDEX.JUPITER, SupportedDEX.RAYDIUM, SupportedDEX.ORCA]:
                 self.dex_collectors[dex.value] = primary_trade_collector
             
             logger.info(
-                f"✅ DEX Trade Collectors set to: {primary_trade_collector.__class__.__name__}"
+                f"✅ Solana DEX Trade Collectors set to: {primary_trade_collector.__class__.__name__}"
             )
         else:
-            logger.warning("⚠️ No DEX Trade Collectors available!")
-            logger.info("💡 Set HELIUS_API_KEY or BITQUERY_API_KEY for DEX trade data")
+            logger.warning("⚠️ No Solana Trade Collectors available!")
+        
+        # Ethereum DEXes (Moralis for OHLCV, no trades yet)
+        if self.moralis_collector:
+            # For now, we only have OHLCV for Ethereum via Moralis
+            # Trades would need separate implementation
+            logger.info("✅ Ethereum OHLCV available via Moralis (trades not implemented yet)")
         
     async def fetch_trades(
         self,
