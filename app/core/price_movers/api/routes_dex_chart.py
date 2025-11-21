@@ -1,6 +1,7 @@
 """
-DEX Chart Routes - COMPLETE FIXED VERSION
-With intelligent Dexscreener usage and proper fallback strategy
+DEX Chart Routes - COMPLETE VERSION WITH MORALIS
+Multi-Chain Support: Solana + Ethereum
+Smart Fallback: Dexscreener → Moralis → Birdeye → Helius → Mock
 """
 
 import os
@@ -22,7 +23,6 @@ from app.core.price_movers.api.dependencies import (
     get_unified_collector,
     log_request,
 )
-from app.core.price_movers.utils.constants import DEX_CONFIGS
 
 # Import validator if it exists
 try:
@@ -77,6 +77,22 @@ class DEXCandleMoversResponse(BaseModel):
 
 # ==================== Helper Functions ====================
 
+def detect_blockchain(dex_exchange: str) -> str:
+    """Detect blockchain from DEX name"""
+    solana_dexes = ['jupiter', 'raydium', 'orca']
+    ethereum_dexes = ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap']
+    
+    dex_lower = dex_exchange.lower()
+    
+    if dex_lower in solana_dexes:
+        return 'solana'
+    elif dex_lower in ethereum_dexes:
+        return 'ethereum'
+    else:
+        logger.warning(f"Unknown DEX '{dex_exchange}', defaulting to solana")
+        return 'solana'
+
+
 async def fetch_candle_with_fallback(
     unified_collector,
     dex_exchange: str,
@@ -85,11 +101,20 @@ async def fetch_candle_with_fallback(
     timestamp: datetime
 ) -> tuple[Optional[Dict], str]:
     """
-    Fetch candle data with Dexscreener -> Birdeye -> Helius fallback
+    Fetch candle data with smart fallback chain
+    
+    Priority:
+    1. Dexscreener (current only, FREE)
+    2. Moralis (historical, Solana + Ethereum)
+    3. Birdeye (Solana only, if not suspended)
+    4. Helius (Solana fallback)
     
     Returns:
         (candle_data, source) - candle dict and source name
     """
+    # Detect blockchain
+    blockchain = detect_blockchain(dex_exchange)
+    
     # Parse symbol
     base_token, quote_token = symbol.split('/')
     if base_token.upper() == 'SOL':
@@ -97,17 +122,16 @@ async def fetch_candle_with_fallback(
     else:
         token_for_chart = base_token.upper()
     
-    # Try Dexscreener first (FREE!)
-    if unified_collector.dexscreener_collector:
+    # 1. Try Dexscreener (FREE! Current data only)
+    if unified_collector.dexscreener_collector and blockchain == 'solana':
         try:
-            logger.debug("🎯 Trying Dexscreener for candle (FREE!)...")
+            logger.debug("🎯 Trying Dexscreener for candle (FREE, current)...")
             candle = await unified_collector.dexscreener_collector.fetch_candle_data(
                 symbol=symbol,
                 timeframe=str(timeframe.value),
                 timestamp=timestamp
             )
             
-            # Check if we got valid data (not empty candle)
             if candle and candle.get('open', 0) > 0:
                 open_price = float(candle.get('open', 0))
                 close_price = float(candle.get('close', 0))
@@ -124,12 +148,42 @@ async def fetch_candle_with_fallback(
                     'source': 'dexscreener'
                 }, "dexscreener"
         except Exception as e:
-            logger.debug(f"Dexscreener candle fetch failed: {e}")
+            logger.debug(f"Dexscreener failed: {e}")
     
-    # Try Birdeye second
-    if unified_collector.birdeye_collector:
+    # 2. Try Moralis (Historical, Multi-Chain!)
+    if unified_collector.moralis_collector:
         try:
-            logger.debug("Trying Birdeye for candle...")
+            logger.debug(f"🎯 Trying Moralis for candle ({blockchain})...")
+            candle = await unified_collector.moralis_collector.fetch_candle_data(
+                symbol=symbol,
+                timeframe=str(timeframe.value),
+                timestamp=timestamp,
+                blockchain=blockchain,
+                dex_exchange=dex_exchange
+            )
+            
+            if candle and candle.get('open', 0) > 0:
+                open_price = float(candle.get('open', 0))
+                close_price = float(candle.get('close', 0))
+                price_change_pct = ((close_price - open_price) / open_price * 100) if open_price > 0 else 0.0
+                
+                return {
+                    'timestamp': candle.get('timestamp', timestamp),
+                    'open': open_price,
+                    'high': float(candle.get('high', 0)),
+                    'low': float(candle.get('low', 0)),
+                    'close': close_price,
+                    'volume': float(candle.get('volume', 0)),
+                    'price_change_pct': price_change_pct,
+                    'source': f'moralis_{blockchain}'
+                }, f"moralis_{blockchain}"
+        except Exception as e:
+            logger.warning(f"Moralis {blockchain} failed: {e}")
+    
+    # 3. Try Birdeye (Solana only)
+    if blockchain == 'solana' and unified_collector.birdeye_collector:
+        try:
+            logger.debug("🎯 Trying Birdeye for candle (Solana)...")
             token_address = await unified_collector.birdeye_collector._resolve_symbol_to_address(
                 f"{token_for_chart}/USDC"
             )
@@ -156,15 +210,16 @@ async def fetch_candle_with_fallback(
                         'low': float(candle.get('low', 0)),
                         'close': close_price,
                         'volume': float(candle.get('volume', 0)),
-                        'price_change_pct': price_change_pct
+                        'price_change_pct': price_change_pct,
+                        'source': 'birdeye'
                     }, "birdeye"
         except Exception as e:
-            logger.warning(f"Birdeye candle fetch failed: {e}")
+            logger.warning(f"Birdeye failed: {e}")
     
-    # Fallback to Helius
-    if unified_collector.helius_collector:
+    # 4. Fallback to Helius (Solana only, trade aggregation)
+    if blockchain == 'solana' and unified_collector.helius_collector:
         try:
-            logger.debug("Falling back to Helius for candle...")
+            logger.debug("🎯 Trying Helius fallback (Solana)...")
             
             timeframe_seconds = {
                 '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
@@ -173,14 +228,16 @@ async def fetch_candle_with_fallback(
             
             end_time = timestamp + timedelta(seconds=timeframe_seconds)
             
-            trades_result = await unified_collector.helius_collector.fetch_dex_trades(
+            # Use fetch_trades from unified collector
+            trades_result = await unified_collector.fetch_trades(
+                exchange=dex_exchange.lower(),
                 symbol=symbol,
                 start_time=timestamp,
                 end_time=end_time,
                 limit=100
             )
             
-            trades = trades_result if isinstance(trades_result, list) else []
+            trades = trades_result.get('trades', []) if isinstance(trades_result, dict) else trades_result
             
             if trades:
                 prices = [t.get('price', 0) for t in trades if t.get('price')]
@@ -198,10 +255,11 @@ async def fetch_candle_with_fallback(
                         'low': min(prices),
                         'close': close_price,
                         'volume': sum(volumes) if volumes else 0,
-                        'price_change_pct': price_change_pct
+                        'price_change_pct': price_change_pct,
+                        'source': 'helius'
                     }, "helius"
         except Exception as e:
-            logger.error(f"Helius candle fetch failed: {e}")
+            logger.error(f"Helius failed: {e}")
     
     return None, "none"
 
@@ -212,12 +270,12 @@ async def fetch_candle_with_fallback(
     "/candles",
     response_model=DEXChartCandlesResponse,
     status_code=status.HTTP_200_OK,
-    summary="Get DEX Chart Candles (Fixed & Optimized)",
-    description="Smart fallback: Dexscreener (current only) → Birdeye (historical) → Helius (aggregation) → Mock"
+    summary="Get DEX Chart Candles (Multi-Chain with Moralis)",
+    description="Smart fallback: Dexscreener → Moralis (Solana+ETH) → Birdeye → Helius → Mock"
 )
 async def get_dex_chart_candles(
-    dex_exchange: str = Query(..., description="DEX (jupiter/raydium/orca)"),
-    symbol: str = Query(..., description="Token pair (e.g., SOL/USDC)"),
+    dex_exchange: str = Query(..., description="DEX (jupiter/raydium/orca/uniswap/sushiswap)"),
+    symbol: str = Query(..., description="Token pair (e.g., SOL/USDC, ETH/USDT)"),
     timeframe: TimeframeEnum = Query(..., description="Candle timeframe"),
     start_time: datetime = Query(..., description="Start time"),
     end_time: datetime = Query(..., description="End time"),
@@ -225,19 +283,18 @@ async def get_dex_chart_candles(
     request_id: str = Depends(log_request)
 ) -> DEXChartCandlesResponse:
     """
-    ## 🚀 Fixed DEX Chart with Smart Fallback
+    ## 🚀 Multi-Chain DEX Chart with Moralis Support
     
-    **Strategy:**
-    1. **Dexscreener** - Current price only (FREE, <1h range)
-    2. **Birdeye** - Full historical OHLCV (if available & not suspended)
-    3. **Helius** - Trade aggregation for historical data
-    4. **Mock** - Last resort
+    **Supported Chains:**
+    - Solana: Jupiter, Raydium, Orca
+    - Ethereum: Uniswap, Sushiswap
     
-    **Fixed Issues:**
-    - ✅ Detects when historical data is needed (>1h)
-    - ✅ Skips Dexscreener for multi-candle requests
-    - ✅ Falls back to Helius for historical aggregation
-    - ✅ Parallel processing for faster results
+    **Data Source Priority:**
+    1. **Dexscreener** - Current price (FREE, Solana only)
+    2. **Moralis** - Historical OHLCV (Solana + Ethereum, 3 API keys)
+    3. **Birdeye** - Solana historical (if not suspended)
+    4. **Helius** - Solana trade aggregation
+    5. **Mock** - Last resort
     """
     start_perf = time.time()
     
@@ -251,6 +308,10 @@ async def get_dex_chart_candles(
         
         unified_collector = await get_unified_collector()
         
+        # Detect blockchain
+        blockchain = detect_blockchain(dex_exchange)
+        logger.info(f"🌐 Detected blockchain: {blockchain}")
+        
         # Parse symbol
         base_token, quote_token = symbol.split('/')
         
@@ -258,6 +319,9 @@ async def get_dex_chart_candles(
         if base_token.upper() == 'SOL':
             token_for_chart = quote_token.upper()
             logger.info(f"📊 Using {token_for_chart} for chart (not SOL)")
+        elif base_token.upper() == 'ETH' or base_token.upper() == 'WETH':
+            token_for_chart = quote_token.upper()
+            logger.info(f"📊 Using {token_for_chart} for chart (not ETH)")
         else:
             token_for_chart = base_token.upper()
         
@@ -268,16 +332,17 @@ async def get_dex_chart_candles(
         
         # Calculate time range details
         time_range_hours = (end_time - start_time).total_seconds() / 3600
-        is_recent_data = (datetime.now(timezone.utc) - end_time).total_seconds() < 3600  # Within last hour
+        is_recent_data = (datetime.now(timezone.utc) - end_time).total_seconds() < 3600
         
         logger.info(f"📅 Time range: {time_range_hours:.1f}h, Recent: {is_recent_data}")
         
         # ==================== SMART SOURCE SELECTION ====================
         
-        # For CURRENT data ONLY (single candle, <1h range): Try Dexscreener
-        if is_recent_data and time_range_hours <= 1 and unified_collector.dexscreener_collector:
+        # Strategy 1: Try Dexscreener for current Solana data (<1h, recent)
+        if (is_recent_data and time_range_hours <= 1 and 
+            blockchain == 'solana' and unified_collector.dexscreener_collector):
             try:
-                logger.info("🎯 Strategy: Dexscreener for current price (FREE, single candle)")
+                logger.info("🎯 Strategy: Dexscreener (Solana, current, FREE)")
                 
                 current_candle = await unified_collector.dexscreener_collector.fetch_candle_data(
                     symbol=symbol,
@@ -285,7 +350,6 @@ async def get_dex_chart_candles(
                     timestamp=end_time
                 )
                 
-                # Check if we got valid data
                 if current_candle and current_candle.get('open', 0) > 0:
                     candles_data = [current_candle]
                     data_source = "dexscreener"
@@ -296,153 +360,143 @@ async def get_dex_chart_candles(
                 logger.debug(f"Dexscreener failed: {e}")
         
         elif time_range_hours > 1:
-            logger.info(f"⏭️ Skipping Dexscreener (need {time_range_hours:.1f}h history, it only provides current)")
+            logger.info(f"⏭️ Skipping Dexscreener (need {time_range_hours:.1f}h history)")
         
-        # For HISTORICAL data (>1h range): Try Birdeye first, then Helius
+        # Strategy 2: Try Moralis for historical data (Multi-Chain!)
         needs_historical = not candles_data or time_range_hours > 1
         
-        if needs_historical:
-            logger.info(f"📜 Need historical data ({time_range_hours:.1f}h)")
-            
-            # Try Birdeye for historical OHLCV
-            if unified_collector.birdeye_collector:
-                try:
-                    logger.info("🎯 Trying Birdeye for historical OHLCV...")
+        if needs_historical and unified_collector.moralis_collector:
+            try:
+                logger.info(f"🎯 Strategy: Moralis ({blockchain}, historical)")
+                
+                # Fetch OHLCV batch from Moralis
+                moralis_candles = await unified_collector.moralis_collector.fetch_ohlcv_batch(
+                    symbol=symbol,
+                    timeframe=str(timeframe.value),
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=100,
+                    blockchain=blockchain,
+                    dex_exchange=dex_exchange
+                )
+                
+                if moralis_candles:
+                    candles_data = moralis_candles
+                    data_source = f"moralis_{blockchain}"
+                    data_quality = "historical"
+                    logger.info(f"✅ Moralis: {len(candles_data)} {blockchain} candles")
                     
-                    # Resolve token address
-                    token_address = await unified_collector.birdeye_collector._resolve_symbol_to_address(
-                        f"{token_for_chart}/USDC"
+            except Exception as e:
+                logger.warning(f"⚠️ Moralis {blockchain} failed: {e}")
+        
+        # Strategy 3: Try Birdeye for Solana (if Moralis failed)
+        if not candles_data and blockchain == 'solana' and unified_collector.birdeye_collector:
+            try:
+                logger.info("🎯 Strategy: Birdeye (Solana fallback)")
+                
+                token_address = await unified_collector.birdeye_collector._resolve_symbol_to_address(
+                    f"{token_for_chart}/USDC"
+                )
+                
+                if token_address:
+                    logger.info(f"🔍 Token: {token_address[:8]}...")
+                    
+                    birdeye_candles = await unified_collector.birdeye_collector.fetch_ohlcv_batch(
+                        token_address=token_address,
+                        timeframe=str(timeframe.value),
+                        start_time=start_time,
+                        end_time=end_time,
+                        limit=100
                     )
                     
-                    if token_address:
-                        logger.info(f"🔍 Token: {token_address[:8]}...")
+                    if birdeye_candles:
+                        candles_data = birdeye_candles
+                        data_source = "birdeye"
+                        data_quality = "historical"
+                        logger.info(f"✅ Birdeye: {len(candles_data)} candles")
                         
-                        # Fetch OHLCV batch
-                        birdeye_candles = await unified_collector.birdeye_collector.fetch_ohlcv_batch(
-                            token_address=token_address,
-                            timeframe=str(timeframe.value),
-                            start_time=start_time,
-                            end_time=end_time,
+            except Exception as e:
+                error_str = str(e).lower()
+                logger.warning(f"⚠️ Birdeye failed: {e}")
+                
+                if any(x in error_str for x in ["401", "403", "suspended", "permission"]):
+                    logger.info("🔴 Birdeye suspended/limited")
+        
+        # Strategy 4: Helius trade aggregation (Solana only)
+        if not candles_data and blockchain == 'solana' and unified_collector.helius_collector:
+            try:
+                logger.info("🔄 Strategy: Helius trade aggregation (Solana)")
+                
+                timeframe_seconds = {
+                    '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
+                    '1h': 3600, '4h': 14400, '1d': 86400,
+                }.get(str(timeframe.value), 300)
+                
+                total_seconds = (end_time - start_time).total_seconds()
+                num_candles = min(int(total_seconds / timeframe_seconds), 100)
+                
+                logger.info(f"📊 Aggregating {num_candles} candles from trades...")
+                
+                # Parallel processing
+                async def fetch_single_candle(candle_start: datetime, candle_index: int) -> Optional[Dict]:
+                    candle_end = candle_start + timedelta(seconds=timeframe_seconds)
+                    try:
+                        trades_result = await unified_collector.fetch_trades(
+                            exchange=dex_exchange.lower(),
+                            symbol=symbol,
+                            start_time=candle_start,
+                            end_time=candle_end,
                             limit=100
                         )
                         
-                        if birdeye_candles:
-                            candles_data = birdeye_candles
-                            data_source = "birdeye"
-                            data_quality = "historical"
-                            logger.info(f"✅ Birdeye: {len(candles_data)} historical candles")
+                        trades = trades_result.get('trades', []) if isinstance(trades_result, dict) else trades_result
+                        
+                        if trades:
+                            prices = [t.get('price', 0) for t in trades if t.get('price')]
+                            volumes = [t.get('value_usd', 0) for t in trades if t.get('value_usd')]
                             
-                except Exception as e:
-                    error_str = str(e).lower()
-                    logger.warning(f"⚠️ Birdeye failed: {e}")
+                            if prices:
+                                return {
+                                    'timestamp': candle_start,
+                                    'open': prices[0],
+                                    'high': max(prices),
+                                    'low': min(prices),
+                                    'close': prices[-1],
+                                    'volume': sum(volumes) if volumes else 0,
+                                }
+                    except Exception as e:
+                        logger.debug(f"Candle {candle_index} error: {e}")
+                    return None
+                
+                # Fetch in batches
+                batch_size = 5
+                for batch_start in range(0, num_candles, batch_size):
+                    batch_end = min(batch_start + batch_size, num_candles)
+                    tasks = []
                     
-                    if any(x in error_str for x in ["401", "403", "suspended", "permission"]):
-                        logger.info("🔴 Birdeye suspended/limited - falling back to Helius")
-            
-            # FALLBACK: Helius trade aggregation for historical data
-            if not candles_data and unified_collector.helius_collector:
-                try:
-                    logger.info("🔄 Helius fallback - aggregating trades into candles...")
+                    for i in range(batch_start, batch_end):
+                        candle_time = start_time + timedelta(seconds=i * timeframe_seconds)
+                        tasks.append(fetch_single_candle(candle_time, i + 1))
                     
-                    # Verify Helius is properly configured for this DEX
-                    dex_config = DEX_CONFIGS.get(dex_exchange.lower(), {})
-                    blockchain = dex_config.get('blockchain', 'solana')
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
                     
-                    if str(blockchain) != 'solana' and not hasattr(blockchain, 'value'):
-                        logger.warning(f"Helius may not support blockchain: {blockchain}")
+                    for result in results:
+                        if isinstance(result, dict) and result:
+                            candles_data.append(result)
                     
-                    timeframe_seconds = {
-                        '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
-                        '1h': 3600, '4h': 14400, '1d': 86400,
-                    }.get(str(timeframe.value), 300)
-                    
-                    total_seconds = (end_time - start_time).total_seconds()
-                    num_candles = min(int(total_seconds / timeframe_seconds), 100)  # Limit to 100 for performance
-                    
-                    logger.info(f"📊 Aggregating {num_candles} candles from trades (symbol={symbol}, dex={dex_exchange})...")
-                    
-                    # Parallel processing for faster aggregation
-                    async def fetch_single_candle(candle_start: datetime, candle_index: int) -> Optional[Dict]:
-                        candle_end = candle_start + timedelta(seconds=timeframe_seconds)
-                        try:
-                            # Use fetch_trades instead of fetch_dex_trades
-                            trades_result = await unified_collector.fetch_trades(
-                                exchange=dex_exchange.lower(),
-                                symbol=symbol,
-                                start_time=candle_start,
-                                end_time=candle_end,
-                                limit=100
-                            )
-                            
-                            # Extract trades from result
-                            trades = trades_result.get('trades', []) if isinstance(trades_result, dict) else trades_result
-                            
-                            if trades:
-                                prices = [t.get('price', 0) for t in trades if t.get('price')]
-                                volumes = [t.get('value_usd', 0) for t in trades if t.get('value_usd')]
-                                
-                                if prices:
-                                    logger.debug(f"Candle {candle_index}: {len(trades)} trades, price range {min(prices):.2f}-{max(prices):.2f}")
-                                    return {
-                                        'timestamp': candle_start,
-                                        'open': prices[0],
-                                        'high': max(prices),
-                                        'low': min(prices),
-                                        'close': prices[-1],
-                                        'volume': sum(volumes) if volumes else 0,
-                                    }
-                                else:
-                                    logger.debug(f"Candle {candle_index}: No valid prices in {len(trades)} trades")
-                            else:
-                                logger.debug(f"Candle {candle_index}: No trades found")
-                        except Exception as e:
-                            logger.warning(f"Candle {candle_index} fetch error @ {candle_start.strftime('%Y-%m-%d %H:%M')}: {e}")
-                        return None
-                    
-                    # Fetch candles in parallel batches of 5
-                    batch_size = 5
-                    successful_candles = 0
-                    failed_candles = 0
-                    
-                    for batch_start in range(0, num_candles, batch_size):
-                        batch_end = min(batch_start + batch_size, num_candles)
-                        tasks = []
+                    if batch_end < num_candles:
+                        await asyncio.sleep(0.3)
+                
+                if candles_data:
+                    data_source = "helius"
+                    data_quality = "aggregated"
+                    logger.info(f"✅ Helius: {len(candles_data)} aggregated candles")
+                    warning = f"Data aggregated from {len(candles_data)} trade periods"
                         
-                        for i in range(batch_start, batch_end):
-                            candle_time = start_time + timedelta(seconds=i * timeframe_seconds)
-                            tasks.append(fetch_single_candle(candle_time, i + 1))
-                        
-                        logger.info(f"Fetching batch {batch_start//batch_size + 1}/{(num_candles-1)//batch_size + 1} ({batch_end - batch_start} candles)...")
-                        results = await asyncio.gather(*tasks, return_exceptions=True)
-                        
-                        for result in results:
-                            if isinstance(result, dict) and result:
-                                candles_data.append(result)
-                                successful_candles += 1
-                            else:
-                                failed_candles += 1
-                        
-                        logger.info(f"Batch result: {len([r for r in results if isinstance(r, dict)])} successful, {len([r for r in results if not isinstance(r, dict) or not r])} failed")
-                        
-                        # Rate limiting between batches
-                        if batch_end < num_candles:
-                            await asyncio.sleep(0.3)
-                    
-                    logger.info(f"Helius aggregation complete: {successful_candles} successful, {failed_candles} failed")
-                    
-                    if candles_data:
-                        data_source = "helius"
-                        data_quality = "aggregated"
-                        logger.info(f"✅ Helius: {len(candles_data)} candles from trade aggregation")
-                        warning = f"Data aggregated from {len(candles_data)} trade periods (Helius)"
-                    else:
-                        logger.warning(f"❌ Helius: No candles aggregated from {num_candles} attempts")
-                        logger.info("Possible reasons: No trades in time range, API rate limits, or incorrect symbol format")
-                        
-                except Exception as e:
-                    logger.error(f"❌ Helius aggregation failed: {e}")
+            except Exception as e:
+                logger.error(f"❌ Helius aggregation failed: {e}")
         
-        # LAST RESORT: Mock data
+        # Strategy 5: Mock data (last resort)
         if not candles_data:
             logger.warning("⚠️ All sources failed, generating mock data")
             
@@ -455,10 +509,8 @@ async def get_dex_chart_candles(
             current_time = start_time
             num_candles = min(100, int((end_time - start_time).total_seconds() / timeframe_seconds))
             
-            candles_data = []
             for i in range(num_candles):
                 variation = (i % 10 - 5) * 0.01
-                
                 candle = {
                     'timestamp': current_time,
                     'open': base_price + variation,
@@ -472,18 +524,16 @@ async def get_dex_chart_candles(
             
             data_source = "mock"
             data_quality = "synthetic"
-            warning = "⚠️ MOCK DATA: All data sources failed. Check API keys and connectivity."
+            warning = "⚠️ MOCK DATA: All data sources failed. Enable Moralis API keys for real data."
         
         # ==================== Build Response ====================
         
         chart_candles = []
         for candle in candles_data:
-            # Calculate price_change_pct
             price_change_pct = 0.0
             if candle.get('open') and candle['open'] > 0:
                 price_change_pct = ((candle.get('close', 0) - candle['open']) / candle['open']) * 100
             
-            # Check if data is estimated
             is_estimated = candle.get('source') == 'dexscreener_estimated'
             
             chart_candle = ChartCandleWithImpact(
@@ -502,17 +552,12 @@ async def get_dex_chart_candles(
             )
             chart_candles.append(chart_candle)
         
-        # Get blockchain info
-        from app.core.price_movers.utils.constants import DEX_CONFIGS
-        dex_config = DEX_CONFIGS.get(dex_exchange.lower(), {})
-        blockchain = dex_config.get('blockchain', 'solana')
-        
         performance_ms = (time.time() - start_perf) * 1000
         
         response = DEXChartCandlesResponse(
             symbol=symbol,
             dex_exchange=dex_exchange,
-            blockchain=blockchain.value if hasattr(blockchain, 'value') else str(blockchain),
+            blockchain=blockchain,
             timeframe=timeframe,
             candles=chart_candles,
             total_candles=len(chart_candles),
@@ -524,7 +569,7 @@ async def get_dex_chart_candles(
         
         logger.info(
             f"[{request_id}] ✅ {len(chart_candles)} candles from {data_source} "
-            f"(quality: {data_quality}) in {performance_ms:.0f}ms"
+            f"({blockchain}) in {performance_ms:.0f}ms"
         )
         
         return response
@@ -560,21 +605,11 @@ async def get_dex_candle_movers(
     Features:
     - ✅ REAL Blockchain Addresses
     - ✅ On-Chain Transaction History
-    - ✅ No synthetic data
-    
-    ### Example:
-    ```
-    GET /dex/candle/2025-11-18T10:00:00Z/movers
-        ?dex_exchange=jupiter
-        &symbol=SOL/USDC
-        &timeframe=5m
-        &top_n_wallets=10
-    ```
+    - ✅ Multi-Chain Support (Solana + Ethereum)
     """
     start_perf = time.time()
     
     try:
-        # Validate parameters
         validate_dex_params(dex_exchange, symbol, timeframe)
         
         logger.info(
@@ -582,8 +617,10 @@ async def get_dex_candle_movers(
             f"@ {candle_timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        # Get UnifiedCollector
         unified_collector = await get_unified_collector()
+        
+        # Detect blockchain
+        blockchain = detect_blockchain(dex_exchange)
 
         # Initialize HybridAnalyzer
         from app.core.price_movers.services.analyzer_hybrid import HybridPriceMoverAnalyzer
@@ -608,7 +645,7 @@ async def get_dex_candle_movers(
         if end_time.tzinfo is None:
             end_time = end_time.replace(tzinfo=timezone.utc)
 
-        # Fetch DEX data with fallback
+        # Fetch candle and trades
         logger.debug("Fetching DEX candle and trades...")
 
         candle_data, source = await fetch_candle_with_fallback(
@@ -633,10 +670,9 @@ async def get_dex_candle_movers(
             limit=5000
         )
 
-        # Analyze DEX trades
+        # Analyze trades
         logger.debug("Analyzing DEX trades...")
 
-        # Import Candle class from analyzer_hybrid
         from app.core.price_movers.services.analyzer_hybrid import Candle as HybridCandle
 
         candle_obj = HybridCandle(**candle_data)
@@ -648,11 +684,6 @@ async def get_dex_candle_movers(
             exchange=dex_exchange,
             top_n=top_n_wallets
         )
-
-        # Get blockchain
-        from app.core.price_movers.utils.constants import DEX_CONFIGS
-        dex_config = DEX_CONFIGS.get(dex_exchange.lower(), {})
-        blockchain = dex_config.get('blockchain', 'solana')
 
         performance_ms = (time.time() - start_perf) * 1000
 
@@ -667,18 +698,19 @@ async def get_dex_candle_movers(
                 "exchange": dex_exchange,
                 "symbol": symbol,
                 "timeframe": str(timeframe.value),
-                "data_source": source
+                "data_source": source,
+                "blockchain": blockchain
             },
             is_synthetic=False,
             has_real_wallet_ids=True,
-            blockchain=blockchain.value if hasattr(blockchain, 'value') else str(blockchain),
+            blockchain=blockchain,
             dex_exchange=dex_exchange
         )
         
         logger.info(
-            f"[{request_id}] ✅ DEX movers loaded: {len(dex_movers)} wallets "
+            f"[{request_id}] ✅ DEX movers: {len(dex_movers)} wallets "
             f"from {len(trades_result.get('trades', []))} trades "
-            f"(source: {source}, {performance_ms:.0f}ms)"
+            f"({blockchain}, {performance_ms:.0f}ms)"
         )
 
         return response
@@ -708,22 +740,29 @@ async def dex_health_check():
                 "dexscreener": {
                     "available": unified_collector.dexscreener_collector is not None,
                     "type": "current_price",
+                    "chains": ["solana"],
                     "cost": "FREE",
-                    "limitations": "Current price only, limited historical",
+                    "status": "unknown"
+                },
+                "moralis": {
+                    "available": unified_collector.moralis_collector is not None,
+                    "type": "historical_ohlcv",
+                    "chains": ["solana", "ethereum"],
+                    "cost": "Free tier + 2 fallbacks",
                     "status": "unknown"
                 },
                 "birdeye": {
                     "available": unified_collector.birdeye_collector is not None,
                     "type": "historical_ohlcv",
+                    "chains": ["solana"],
                     "cost": "$99/mo for OHLCV",
-                    "limitations": "Requires paid plan for full features",
                     "status": "unknown"
                 },
                 "helius": {
                     "available": unified_collector.helius_collector is not None,
                     "type": "trade_aggregation",
-                    "cost": "Free tier available",
-                    "limitations": "Slower, requires aggregation",
+                    "chains": ["solana"],
+                    "cost": "Free tier",
                     "status": "unknown"
                 }
             },
@@ -737,6 +776,14 @@ async def dex_health_check():
                 health["sources"]["dexscreener"]["status"] = "healthy" if is_healthy else "unhealthy"
             except Exception as e:
                 health["sources"]["dexscreener"]["status"] = f"error: {str(e)[:50]}"
+        
+        # Test Moralis
+        if unified_collector.moralis_collector:
+            try:
+                is_healthy = await unified_collector.moralis_collector.health_check()
+                health["sources"]["moralis"]["status"] = "healthy" if is_healthy else "unhealthy"
+            except Exception as e:
+                health["sources"]["moralis"]["status"] = f"error: {str(e)[:50]}"
         
         # Test Birdeye
         if unified_collector.birdeye_collector:
@@ -754,28 +801,25 @@ async def dex_health_check():
             except Exception as e:
                 health["sources"]["helius"]["status"] = f"error: {str(e)[:50]}"
         
-        # Generate recommendation based on health
+        # Generate recommendation
         healthy_sources = [
             name for name, info in health["sources"].items() 
             if info.get("status") == "healthy"
         ]
         
-        if "dexscreener" in healthy_sources and "birdeye" in healthy_sources:
-            health["recommendation"] = "Optimal: Dexscreener for current + Birdeye for historical"
-        elif "dexscreener" in healthy_sources:
-            health["recommendation"] = "Using Dexscreener for current prices (limited historical)"
-        elif "birdeye" in healthy_sources:
-            health["recommendation"] = "Using Birdeye for full OHLCV data"
+        if "moralis" in healthy_sources:
+            health["recommendation"] = "✅ Optimal: Moralis available for Solana + Ethereum historical data"
+        elif "dexscreener" in healthy_sources and "birdeye" in healthy_sources:
+            health["recommendation"] = "Good: Dexscreener + Birdeye for Solana"
         elif "helius" in healthy_sources:
-            health["recommendation"] = "Using Helius trade aggregation (slower but works)"
+            health["recommendation"] = "Limited: Using Helius trade aggregation (slower)"
         else:
-            health["recommendation"] = "⚠️ No healthy sources - will use mock data"
+            health["recommendation"] = "⚠️ No healthy sources - using mock data"
         
-        # Add usage tips
         health["tips"] = {
-            "current_price": "Use Dexscreener (free) for current/recent data",
-            "historical_data": "Use Birdeye (paid) or Helius (free but slower) for historical",
-            "performance": "Cache results when possible to reduce API calls"
+            "best_setup": "Moralis (multi-chain) + Dexscreener (current prices)",
+            "ethereum": "Moralis is required for Ethereum DEX data",
+            "solana": "Multiple fallbacks available: Dexscreener → Moralis → Birdeye → Helius"
         }
         
         return health
@@ -790,20 +834,26 @@ async def dex_health_check():
 @router.post(
     "/cache/clear",
     status_code=status.HTTP_200_OK,
-    summary="Clear Dexscreener Cache"
+    summary="Clear Cache"
 )
-async def clear_dexscreener_cache(
+async def clear_cache(
     request_id: str = Depends(log_request)
 ):
-    """Clear the Dexscreener pool address cache"""
+    """Clear collector caches"""
     try:
         unified_collector = await get_unified_collector()
         
+        cleared = []
+        
         if unified_collector.dexscreener_collector:
             unified_collector.dexscreener_collector.clear_cache()
-            return {"status": "success", "message": "Dexscreener cache cleared"}
-        else:
-            return {"status": "skipped", "message": "Dexscreener collector not available"}
+            cleared.append("dexscreener")
+        
+        return {
+            "status": "success",
+            "cleared": cleared,
+            "message": f"Cache cleared for: {', '.join(cleared)}"
+        }
             
     except Exception as e:
         raise HTTPException(
