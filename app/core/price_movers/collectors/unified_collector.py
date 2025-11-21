@@ -318,14 +318,13 @@ class UnifiedCollector:
         
         Priorität für Solana:
         1. Dexscreener (current only)
-        2. Moralis (historical)
-        3. Birdeye (wenn healthy)
-        4. SolanaDex (Bitquery)
-        5. Helius (last resort)
+        2. Birdeye (wenn healthy)
+        3. SolanaDex (Bitquery)
+        4. Helius (last resort)
         
-        Priorität für Ethereum:
-        1. Moralis (primary)
-        2. (weitere Quellen können hier hinzugefügt werden)
+        Priorität für EVM (Ethereum, BSC, Polygon, etc.):
+        1. Moralis (primary für alle EVM chains)
+        2. (weitere Quellen können hinzugefügt werden)
         """
         exchange = exchange.lower()
     
@@ -339,32 +338,47 @@ class UnifiedCollector:
             )
     
         # DEX: Multi-Chain Routing
-        elif exchange in self.dex_collectors or exchange in ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap']:
+        elif exchange in self.dex_collectors or exchange in ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap', 'pancakeswap', 'quickswap', 'traderjoe']:
             
             # Detect blockchain from DEX name
             solana_dexes = ['jupiter', 'raydium', 'orca']
-            ethereum_dexes = ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap']
+            evm_dexes = {
+                'ethereum': ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap'],
+                'bsc': ['pancakeswap', 'pancakeswapv2', 'pancakeswapv3'],
+                'polygon': ['quickswap', 'sushiswap'],
+                'avalanche': ['traderjoe', 'pangolin'],
+                'arbitrum': ['uniswapv3', 'sushiswap', 'camelot'],
+                'optimism': ['uniswapv3', 'velodrome'],
+                'base': ['uniswapv3', 'aerodrome', 'baseswap'],
+                'fantom': ['spookyswap', 'spiritswap']
+            }
             
+            # Determine blockchain
+            blockchain = None
             if exchange in solana_dexes:
                 blockchain = 'solana'
-            elif exchange in ethereum_dexes:
-                blockchain = 'ethereum'
             else:
-                # Default fallback
-                blockchain = 'solana'
-                logger.warning(f"Unknown DEX '{exchange}', defaulting to Solana")
+                # Check EVM chains
+                for chain, dexes in evm_dexes.items():
+                    if exchange in dexes:
+                        blockchain = chain
+                        break
+                
+                if not blockchain:
+                    blockchain = 'ethereum'  # Default
+                    logger.warning(f"Unknown DEX '{exchange}', defaulting to Ethereum")
             
             logger.info(f"🔍 Fetching {symbol} from {exchange} on {blockchain}")
             
             # Calculate time range
             now = datetime.now(timezone.utc)
             time_diff = (now - timestamp).total_seconds() / 3600
-            is_recent = time_diff < 1  # Within last hour
+            is_recent = time_diff < 1
             
             # ============ SOLANA CHAIN ============
             if blockchain == 'solana':
                 
-                # 1. Try Dexscreener for current data
+                # 1. Try Dexscreener for current
                 if is_recent and self.dexscreener_collector:
                     logger.info("🎯 Strategy: Dexscreener (Solana, current)")
                     try:
@@ -380,25 +394,7 @@ class UnifiedCollector:
                     except Exception as e:
                         logger.debug(f"Dexscreener failed: {e}")
                 
-                # 2. Try Moralis for historical Solana data
-                if self.moralis_collector:
-                    logger.info("🎯 Strategy: Moralis (Solana, historical)")
-                    try:
-                        candle = await self.moralis_collector.fetch_candle_data(
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            timestamp=timestamp,
-                            blockchain='solana',
-                            dex_exchange=exchange
-                        )
-                        
-                        if candle and candle.get('open', 0) > 0:
-                            logger.info("✅ Moralis: Got Solana candle")
-                            return candle
-                    except Exception as e:
-                        logger.warning(f"Moralis Solana failed: {e}")
-                
-                # 3. Try Birdeye
+                # 2. Try Birdeye
                 if self.birdeye_collector and getattr(self, 'birdeye_healthy_at_init', True):
                     logger.info("🎯 Strategy: Birdeye (Solana)")
                     try:
@@ -414,7 +410,7 @@ class UnifiedCollector:
                     except Exception as e:
                         logger.warning(f"Birdeye failed: {e}")
                 
-                # 4. Try SolanaDex (Bitquery)
+                # 3. Try SolanaDex (Bitquery)
                 if self.solana_dex_collector:
                     logger.info("🎯 Strategy: SolanaDex/Bitquery")
                     try:
@@ -430,7 +426,7 @@ class UnifiedCollector:
                     except Exception as e:
                         logger.warning(f"SolanaDex failed: {e}")
                 
-                # 5. Last resort: Helius
+                # 4. Last resort: Helius
                 if self.helius_collector:
                     logger.info("🎯 Strategy: Helius (last resort)")
                     try:
@@ -446,31 +442,26 @@ class UnifiedCollector:
                     except Exception as e:
                         logger.warning(f"Helius failed: {e}")
             
-            # ============ ETHEREUM CHAIN ============
-            elif blockchain == 'ethereum':
+            # ============ EVM CHAINS (Ethereum, BSC, etc.) ============
+            else:
                 
-                # 1. Try Moralis (primary for Ethereum)
+                # Use Moralis (only source for EVM)
                 if self.moralis_collector:
-                    logger.info("🎯 Strategy: Moralis (Ethereum)")
+                    logger.info(f"🎯 Strategy: Moralis ({blockchain})")
                     try:
                         candle = await self.moralis_collector.fetch_candle_data(
                             symbol=symbol,
                             timeframe=timeframe,
                             timestamp=timestamp,
-                            blockchain='ethereum',
+                            blockchain=blockchain,
                             dex_exchange=exchange
                         )
                         
                         if candle and candle.get('open', 0) > 0:
-                            logger.info("✅ Moralis: Got Ethereum candle")
+                            logger.info(f"✅ Moralis: Got {blockchain} candle")
                             return candle
                     except Exception as e:
-                        logger.warning(f"Moralis Ethereum failed: {e}")
-                
-                # TODO: Add more Ethereum data sources here
-                # - The Graph
-                # - Dune Analytics
-                # - CoinGecko
+                        logger.warning(f"Moralis {blockchain} failed: {e}")
             
             # No data from any source
             logger.error(f"All OHLCV collectors failed for {exchange} {symbol} {timeframe} @ {timestamp}")
