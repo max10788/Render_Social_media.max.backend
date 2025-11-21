@@ -1,6 +1,7 @@
 """
-Moralis Collector - Multi-Chain DEX OHLCV Data
-Supports: Solana (Raydium, Jupiter, Orca) + Ethereum (Uniswap, Sushiswap)
+Moralis Collector - EVM Multi-Chain DEX OHLCV Data
+Supports: Ethereum, BSC, Polygon, Avalanche, Arbitrum, Optimism, Base, Fantom
+NO SOLANA SUPPORT (Moralis doesn't have Solana OHLCV API)
 """
 
 import aiohttp
@@ -15,61 +16,118 @@ logger = logging.getLogger(__name__)
 
 class MoralisCollector(BaseCollector):
     """
-    Moralis Collector for Multi-Chain DEX OHLCV data
+    Moralis Collector for EVM Multi-Chain DEX OHLCV data
     
-    Features:
-    - ✅ Solana: Raydium, Jupiter, Orca
-    - ✅ Ethereum: Uniswap V2/V3, Sushiswap
-    - ✅ Historical OHLCV candles
-    - ✅ Multiple API keys with rotation
-    - ✅ Token must have >$1k volume
+    Supported Chains:
+    - ✅ Ethereum (eth)
+    - ✅ BSC (bsc)
+    - ✅ Polygon (polygon)
+    - ✅ Avalanche (avalanche)
+    - ✅ Arbitrum (arbitrum)
+    - ✅ Optimism (optimism)
+    - ✅ Base (base)
+    - ✅ Fantom (fantom)
+    
+    ❌ NO SOLANA (not supported by Moralis OHLCV API)
     
     API Docs: https://docs.moralis.io/web3-data-api/evm/reference/get-pair-ohlcv
     """
     
     def __init__(self, api_keys: List[str], config: Optional[Dict[str, Any]] = None):
         super().__init__(config)
-        self.api_keys = [k for k in api_keys if k]  # Remove None/empty
+        self.api_keys = [k for k in api_keys if k]
         self.current_key_index = 0
         self.base_url = "https://deep-index.moralis.io/api/v2.2"
         
         if not self.api_keys:
             raise ValueError("At least one Moralis API key required")
         
-        # Solana Token Addresses
-        self.SOLANA_TOKENS = {
-            'SOL': 'So11111111111111111111111111111111111111112',
-            'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-            'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
-            'BONK': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
-            'JTO': 'jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL',
-            'JUP': 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',
-            'WIF': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',
-            'PYTH': 'HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3',
+        # Chain ID mapping
+        self.CHAIN_IDS = {
+            'ethereum': '0x1',
+            'eth': '0x1',
+            'bsc': '0x38',
+            'polygon': '0x89',
+            'avalanche': '0xa86a',
+            'arbitrum': '0xa4b1',
+            'optimism': '0xa',
+            'base': '0x2105',
+            'fantom': '0xfa'
         }
         
-        # Ethereum Token Addresses
-        self.ETHEREUM_TOKENS = {
-            'ETH': '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',  # WETH
-            'WETH': '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
-            'USDC': '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
-            'USDT': '0xdAC17F958D2ee523a2206206994597C13D831ec7',
-            'DAI': '0x6B175474E89094C44Da98b954EedeAC495271d0F',
-            'WBTC': '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599',
-            'UNI': '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984',
-            'LINK': '0x514910771AF9Ca656af840dff83E8264EcF986CA',
-            'AAVE': '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9',
-            'SHIB': '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE',
+        # Common token addresses per chain
+        self.TOKEN_ADDRESSES = {
+            'ethereum': {
+                'ETH': '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',  # WETH
+                'WETH': '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+                'USDC': '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+                'USDT': '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+                'DAI': '0x6B175474E89094C44Da98b954EedeAC495271d0F',
+                'WBTC': '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599',
+                'UNI': '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984',
+                'LINK': '0x514910771AF9Ca656af840dff83E8264EcF986CA',
+                'AAVE': '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9',
+                'SHIB': '0x95aD61b0a150d79219dCF64E1E6Cc01f0B64C4cE',
+            },
+            'bsc': {
+                'BNB': '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',  # WBNB
+                'WBNB': '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',
+                'USDC': '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d',
+                'USDT': '0x55d398326f99059fF775485246999027B3197955',
+                'BUSD': '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56',
+                'CAKE': '0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82',
+            },
+            'polygon': {
+                'MATIC': '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270',  # WMATIC
+                'WMATIC': '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270',
+                'USDC': '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+                'USDT': '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+                'DAI': '0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063',
+            },
+            'avalanche': {
+                'AVAX': '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7',  # WAVAX
+                'WAVAX': '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7',
+                'USDC': '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E',
+                'USDT': '0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7',
+            },
+            'arbitrum': {
+                'ETH': '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',  # WETH
+                'WETH': '0x82aF49447D8a07e3bd95BD0d56f35241523fBab1',
+                'USDC': '0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8',
+                'USDT': '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9',
+            },
+            'optimism': {
+                'ETH': '0x4200000000000000000000000000000000000006',  # WETH
+                'WETH': '0x4200000000000000000000000000000000000006',
+                'USDC': '0x7F5c764cBc14f9669B88837ca1490cCa17c31607',
+                'USDT': '0x94b008aA00579c1307B0EF2c499aD98a8ce58e58',
+            },
+            'base': {
+                'ETH': '0x4200000000000000000000000000000000000006',  # WETH
+                'WETH': '0x4200000000000000000000000000000000000006',
+                'USDC': '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+            },
+            'fantom': {
+                'FTM': '0x21be370D5312f44cB42ce377BC9b8a0cEF1A4C83',  # WFTM
+                'WFTM': '0x21be370D5312f44cB42ce377BC9b8a0cEF1A4C83',
+                'USDC': '0x04068DA6C83AFCFA0e13ba15A6696662335D5B75',
+            }
         }
         
         # Supported DEX per chain
         self.SUPPORTED_DEX = {
-            'solana': ['raydium', 'jupiter', 'orca'],
-            'ethereum': ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap']
+            'ethereum': ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap'],
+            'bsc': ['pancakeswap', 'pancakeswapv2', 'pancakeswapv3'],
+            'polygon': ['quickswap', 'sushiswap', 'uniswapv3'],
+            'avalanche': ['traderjoe', 'pangolin'],
+            'arbitrum': ['uniswapv3', 'sushiswap', 'camelot'],
+            'optimism': ['uniswapv3', 'velodrome'],
+            'base': ['uniswapv3', 'aerodrome', 'baseswap'],
+            'fantom': ['spookyswap', 'spiritswap']
         }
         
         logger.info(f"✅ Moralis Collector initialized with {len(self.api_keys)} API keys")
-        logger.info(f"   Supported chains: Solana, Ethereum")
+        logger.info(f"   Supported chains: {', '.join(self.CHAIN_IDS.keys())}")
         self._is_initialized = True
     
     def _get_current_api_key(self) -> str:
@@ -86,52 +144,28 @@ class MoralisCollector(BaseCollector):
         """Detect blockchain from DEX name"""
         dex_lower = dex_exchange.lower()
         
-        if dex_lower in self.SUPPORTED_DEX['solana']:
-            return 'solana'
-        elif dex_lower in self.SUPPORTED_DEX['ethereum']:
-            return 'ethereum'
-        else:
-            logger.warning(f"Unknown DEX '{dex_exchange}', defaulting to solana")
-            return 'solana'
+        for chain, dexes in self.SUPPORTED_DEX.items():
+            if dex_lower in dexes:
+                return chain
+        
+        logger.warning(f"Unknown DEX '{dex_exchange}', defaulting to ethereum")
+        return 'ethereum'
     
     def _resolve_token_address(
         self,
         symbol: str,
-        blockchain: str = 'solana'
+        blockchain: str
     ) -> Optional[str]:
-        """
-        Resolve token symbol to contract address
-        
-        Args:
-            symbol: Token symbol (e.g., 'SOL', 'ETH', 'USDC')
-            blockchain: 'solana' or 'ethereum'
-            
-        Returns:
-            Token contract address or None
-        """
-        if blockchain == 'solana':
-            return self.SOLANA_TOKENS.get(symbol.upper())
-        elif blockchain == 'ethereum':
-            return self.ETHEREUM_TOKENS.get(symbol.upper())
-        else:
-            logger.error(f"Unsupported blockchain: {blockchain}")
-            return None
+        """Resolve token symbol to contract address"""
+        chain_tokens = self.TOKEN_ADDRESSES.get(blockchain, {})
+        return chain_tokens.get(symbol.upper())
     
     async def _resolve_pair_address(
         self,
         symbol: str,
-        blockchain: str = 'solana'
+        blockchain: str
     ) -> Optional[Tuple[str, str]]:
-        """
-        Resolve trading pair to token addresses
-        
-        Args:
-            symbol: Trading pair (e.g., 'SOL/USDC', 'ETH/USDT')
-            blockchain: Target blockchain
-            
-        Returns:
-            Tuple of (base_address, quote_address) or None
-        """
+        """Resolve trading pair to token addresses"""
         try:
             base_token, quote_token = symbol.upper().split('/')
         except ValueError:
@@ -159,24 +193,29 @@ class MoralisCollector(BaseCollector):
         start_time: datetime,
         end_time: datetime,
         limit: Optional[int] = 100,
-        blockchain: str = 'solana',
+        blockchain: str = 'ethereum',
         dex_exchange: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Fetch OHLCV candles from Moralis
+        Fetch OHLCV candles from Moralis (EVM chains only!)
         
         Args:
-            symbol: Trading pair (e.g., 'SOL/USDC')
+            symbol: Trading pair (e.g., 'ETH/USDC')
             timeframe: Candle interval (1m, 5m, 15m, 30m, 1h, 4h, 1d)
             start_time: Start timestamp
             end_time: End timestamp
             limit: Max number of candles
-            blockchain: 'solana' or 'ethereum'
+            blockchain: EVM chain (ethereum, bsc, polygon, etc.)
             dex_exchange: Optional DEX filter
             
         Returns:
             List of OHLCV candles
         """
+        # Validate chain
+        if blockchain not in self.CHAIN_IDS:
+            logger.error(f"Unsupported blockchain: {blockchain}")
+            return []
+        
         logger.info(f"Moralis OHLCV: {symbol} {timeframe} on {blockchain} ({start_time} to {end_time})")
         
         # Resolve pair addresses
@@ -186,20 +225,14 @@ class MoralisCollector(BaseCollector):
         
         base_address, quote_address = pair_addresses
         
-        # Map timeframe to Moralis format
+        # Map timeframe
         timeframe_map = {
-            '1m': '1m',
-            '5m': '5m',
-            '15m': '15m',
-            '30m': '30m',
-            '1h': '1h',
-            '4h': '4h',
-            '1d': '1d'
+            '1m': '1m', '5m': '5m', '15m': '15m', '30m': '30m',
+            '1h': '1h', '4h': '4h', '1d': '1d'
         }
-        
         moralis_timeframe = timeframe_map.get(timeframe, '5m')
         
-        # Convert timestamps to Unix (ensure timezone aware)
+        # Ensure timezone aware
         if start_time.tzinfo is None:
             start_time = start_time.replace(tzinfo=timezone.utc)
         if end_time.tzinfo is None:
@@ -208,27 +241,21 @@ class MoralisCollector(BaseCollector):
         from_timestamp = int(start_time.timestamp())
         to_timestamp = int(end_time.timestamp())
         
-        # Build endpoint URL (chain-specific)
-        if blockchain == 'solana':
-            url = f"{self.base_url}/solana/ohlcv/pair/{base_address}"
-        elif blockchain == 'ethereum':
-            url = f"{self.base_url}/evm/ohlcv/pair/{base_address}"
-        else:
-            logger.error(f"Unsupported blockchain: {blockchain}")
-            return []
+        # Get chain ID
+        chain_id = self.CHAIN_IDS[blockchain]
+        
+        # Build URL - EVM OHLCV endpoint
+        url = f"{self.base_url}/evm/ohlcv/pair/{base_address}"
         
         params = {
+            'chain': chain_id,
             'interval': moralis_timeframe,
             'from': from_timestamp,
             'to': to_timestamp,
             'limit': limit or 100
         }
         
-        # Add quote token for filtering (Ethereum only)
-        if blockchain == 'ethereum':
-            params['quote_address'] = quote_address
-        
-        # Try with all API keys on failure
+        # Try with all API keys
         for attempt in range(len(self.api_keys)):
             api_key = self._get_current_api_key()
             
@@ -252,7 +279,7 @@ class MoralisCollector(BaseCollector):
                             await asyncio.sleep(1)
                             continue
                         
-                        if response.status == 401 or response.status == 403:
+                        if response.status in [401, 403]:
                             logger.error(f"❌ Auth failed on key #{self.current_key_index + 1}")
                             self._rotate_api_key()
                             continue
@@ -261,7 +288,6 @@ class MoralisCollector(BaseCollector):
                             text = await response.text()
                             logger.warning(f"Moralis error {response.status}: {text[:200]}")
                             
-                            # If not found, try next key
                             if response.status == 404:
                                 logger.info("Pair not found, trying next key...")
                                 self._rotate_api_key()
@@ -295,7 +321,7 @@ class MoralisCollector(BaseCollector):
                         return candles
                         
             except asyncio.TimeoutError:
-                logger.warning(f"Moralis request timeout (attempt {attempt + 1}/{len(self.api_keys)})")
+                logger.warning(f"Moralis timeout (attempt {attempt + 1}/{len(self.api_keys)})")
                 self._rotate_api_key()
                 continue
             except Exception as e:
@@ -311,23 +337,10 @@ class MoralisCollector(BaseCollector):
         symbol: str,
         timeframe: str,
         timestamp: datetime,
-        blockchain: str = 'solana',
+        blockchain: str = 'ethereum',
         dex_exchange: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Fetch single candle at specific timestamp
-        
-        Args:
-            symbol: Trading pair
-            timeframe: Candle interval
-            timestamp: Target timestamp
-            blockchain: Target blockchain
-            dex_exchange: Optional DEX filter
-            
-        Returns:
-            Single OHLCV candle
-        """
-        # Fetch a small batch around the timestamp
+        """Fetch single candle"""
         start_time = timestamp - timedelta(minutes=10)
         end_time = timestamp + timedelta(minutes=10)
         
@@ -342,18 +355,16 @@ class MoralisCollector(BaseCollector):
         )
         
         if candles:
-            # Find closest candle to target timestamp
             closest = min(
                 candles,
                 key=lambda c: abs((c['timestamp'] - timestamp).total_seconds())
             )
             return closest
         
-        logger.debug(f"No Moralis candle found for {symbol} @ {timestamp}")
+        logger.debug(f"No Moralis candle for {symbol} @ {timestamp}")
         return self._empty_candle(timestamp)
     
     def _empty_candle(self, timestamp: datetime) -> Dict[str, Any]:
-        """Return empty candle structure"""
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
         
@@ -375,31 +386,14 @@ class MoralisCollector(BaseCollector):
         end_time: datetime,
         limit: Optional[int] = None
     ) -> list:
-        """
-        Moralis doesn't provide trade-level data in OHLCV API
-        This would require separate endpoints
-        """
+        """Moralis OHLCV API doesn't provide trade-level data"""
         logger.debug("Moralis: Trade-level data not available in OHLCV endpoint")
         return []
     
     async def health_check(self) -> bool:
-        """
-        Health check by attempting to fetch recent data
-        Tests both Solana and Ethereum endpoints
-        """
+        """Health check for EVM chains"""
         try:
-            # Test Solana endpoint with SOL/USDC
-            logger.debug("Testing Moralis Solana endpoint...")
-            sol_candles = await self.fetch_ohlcv_batch(
-                symbol='SOL/USDC',
-                timeframe='5m',
-                start_time=datetime.now(timezone.utc) - timedelta(hours=1),
-                end_time=datetime.now(timezone.utc),
-                limit=1,
-                blockchain='solana'
-            )
-            
-            # Test Ethereum endpoint with ETH/USDC
+            # Test Ethereum with ETH/USDC
             logger.debug("Testing Moralis Ethereum endpoint...")
             eth_candles = await self.fetch_ohlcv_batch(
                 symbol='ETH/USDC',
@@ -410,39 +404,26 @@ class MoralisCollector(BaseCollector):
                 blockchain='ethereum'
             )
             
-            solana_ok = len(sol_candles) > 0
-            ethereum_ok = len(eth_candles) > 0
-            
-            if solana_ok and ethereum_ok:
-                logger.info("✅ Moralis: Both Solana and Ethereum healthy")
-            elif solana_ok:
-                logger.info("✅ Moralis: Solana healthy, Ethereum unavailable")
-            elif ethereum_ok:
-                logger.info("✅ Moralis: Ethereum healthy, Solana unavailable")
+            if len(eth_candles) > 0:
+                logger.info("✅ Moralis: Ethereum healthy")
+                return True
             else:
-                logger.warning("⚠️ Moralis: Both chains unavailable")
-            
-            # Return true if at least one chain works
-            return solana_ok or ethereum_ok
+                logger.warning("⚠️ Moralis: Ethereum returned no data")
+                return False
             
         except Exception as e:
             logger.error(f"❌ Moralis health check failed: {e}")
             return False
     
     async def close(self):
-        """Cleanup resources"""
+        """Cleanup"""
         logger.debug("Moralis Collector closed")
         pass
     
-    def get_supported_tokens(self, blockchain: str = 'solana') -> List[str]:
+    def get_supported_tokens(self, blockchain: str = 'ethereum') -> List[str]:
         """Get list of supported tokens for a blockchain"""
-        if blockchain == 'solana':
-            return list(self.SOLANA_TOKENS.keys())
-        elif blockchain == 'ethereum':
-            return list(self.ETHEREUM_TOKENS.keys())
-        else:
-            return []
+        return list(self.TOKEN_ADDRESSES.get(blockchain, {}).keys())
     
     def get_supported_chains(self) -> List[str]:
         """Get list of supported blockchains"""
-        return ['solana', 'ethereum']
+        return list(self.CHAIN_IDS.keys())
