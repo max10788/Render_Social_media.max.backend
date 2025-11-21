@@ -47,11 +47,13 @@ _unified_collector_instance: Optional[UnifiedCollector] = None
 
 async def get_unified_collector() -> UnifiedCollector:
     """
-    🔧 FIXED: Dependency für UnifiedCollector mit API Keys aus ENV
+    🔧 UPDATED: Dependency für UnifiedCollector mit Moralis Multi-Chain Support
     
-    PRIORITY für DEX:
-    1. BIRDEYE_API_KEY (für OHLCV Charts - FASTEST!)
-    2. HELIUS_API_KEY (für Wallet-Analyse)
+    PRIORITY für DEX OHLCV:
+    1. DEXSCREENER (current price, free)
+    2. MORALIS (Solana + Ethereum historical, limited free tier)
+    3. BIRDEYE (Solana only, if not suspended)
+    4. HELIUS (Solana fallback, free tier)
     
     Returns:
         UnifiedCollector Instance mit konfigurierten API Keys
@@ -62,15 +64,21 @@ async def get_unified_collector() -> UnifiedCollector:
     if _unified_collector_instance is not None:
         return _unified_collector_instance
     
-    logger.info("🔧 Creating UnifiedCollector with API Keys from ENV")
+    logger.info("🔧 Creating UnifiedCollector with Multi-Chain Support")
     
     # ==================== Load API Keys ====================
     
-    # DEX API Keys - PRIORITY: Birdeye > Helius
+    # Moralis API Keys (Primary + 2 Fallbacks)
+    moralis_key = os.getenv('MORALIS_API_KEY')
+    moralis_fallback = os.getenv('MORALIS_API_KEY_FALLBACK')
+    moralis_fallback2 = os.getenv('MORALIS_API_KEY_FALLBACK2')
+    
+    # DEX API Keys
     birdeye_key = os.getenv('BIRDEYE_API_KEY')
     helius_key = os.getenv('HELIUS_API_KEY')
+    bitquery_key = os.getenv('BITQUERY_API_KEY')
     
-    # CEX Credentials (optional)
+    # CEX Credentials
     binance_key = os.getenv('BINANCE_API_KEY')
     binance_secret = os.getenv('BINANCE_API_SECRET')
     bitget_key = os.getenv('BITGET_API_KEY')
@@ -81,24 +89,36 @@ async def get_unified_collector() -> UnifiedCollector:
     
     # ==================== Log Loaded Keys (Masked) ====================
     
-    # CEX Keys
-    if binance_key:
-        logger.info("✅ Binance API Keys geladen")
-    if bitget_key:
-        logger.info("✅ Bitget API Keys geladen")
-    if kraken_key:
-        logger.info("✅ Kraken API Keys geladen")
-    
-    # DEX Keys
-    if birdeye_key:
-        logger.info(f"✅ Birdeye API Key geladen: {birdeye_key[:8]}... (PRIMARY for OHLCV)")
+    # Moralis Keys (most important!)
+    moralis_count = sum([bool(k) for k in [moralis_key, moralis_fallback, moralis_fallback2]])
+    if moralis_count > 0:
+        logger.info(f"✅ Moralis API Keys loaded: {moralis_count} keys (Solana + Ethereum)")
+        if moralis_key:
+            logger.info(f"   Primary: {moralis_key[:20]}...")
     else:
-        logger.warning("⚠️ BIRDEYE_API_KEY not found - Charts will be slow!")
+        logger.warning("⚠️ MORALIS_API_KEY not found - Limited historical data!")
+    
+    # Other DEX Keys
+    if birdeye_key:
+        logger.info(f"✅ Birdeye API Key: {birdeye_key[:8]}... (Solana OHLCV)")
+    else:
+        logger.info("ℹ️ BIRDEYE_API_KEY not found")
     
     if helius_key:
-        logger.info(f"✅ Helius API Key geladen: {helius_key[:8]}... (SECONDARY for Wallets)")
+        logger.info(f"✅ Helius API Key: {helius_key[:8]}... (Solana Trades)")
     else:
-        logger.warning("⚠️ HELIUS_API_KEY not found")
+        logger.info("ℹ️ HELIUS_API_KEY not found")
+    
+    if bitquery_key:
+        logger.info(f"✅ Bitquery API Key: {bitquery_key[:8]}...")
+    
+    # CEX Keys
+    if binance_key:
+        logger.info("✅ Binance API Keys loaded")
+    if bitget_key:
+        logger.info("✅ Bitget API Keys loaded")
+    if kraken_key:
+        logger.info("✅ Kraken API Keys loaded")
     
     # ==================== Build Credentials ====================
     
@@ -125,8 +145,15 @@ async def get_unified_collector() -> UnifiedCollector:
             'api_secret': kraken_secret
         }
     
-    # DEX API Keys
+    # DEX API Keys (including Moralis!)
     dex_keys = {}
+    
+    if moralis_key:
+        dex_keys['moralis'] = moralis_key
+    if moralis_fallback:
+        dex_keys['moralis_fallback'] = moralis_fallback
+    if moralis_fallback2:
+        dex_keys['moralis_fallback2'] = moralis_fallback2
     
     if birdeye_key:
         dex_keys['birdeye'] = birdeye_key
@@ -134,10 +161,13 @@ async def get_unified_collector() -> UnifiedCollector:
     if helius_key:
         dex_keys['helius'] = helius_key
     
+    if bitquery_key:
+        dex_keys['bitquery'] = bitquery_key
+    
     # Warnung wenn KEINE DEX Keys
     if not dex_keys:
         logger.warning("⚠️ KEINE DEX API Keys gefunden! DEX wird nicht verfügbar sein.")
-        logger.info("💡 Tipp: Setze BIRDEYE_API_KEY und/oder HELIUS_API_KEY")
+        logger.info("💡 Tipp: Setze MORALIS_API_KEY, BIRDEYE_API_KEY oder HELIUS_API_KEY")
     
     # ==================== Create UnifiedCollector ====================
     
@@ -153,9 +183,14 @@ async def get_unified_collector() -> UnifiedCollector:
         # Log verfügbare Exchanges
         available = collector.list_available_exchanges()
         logger.info(
-            f"✅ UnifiedCollector initialisiert: "
+            f"✅ UnifiedCollector initialized: "
             f"CEX={available['cex']}, DEX={available['dex']}"
         )
+        
+        # Log supported chains
+        if hasattr(collector, 'moralis_collector') and collector.moralis_collector:
+            chains = collector.moralis_collector.get_supported_chains()
+            logger.info(f"🌐 Supported Blockchains: {', '.join(chains)}")
         
         return collector
         
