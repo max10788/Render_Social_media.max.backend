@@ -79,18 +79,46 @@ class DEXCandleMoversResponse(BaseModel):
 
 def detect_blockchain(dex_exchange: str) -> str:
     """Detect blockchain from DEX name"""
-    solana_dexes = ['jupiter', 'raydium', 'orca']
-    ethereum_dexes = ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap']
-    
     dex_lower = dex_exchange.lower()
     
-    if dex_lower in solana_dexes:
+    # Solana DEXes
+    if dex_lower in ['jupiter', 'raydium', 'orca']:
         return 'solana'
-    elif dex_lower in ethereum_dexes:
+    
+    # Ethereum DEXes
+    if dex_lower in ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap']:
         return 'ethereum'
-    else:
-        logger.warning(f"Unknown DEX '{dex_exchange}', defaulting to solana")
-        return 'solana'
+    
+    # BSC DEXes
+    if dex_lower in ['pancakeswap', 'pancakeswapv2', 'pancakeswapv3']:
+        return 'bsc'
+    
+    # Polygon DEXes
+    if dex_lower in ['quickswap']:
+        return 'polygon'
+    
+    # Avalanche DEXes
+    if dex_lower in ['traderjoe', 'pangolin']:
+        return 'avalanche'
+    
+    # Arbitrum DEXes
+    if dex_lower in ['camelot']:
+        return 'arbitrum'
+    
+    # Optimism DEXes
+    if dex_lower in ['velodrome']:
+        return 'optimism'
+    
+    # Base DEXes
+    if dex_lower in ['aerodrome', 'baseswap']:
+        return 'base'
+    
+    # Fantom DEXes
+    if dex_lower in ['spookyswap', 'spiritswap']:
+        return 'fantom'
+    
+    logger.warning(f"Unknown DEX '{dex_exchange}', defaulting to ethereum")
+    return 'ethereum'
 
 
 async def fetch_candle_with_fallback(
