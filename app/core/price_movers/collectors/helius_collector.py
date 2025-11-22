@@ -1,6 +1,8 @@
 """
-Helius Collector - DEBUG VERSION
-Zeigt genau an, warum keine Trades gefunden werden
+Helius Collector - FIXED VERSION mit erweitertem Zeitfenster
+
+🔧 FIX: Erweitert das Zeitfenster von 1 Minute auf 10 Minuten
+Grund: Helius API hat keine Zeitfilter-Parameter und gibt nur die letzten X TXs zurück
 """
 
 import logging
@@ -40,12 +42,20 @@ class SimpleCache:
 
 class HeliusCollector(DEXCollector):
     """
-    Helius Collector - DEBUG VERSION
+    Helius Collector - FIXED VERSION
     
-    Purpose: Show exactly why no trades are found
+    🔧 FIX: Erweitert Zeitfenster für Trade-Abfragen
+    - Vorher: Exakt 1 Minute (12:30:00 - 12:31:00)
+    - Nachher: ±5 Minuten Puffer (12:25:00 - 12:35:00)
+    
+    Grund: Helius API gibt einfach die letzten X TXs zurück,
+           ohne Zeitfilter. Daher müssen wir ein größeres Fenster nutzen.
     """
     
     API_BASE = "https://api-mainnet.helius-rpc.com"
+    
+    # 🔧 FIX: Konfigurierbarer Zeitpuffer
+    TIME_BUFFER_MINUTES = 5  # ±5 Minuten = 10 Minuten total
     
     TOKEN_MINTS = {
         'SOL': 'So11111111111111111111111111111111111111112',
@@ -71,7 +81,10 @@ class HeliusCollector(DEXCollector):
         self.cache = SimpleCache(ttl_seconds=60)
         self.birdeye_fallback = birdeye_fallback
         
-        logger.info("✅ Helius Collector initialized (DEBUG MODE)")
+        # 🔧 Allow custom time buffer from config
+        self.time_buffer_minutes = config.get('time_buffer_minutes', self.TIME_BUFFER_MINUTES)
+        
+        logger.info(f"✅ Helius Collector initialized (Time buffer: ±{self.time_buffer_minutes}m)")
     
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
@@ -83,26 +96,18 @@ class HeliusCollector(DEXCollector):
         try:
             parts = symbol.upper().split('/')
             if len(parts) != 2:
-                logger.error(f"❌ Invalid symbol format: {symbol}")
                 return None
             
             base_token, quote_token = parts
             
-            # 🔍 DEBUG: Show what we're resolving
-            logger.info(f"🔍 Resolving {symbol}: base={base_token}, quote={quote_token}")
-            
             # For SOL pairs, query the OTHER token
             if base_token in ['SOL', 'WSOL']:
-                address = self.TOKEN_MINTS.get(quote_token)
-                logger.info(f"🔍 SOL pair detected, using {quote_token} address: {address}")
-                return address
+                return self.TOKEN_MINTS.get(quote_token)
             else:
-                address = self.TOKEN_MINTS.get(base_token)
-                logger.info(f"🔍 Using {base_token} address: {address}")
-                return address
+                return self.TOKEN_MINTS.get(base_token)
             
         except Exception as e:
-            logger.error(f"❌ Symbol resolution error: {e}")
+            logger.error(f"Symbol resolution error: {e}")
             return None
     
     async def fetch_candle_data(
@@ -111,7 +116,9 @@ class HeliusCollector(DEXCollector):
         timeframe: str,
         timestamp: datetime
     ) -> Dict[str, Any]:
-        """Fetch CURRENT candle only"""
+        """
+        Fetch CURRENT candle with extended time window
+        """
         logger.info(f"🔗 Helius: Fetching CURRENT candle for {symbol}")
         
         if timestamp.tzinfo is None:
@@ -129,12 +136,18 @@ class HeliusCollector(DEXCollector):
             '1h': 3600, '4h': 14400, '1d': 86400,
         }.get(timeframe, 300)
         
-        # Fetch trades for current period
-        start_time = timestamp
-        end_time = timestamp + timedelta(seconds=timeframe_seconds)
+        # 🔧 FIX: Erweitere das Zeitfenster
+        # Statt nur [timestamp, timestamp+timeframe]
+        # Nutze [timestamp-buffer, timestamp+timeframe+buffer]
+        buffer_seconds = self.time_buffer_minutes * 60
         
-        # 🔍 DEBUG: Show time range
-        logger.info(f"🔍 Time range: {start_time} to {end_time} ({timeframe_seconds}s)")
+        start_time = timestamp - timedelta(seconds=buffer_seconds)
+        end_time = timestamp + timedelta(seconds=timeframe_seconds + buffer_seconds)
+        
+        logger.info(
+            f"🔍 Extended time window: {start_time} to {end_time} "
+            f"(±{self.time_buffer_minutes}m buffer)"
+        )
         
         trades = await self.fetch_trades(
             symbol=symbol,
@@ -144,7 +157,7 @@ class HeliusCollector(DEXCollector):
         )
         
         if not trades:
-            logger.warning(f"⚠️ No trades found for {symbol} in {start_time} - {end_time}")
+            logger.warning(f"⚠️ No trades found for {symbol} in extended window")
             return {
                 'timestamp': timestamp,
                 'open': 0.0,
@@ -154,12 +167,22 @@ class HeliusCollector(DEXCollector):
                 'volume': 0.0
             }
         
+        # Filter trades to the ACTUAL candle window (for accurate OHLCV)
+        candle_trades = [
+            t for t in trades
+            if timestamp <= t['timestamp'] < (timestamp + timedelta(seconds=timeframe_seconds))
+        ]
+        
+        if not candle_trades:
+            # Use all trades if none in exact window
+            logger.warning(f"⚠️ No trades in exact candle window, using all {len(trades)} trades")
+            candle_trades = trades
+        
         # Aggregate to candle
-        prices = [t['price'] for t in trades if t.get('price', 0) > 0]
-        volumes = [t['amount'] for t in trades if t.get('amount', 0) > 0]
+        prices = [t['price'] for t in candle_trades if t.get('price', 0) > 0]
+        volumes = [t['amount'] for t in candle_trades if t.get('amount', 0) > 0]
         
         if not prices:
-            logger.warning(f"⚠️ No valid prices in {len(trades)} trades")
             return {
                 'timestamp': timestamp,
                 'open': 0.0,
@@ -180,7 +203,10 @@ class HeliusCollector(DEXCollector):
         
         self.cache.set(cache_key, candle)
         
-        logger.info(f"✅ Helius: Current candle with {len(trades)} trades")
+        logger.info(
+            f"✅ Helius: Candle built from {len(candle_trades)} trades "
+            f"({len(trades)} total in extended window)"
+        )
         return candle
     
     async def fetch_dex_trades(
@@ -190,12 +216,16 @@ class HeliusCollector(DEXCollector):
         end_time: datetime,
         limit: Optional[int] = 200
     ) -> List[Dict[str, Any]]:
-        """Fetch trades for current period only"""
-        # 🔍 DEBUG: Show what we're fetching
-        logger.info(f"🔍 Helius API call:")
-        logger.info(f"   Token: {token_address}")
-        logger.info(f"   Time: {start_time} - {end_time}")
-        logger.info(f"   Limit: {limit}")
+        """
+        Fetch trades with extended time window
+        
+        🔧 FIX: Das Zeitfenster wurde bereits von fetch_candle_data erweitert,
+                sodass wir hier mehr Trades bekommen
+        """
+        logger.debug(
+            f"🔍 Fetching trades: {token_address} "
+            f"({start_time} - {end_time})"
+        )
         
         session = await self._get_session()
         
@@ -208,8 +238,6 @@ class HeliusCollector(DEXCollector):
         }
         
         try:
-            logger.info(f"🔍 Making request to: {url}")
-            
             async with session.get(
                 url, 
                 params=params, 
@@ -217,64 +245,35 @@ class HeliusCollector(DEXCollector):
             ) as response:
                 
                 if response.status != 200:
-                    logger.error(f"❌ Helius HTTP error: {response.status}")
-                    logger.error(f"   Response: {await response.text()}")
+                    logger.error(f"Helius error: {response.status}")
                     return []
                 
                 data = await response.json()
                 
-                # 🔍 DEBUG: Show raw response
-                logger.info(f"🔍 Helius returned {len(data) if data else 0} transactions")
-                
                 if not data:
-                    logger.warning("⚠️ Helius returned empty response")
                     return []
                 
                 # Parse trades
                 trades = []
-                filtered_out = 0
-                parse_errors = 0
-                
                 for tx in data:
                     try:
                         trade = self._parse_transaction(tx)
                         
-                        if not trade:
-                            parse_errors += 1
-                            continue
-                        
-                        # Check time filter
-                        if start_time <= trade['timestamp'] <= end_time:
+                        # 🔧 FIX: Mit erweitertem Zeitfenster sollten wir jetzt Trades finden
+                        if trade and start_time <= trade['timestamp'] <= end_time:
                             trades.append(trade)
-                        else:
-                            filtered_out += 1
-                            logger.debug(
-                                f"   Filtered out trade at {trade['timestamp']} "
-                                f"(outside {start_time} - {end_time})"
-                            )
                             
-                    except Exception as e:
-                        parse_errors += 1
-                        logger.debug(f"   Parse error: {e}")
+                    except Exception:
                         continue
                 
-                # 🔍 DEBUG: Show results
-                logger.info(f"🔍 Parse results:")
-                logger.info(f"   Total TXs: {len(data)}")
-                logger.info(f"   Parse errors: {parse_errors}")
-                logger.info(f"   Filtered out (time): {filtered_out}")
-                logger.info(f"   Valid trades: {len(trades)}")
-                
-                if len(trades) == 0 and len(data) > 0:
-                    logger.warning(
-                        f"⚠️ Got {len(data)} transactions but 0 valid trades! "
-                        f"(parse_errors={parse_errors}, filtered_out={filtered_out})"
-                    )
-                
+                logger.info(
+                    f"✅ Helius: {len(trades)} trades found "
+                    f"(from {len(data)} transactions)"
+                )
                 return trades
                 
         except Exception as e:
-            logger.error(f"❌ Helius fetch error: {e}", exc_info=True)
+            logger.error(f"Helius fetch error: {e}")
             return []
     
     def _parse_transaction(self, tx: Dict) -> Optional[Dict[str, Any]]:
@@ -360,9 +359,14 @@ def create_helius_collector(
     birdeye_collector: Optional['BirdeyeCollector'] = None,
     config: Optional[Dict[str, Any]] = None
 ) -> HeliusCollector:
-    """Create DEBUG Helius Collector"""
+    """
+    Create Helius Collector with fixed time window
+    
+    🔧 Config options:
+        - time_buffer_minutes: ±X minutes buffer (default: 5)
+    """
     return HeliusCollector(
         api_key=api_key,
-        config=config,
+        config=config or {},
         birdeye_fallback=birdeye_collector
     )
