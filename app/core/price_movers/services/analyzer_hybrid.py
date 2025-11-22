@@ -5,6 +5,7 @@ HYBRID Price Mover Analyzer - CEX + DEX Combined Analysis - FIXED VERSION
 1. ✅ JSON Serialization: float('inf') → 999.0
 2. ✅ Datetime: Added timezone awareness
 3. ✅ NaN/Inf Validation before JSON response
+4. ✅ **NEW**: Dict/Object compatibility in _analyze_dex_trades - KRITISCHER FIX!
 
 🆕 NEUE FEATURES:
 - ✅ CEX (Bitget/Binance/Kraken) + DEX (Jupiter/Raydium/Orca) PARALLEL
@@ -21,7 +22,7 @@ ARCHITECTURE:
 
 import asyncio
 import logging
-import math  # Füge diese Zeile hinzu falls noch nicht vorhanden
+import math
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Tuple, Optional, Union
 from collections import defaultdict
@@ -203,7 +204,7 @@ class HybridPriceMoverAnalyzer:
                 'analysis_metadata': {...}
             }
         """
-        start = datetime.now(timezone.utc)  # 🔧 FIX: Use timezone-aware datetime
+        start = datetime.now(timezone.utc)
         
         # 🔧 FIX: Ensure input datetimes are timezone-aware
         if start_time.tzinfo is None:
@@ -387,7 +388,7 @@ class HybridPriceMoverAnalyzer:
             
         except Exception as e:
             logger.error(f"CEX fetch error: {e}")
-            raise  # Re-raise to be caught in analyze_hybrid_candle
+            raise
     
     async def _fetch_dex_data(
         self,
@@ -444,7 +445,7 @@ class HybridPriceMoverAnalyzer:
             
         except Exception as e:
             logger.error(f"DEX fetch error: {e}")
-            raise  # Re-raise to be caught in analyze_hybrid_candle
+            raise
     
     async def _analyze_cex_trades(
         self,
@@ -494,20 +495,46 @@ class HybridPriceMoverAnalyzer:
     
     async def _analyze_dex_trades(
         self,
-        trades: List[Trade],
+        trades: Union[List[Trade], List[Dict]],  # 🔧 FIX: Accept both Trade objects and dicts
         candle: Candle,
         symbol: str,
         exchange: str,
         top_n: int
     ) -> List[Dict]:
-        """Analyze DEX trades (wallet-based)"""
+        """
+        Analyze DEX trades (wallet-based)
+        
+        🔧 KRITISCHER FIX: Diese Methode akzeptiert jetzt sowohl Trade-Objekte 
+        als auch Dictionaries, da die Route direkt Dicts übergibt.
+        """
         if not trades:
             return []
+        
+        # 🔧 FIX: Normalize trades to Trade objects if they're dicts
+        normalized_trades = []
+        for trade in trades:
+            if isinstance(trade, dict):
+                # Convert dict to Trade object
+                normalized_trades.append(Trade(
+                    timestamp=trade.get('timestamp'),
+                    trade_type=trade.get('trade_type'),
+                    amount=trade.get('amount', 0.0),
+                    price=trade.get('price', 0.0),
+                    value_usd=trade.get('value_usd', trade.get('amount', 0) * trade.get('price', 0)),
+                    trade_count=trade.get('trade_count', 1),
+                    wallet_address=trade.get('wallet_address'),
+                    source=trade.get('source', 'dex')
+                ))
+            else:
+                # Already a Trade object
+                normalized_trades.append(trade)
+        
+        logger.debug(f"✓ Normalized {len(normalized_trades)} trades for analysis")
         
         # Group by wallet address
         wallet_groups = defaultdict(list)
         
-        for trade in trades:
+        for trade in normalized_trades:
             if trade.wallet_address:
                 wallet_groups[trade.wallet_address].append(trade)
         
@@ -563,10 +590,6 @@ class HybridPriceMoverAnalyzer:
         entities.sort(key=lambda e: e['impact_score'], reverse=True)
         
         return entities[:top_n]
-
-    # ============================================================
-    # SCHRITT 1: Füge 4 neue Methoden VOR der close() Methode hinzu
-    # ============================================================
 
     def _calculate_1to1_pattern_matches(
         self,
@@ -807,10 +830,6 @@ class HybridPriceMoverAnalyzer:
             logger.warning(f"Size pattern calculation error: {e}")
             return 0.0
 
-    # ============================================================
-    # SCHRITT 3: Ersetze die _calculate_correlation() Methode
-    # ============================================================
-
     def _calculate_correlation(
         self,
         cex_movers: List[Dict],
@@ -895,8 +914,8 @@ class HybridPriceMoverAnalyzer:
             'cex_led_by_seconds': int(time_diff),
             'volume_correlation': volume_correlation,
             'timing_score': timing_score,
-            'pattern_matches': pattern_matches,  # Now contains 1:1 matches!
-            'pattern_score': pattern_score,      # NEW!
+            'pattern_matches': pattern_matches,
+            'pattern_score': pattern_score,
             'conclusion': conclusion
         }
     
