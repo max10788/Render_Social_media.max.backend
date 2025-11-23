@@ -1,22 +1,29 @@
 # app/core/price_movers/collectors/unified_collector.py (korrigierte und vollständige Version)
+"""
+Unified Collector - PRODUCTION VERSION
 
-import os
+🎯 RESPONSIBILITIES:
+- Orchestrates multiple DEX collectors
+- Aggregates data from Helius, Dexscreener, etc.
+- Provides unified interface
+- Handles fallbacks gracefully
+
+🔧 IMPROVEMENTS:
+- Robust error handling
+- Comprehensive logging
+- Fallback strategy
+- Performance monitoring
+"""
+
 import logging
-from datetime import datetime
-from typing import List, Dict, Any, Optional, Union
+import asyncio
+from datetime import datetime, timezone, timedelta
+from typing import List, Dict, Any, Optional
+from collections import defaultdict
 
-from .dexscreener_collector import DexscreenerCollector # Import hinzufügen
-from .exchange_collector import ExchangeCollector, ExchangeCollectorFactory
-from .birdeye_collector import BirdeyeCollector
-from .dex_collector import DEXCollector
-from .bitquery_collector import SolanaDexCollector # Import hinzufügen
-from ..utils.constants import (
-    SupportedExchange,
-    SupportedDEX,
-    EXCHANGE_CONFIGS,
-    DEX_CONFIGS,
-    ERROR_MESSAGES
-)
+from .helius_collector import HeliusCollector, create_helius_collector
+from .dexscreener_collector import DexscreenerCollector
+from ..utils.constants import BlockchainNetwork
 
 
 logger = logging.getLogger(__name__)
@@ -24,621 +31,456 @@ logger = logging.getLogger(__name__)
 
 class UnifiedCollector:
     """
-    Unified Collector für CEX + DEX mit integriertem Bitquery Support.
+    Unified DEX Collector - PRODUCTION VERSION
+    
+    🎯 Features:
+    - Multi-source data aggregation
+    - Intelligent fallback strategy
+    - Error isolation (one failure doesn't break everything)
+    - Performance monitoring
+    - Comprehensive logging
+    
+    Architecture:
+    1. Primary: Helius (fast, pool-based)
+    2. Fallback: Dexscreener (slower but reliable)
+    3. Aggregation: Combine and deduplicate
     """
     
     def __init__(
         self,
-        cex_credentials: Optional[Dict[str, Dict[str, str]]] = None,
-        dex_api_keys: Optional[Dict[str, str]] = None,
+        helius_api_key: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None
     ):
         """
-        Initialisiert Unified Collector
+        Initialize Unified Collector
+        
         Args:
-            cex_credentials: CEX API Credentials
-            dex_api_keys: DEX API Keys {'birdeye': '...', 'helius': '...', 'bitquery': '...'}
+            helius_api_key: Helius API key
+            config: Configuration dictionary
         """
         self.config = config or {}
         
-        # CEX Collectors (unverändert)
-        self.cex_collectors: Dict[str, ExchangeCollector] = {}
-        self._init_cex_collectors(cex_credentials or {})
+        # Initialize collectors
+        self.helius: Optional[HeliusCollector] = None
+        self.dexscreener: Optional[DexscreenerCollector] = None
         
-        # DEX Collectors - NEUE Reihenfolge/Logik
-        self.birdeye_collector: Optional[BirdeyeCollector] = None
-        self.helius_collector: Optional[DEXCollector] = None
-        self.solana_dex_collector: Optional[SolanaDexCollector] = None
-        self.dexscreener_collector: Optional[DexscreenerCollector] = None # Neu
-        self.dex_collectors: Dict[str, DEXCollector] = {} # Für Trades
-        self._init_dex_collectors(dex_api_keys or {})
-        
-        logger.info(
-            f"✓ Unified Collector initialisiert: "
-            f"CEX={len(self.cex_collectors)}, "
-            f"DEX={len(self.dex_collectors)}, "
-            f"Sources=[birdeye={self.birdeye_collector is not None}, helius={self.helius_collector is not None}, bitquery={self.solana_dex_collector is not None}]"
-        )
-    
-    def _init_cex_collectors(self, credentials: Dict[str, Dict[str, str]]):
-        """Initialisiert CEX Collectors (unverändert)"""
-        for exchange in SupportedExchange:
-            creds = credentials.get(exchange.value, {})
-            
+        # Setup Helius if API key provided
+        if helius_api_key:
             try:
-                collector = ExchangeCollectorFactory.create(
-                    exchange_name=exchange.value,
-                    api_key=creds.get('api_key'),
-                    api_secret=creds.get('api_secret')
+                self.helius = create_helius_collector(
+                    api_key=helius_api_key,
+                    config=self.config.get('helius', {})
                 )
-                self.cex_collectors[exchange.value] = collector
-                logger.info(f"✓ CEX Collector created: {exchange.value}")
-                
+                logger.info("✅ Helius collector initialized")
             except Exception as e:
-                logger.warning(f"✗ Failed to create CEX collector {exchange.value}: {e}")
-                # Continue with other exchanges
-
-    def _init_dex_collectors(self, api_keys: Dict[str, str]):
-        """
-        Initialisiert DEX Collectors
+                logger.error(f"❌ Failed to initialize Helius: {e}")
+        else:
+            logger.warning("⚠️ Helius API key not provided, Helius disabled")
         
-        🔧 UPDATE: Helius bekommt jetzt Dexscreener für Pool-Lookup
-        """
-        
-        # 1. Dexscreener ZUERST initialisieren (wird von Helius gebraucht!)
+        # Setup Dexscreener
         try:
-            self.dexscreener_collector = DexscreenerCollector()
-            logger.info("✅ Dexscreener Collector initialized (OHLCV + Pool Lookup)")
+            self.dexscreener = DexscreenerCollector(
+                config=self.config.get('dexscreener', {})
+            )
+            logger.info("✅ Dexscreener collector initialized")
         except Exception as e:
-            logger.error(f"❌ Dexscreener Collector failed: {e}")
-            self.dexscreener_collector = None
+            logger.error(f"❌ Failed to initialize Dexscreener: {e}")
         
-        # 2. Moralis (OHLCV for Solana + Ethereum!)
-        moralis_keys = [
-            api_keys.get('moralis'),
-            api_keys.get('moralis_fallback'),
-            api_keys.get('moralis_fallback2')
-        ]
-        moralis_keys = [k for k in moralis_keys if k]  # Remove None
-        
-        if moralis_keys:
-            try:
-                from .moralis_collector import MoralisCollector
-                self.moralis_collector = MoralisCollector(
-                    api_keys=moralis_keys,
-                    config={'max_requests_per_minute': 100}
-                )
-                logger.info(f"✅ Moralis Collector initialized with {len(moralis_keys)} keys (Solana + Ethereum)")
-            except Exception as e:
-                logger.error(f"❌ Moralis Collector failed: {e}")
-                self.moralis_collector = None
-        else:
-            self.moralis_collector = None
-            logger.info("ℹ️ Moralis API Keys not provided")
-        
-        # 3. Birdeye (Solana OHLCV only)
-        birdeye_key = api_keys.get('birdeye')
-        if birdeye_key:
-            try:
-                self.birdeye_collector = BirdeyeCollector(
-                    api_key=birdeye_key,
-                    config={'max_requests_per_minute': 100}
-                )
-                self.birdeye_healthy_at_init = True
-                logger.info("✅ Birdeye Collector initialized (Solana OHLCV)")
-            except Exception as e:
-                logger.error(f"❌ Birdeye Collector failed init: {e}")
-                self.birdeye_collector = None
-                self.birdeye_healthy_at_init = False
-        else:
-            self.birdeye_healthy_at_init = False
-            logger.info("ℹ️ Birdeye API Key not provided")
-        
-        # 4. Helius MIT Dexscreener (🔧 NEU!)
-        helius_key = api_keys.get('helius')
-        if helius_key:
-            try:
-                from .helius_collector import create_helius_collector
-                self.helius_collector = create_helius_collector(
-                    api_key=helius_key,
-                    dexscreener_collector=self.dexscreener_collector,  # 🔧 NEU: Pass Dexscreener!
-                    config={
-                        'max_requests_per_second': 5,
-                        'cache_ttl_seconds': 300,
-                    }
-                )
-                logger.info("✅ Helius Collector initialized (Pool-based + Trades)")
-            except Exception as e:
-                logger.error(f"❌ Helius Collector failed: {e}")
-                self.helius_collector = None
-        else:
-            self.helius_collector = None
-        
-        # 5. Bitquery (SolanaDexCollector for Solana)
-        bitquery_key = api_keys.get('bitquery')
-        if bitquery_key or os.getenv("BITQUERY_API_KEY"):
-            try:
-                solana_config = {
-                    'bitquery_api_key': bitquery_key or os.getenv("BITQUERY_API_KEY"),
-                    'helius_collector_instance': self.helius_collector
-                }
-                self.solana_dex_collector = SolanaDexCollector(config=solana_config)
-                logger.info("✅ SolanaDexCollector (Bitquery) initialized")
-            except Exception as e:
-                logger.error(f"❌ SolanaDexCollector (Bitquery) failed: {e}")
-                self.solana_dex_collector = None
-        else:
-            self.solana_dex_collector = None
-            logger.info("ℹ️ Bitquery API Key not provided")
-        
-        # --- Assign Trade Collectors to DEX Exchanges ---
-        primary_trade_collector = self.helius_collector or self.solana_dex_collector
-        
-        if primary_trade_collector:
-            # Solana DEXes
-            for dex in [SupportedDEX.JUPITER, SupportedDEX.RAYDIUM, SupportedDEX.ORCA]:
-                self.dex_collectors[dex.value] = primary_trade_collector
-            
-            logger.info(
-                f"✅ Solana DEX Trade Collectors set to: {primary_trade_collector.__class__.__name__}"
-            )
-        else:
-            logger.warning("⚠️ No Solana Trade Collectors available!")
-        
-        # Ethereum DEXes (Moralis for OHLCV, no trades yet)
-        if self.moralis_collector:
-            # For now, we only have OHLCV for Ethereum via Moralis
-            # Trades would need separate implementation
-            logger.info("✅ Ethereum OHLCV available via Moralis (trades not implemented yet)")
-        
-    async def fetch_trades(
-        self,
-        exchange: str,
-        symbol: str,
-        start_time: datetime,
-        end_time: datetime,
-        limit: Optional[int] = 1000
-    ) -> Dict[str, Any]:
-        """
-        Fetcht Trades mit automatischem Routing (unverändert)
-        """
-        exchange = exchange.lower()
-        
-        # Route zu CEX oder DEX
-        if exchange in self.cex_collectors:
-            return await self._fetch_from_cex(
-                exchange, symbol, start_time, end_time, limit
-            )
-        
-        elif exchange in self.dex_collectors:
-            return await self._fetch_from_dex(
-                exchange, symbol, start_time, end_time, limit
-            )
-        
-        else:
-            available_cex = list(self.cex_collectors.keys())
-            available_dex = list(self.dex_collectors.keys())
-            
-            raise ValueError(
-                f"Exchange '{exchange}' nicht verfügbar. "
-                f"CEX: {available_cex}, DEX: {available_dex}"
-            )
-
-    async def _fetch_from_cex(
-        self,
-        exchange: str,
-        symbol: str,
-        start_time: datetime,
-        end_time: datetime,
-        limit: int
-    ) -> Dict[str, Any]:
-        """
-        Fetcht von CEX (unverändert)
-        CEX = Keine echten Wallet-IDs
-        """
-        collector = self.cex_collectors[exchange]
-        
-        logger.info(f"📊 Fetching from CEX: {exchange}")
-        
-        trades = await collector.fetch_trades(
-            symbol=symbol,
-            start_time=start_time,
-            end_time=end_time,
-            limit=limit
-        )
-        
-        return {
-            'trades': trades,
-            'has_wallet_ids': False,  # ← CEX = keine Wallet IDs
-            'data_source': 'cex',
-            'exchange': exchange,
-            'warning': 'CEX data - virtual entities based on patterns'
+        # Performance stats
+        self._stats = {
+            'helius': {'success': 0, 'errors': 0, 'fallbacks': 0},
+            'dexscreener': {'success': 0, 'errors': 0},
+            'combined': {'success': 0, 'errors': 0}
         }
-    
-    async def _fetch_from_dex(
-        self,
-        exchange: str,
-        symbol: str,
-        start_time: datetime,
-        end_time: datetime,
-        limit: int
-    ) -> Dict[str, Any]:
-        """
-        Fetcht von DEX.
-        Berücksichtigt, ob der verwendete Collector Wallet-IDs liefert.
-        """
-        collector = self.dex_collectors[exchange]
         
-        logger.info(f"🔗 Fetching from DEX using {collector.__class__.__name__}: {exchange}")
-        
-        trades = await collector.fetch_trades(
-            symbol=symbol,
-            start_time=start_time,
-            end_time=end_time,
-            limit=limit
-        )
-
-        # Bestimme has_wallet_ids basierend auf dem Collector-Typ
-        has_wallets = False
-        if hasattr(collector, 'provides_wallet_ids'):
-             # Nutze Methode aus SolanaDexCollector
-             has_wallets = collector.provides_wallet_ids()
-        elif hasattr(collector, '__class__') and collector.__class__.__name__ == 'DEXCollector': # Vermutlich Helius
-             has_wallets = True # Helius-basierter Collector liefert angenommen Trades mit Wallets
-
-        logger.info(f"🔗 Fetched {len(trades)} trades. Has wallet IDs: {has_wallets}")
-
-        return {
-            'trades': trades,
-            'has_wallet_ids': has_wallets, # <-- Dynamisch basierend auf Collector
-            'data_source': 'dex',
-            'exchange': exchange,
-            'blockchain': getattr(collector, 'blockchain', 'solana').value,
-        }
+        logger.info("🚀 UnifiedCollector initialized (PRODUCTION)")
     
-
     async def fetch_candle_data(
         self,
-        exchange: str,
         symbol: str,
         timeframe: str,
         timestamp: datetime
     ) -> Dict[str, Any]:
         """
-        Fetcht Candle-Daten mit Multi-Chain Support
+        Fetch candle data with intelligent fallback
         
-        Priorität für Solana:
-        1. Dexscreener (current only)
-        2. Birdeye (wenn healthy)
-        3. SolanaDex (Bitquery)
-        4. Helius (last resort)
+        Strategy:
+        1. Try Helius (fast, pool-based)
+        2. On failure: Try Dexscreener
+        3. On failure: Return empty candle with error flag
         
-        Priorität für EVM (Ethereum, BSC, Polygon, etc.):
-        1. Moralis (primary für alle EVM chains)
-        2. (weitere Quellen können hinzugefügt werden)
+        Args:
+            symbol: Trading pair (e.g., SOL/USDT)
+            timeframe: Timeframe (e.g., 5m)
+            timestamp: Candle timestamp
+            
+        Returns:
+            Candle data dictionary with metadata
         """
-        exchange = exchange.lower()
-    
-        # CEX: Direct routing
-        if exchange in self.cex_collectors:
-            collector = self.cex_collectors[exchange]
-            return await collector.fetch_candle_data(
-                symbol=symbol,
-                timeframe=timeframe,
-                timestamp=timestamp
+        logger.info(f"📊 Fetching candle: {symbol} {timeframe} @ {timestamp}")
+        
+        # Ensure timezone-aware
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        
+        candle = None
+        source = None
+        error = None
+        
+        # 1️⃣ TRY HELIUS FIRST
+        if self.helius:
+            try:
+                candle = await self._fetch_helius_candle(
+                    symbol, timeframe, timestamp
+                )
+                
+                if self._is_valid_candle(candle):
+                    source = 'helius'
+                    self._stats['helius']['success'] += 1
+                    logger.info(f"✅ Candle from Helius: {symbol}")
+                else:
+                    logger.warning(f"⚠️ Helius returned invalid candle")
+                    candle = None
+                    
+            except Exception as e:
+                error = str(e)
+                self._stats['helius']['errors'] += 1
+                logger.warning(f"⚠️ Helius failed: {e}")
+        
+        # 2️⃣ FALLBACK TO DEXSCREENER
+        if not candle and self.dexscreener:
+            try:
+                logger.info(f"🔄 Falling back to Dexscreener for {symbol}")
+                self._stats['helius']['fallbacks'] += 1
+                
+                candle = await self._fetch_dexscreener_candle(
+                    symbol, timeframe, timestamp
+                )
+                
+                if self._is_valid_candle(candle):
+                    source = 'dexscreener'
+                    self._stats['dexscreener']['success'] += 1
+                    logger.info(f"✅ Candle from Dexscreener: {symbol}")
+                else:
+                    logger.warning(f"⚠️ Dexscreener returned invalid candle")
+                    candle = None
+                    
+            except Exception as e:
+                error = str(e)
+                self._stats['dexscreener']['errors'] += 1
+                logger.error(f"❌ Dexscreener failed: {e}")
+        
+        # 3️⃣ FINAL RESULT
+        if candle:
+            candle['source'] = source
+            self._stats['combined']['success'] += 1
+            return candle
+        else:
+            # Return empty candle with error info
+            self._stats['combined']['errors'] += 1
+            empty_candle = self._create_empty_candle(timestamp)
+            empty_candle['error'] = error or "No data available"
+            empty_candle['source'] = 'none'
+            
+            logger.error(
+                f"❌ Failed to fetch candle for {symbol}: {error or 'No data'}"
             )
+            return empty_candle
     
-        # DEX: Multi-Chain Routing
-        elif exchange in self.dex_collectors or exchange in ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap', 'pancakeswap', 'quickswap', 'traderjoe']:
-            
-            # Detect blockchain from DEX name
-            solana_dexes = ['jupiter', 'raydium', 'orca']
-            evm_dexes = {
-                'ethereum': ['uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap'],
-                'bsc': ['pancakeswap', 'pancakeswapv2', 'pancakeswapv3'],
-                'polygon': ['quickswap', 'sushiswap'],
-                'avalanche': ['traderjoe', 'pangolin'],
-                'arbitrum': ['uniswapv3', 'sushiswap', 'camelot'],
-                'optimism': ['uniswapv3', 'velodrome'],
-                'base': ['uniswapv3', 'aerodrome', 'baseswap'],
-                'fantom': ['spookyswap', 'spiritswap']
-            }
-            
-            # Determine blockchain
-            blockchain = None
-            if exchange in solana_dexes:
-                blockchain = 'solana'
-            else:
-                # Check EVM chains
-                for chain, dexes in evm_dexes.items():
-                    if exchange in dexes:
-                        blockchain = chain
-                        break
-                
-                if not blockchain:
-                    blockchain = 'ethereum'  # Default
-                    logger.warning(f"Unknown DEX '{exchange}', defaulting to Ethereum")
-            
-            logger.info(f"🔍 Fetching {symbol} from {exchange} on {blockchain}")
-            
-            # Calculate time range
-            now = datetime.now(timezone.utc)
-            time_diff = (now - timestamp).total_seconds() / 3600
-            is_recent = time_diff < 1
-            
-            # ============ SOLANA CHAIN ============
-            if blockchain == 'solana':
-                
-                # 1. Try Dexscreener for current
-                if is_recent and self.dexscreener_collector:
-                    logger.info("🎯 Strategy: Dexscreener (Solana, current)")
-                    try:
-                        candle = await self.dexscreener_collector.fetch_candle_data(
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            timestamp=timestamp
-                        )
-                        
-                        if candle and candle.get('open', 0) > 0:
-                            logger.info("✅ Dexscreener: Got current candle")
-                            return candle
-                    except Exception as e:
-                        logger.debug(f"Dexscreener failed: {e}")
-                
-                # 2. Try Birdeye
-                if self.birdeye_collector and getattr(self, 'birdeye_healthy_at_init', True):
-                    logger.info("🎯 Strategy: Birdeye (Solana)")
-                    try:
-                        candle = await self.birdeye_collector.fetch_candle_data(
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            timestamp=timestamp
-                        )
-                        
-                        if candle and candle.get('open', 0) > 0:
-                            logger.info("✅ Birdeye: Got Solana candle")
-                            return candle
-                    except Exception as e:
-                        logger.warning(f"Birdeye failed: {e}")
-                
-                # 3. Try SolanaDex (Bitquery)
-                if self.solana_dex_collector:
-                    logger.info("🎯 Strategy: SolanaDex/Bitquery")
-                    try:
-                        candle = await self.solana_dex_collector.fetch_candle_data(
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            timestamp=timestamp
-                        )
-                        
-                        if candle and candle.get('open', 0) > 0:
-                            logger.info("✅ SolanaDex: Got candle")
-                            return candle
-                    except Exception as e:
-                        logger.warning(f"SolanaDex failed: {e}")
-                
-                # 4. Last resort: Helius
-                if self.helius_collector:
-                    logger.info("🎯 Strategy: Helius (last resort)")
-                    try:
-                        candle = await self.helius_collector.fetch_candle_data(
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            timestamp=timestamp
-                        )
-                        
-                        if candle and candle.get('open', 0) > 0:
-                            logger.info("✅ Helius: Got candle")
-                            return candle
-                    except Exception as e:
-                        logger.warning(f"Helius failed: {e}")
-            
-            # ============ EVM CHAINS (Ethereum, BSC, etc.) ============
-            else:
-                
-                # Use Moralis (only source for EVM)
-                if self.moralis_collector:
-                    logger.info(f"🎯 Strategy: Moralis ({blockchain})")
-                    try:
-                        candle = await self.moralis_collector.fetch_candle_data(
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            timestamp=timestamp,
-                            blockchain=blockchain,
-                            dex_exchange=exchange
-                        )
-                        
-                        if candle and candle.get('open', 0) > 0:
-                            logger.info(f"✅ Moralis: Got {blockchain} candle")
-                            return candle
-                    except Exception as e:
-                        logger.warning(f"Moralis {blockchain} failed: {e}")
-            
-            # No data from any source
-            logger.error(f"All OHLCV collectors failed for {exchange} {symbol} {timeframe} @ {timestamp}")
-            return {
-                'timestamp': timestamp,
-                'open': 0.0,
-                'high': 0.0,
-                'low': 0.0,
-                'close': 0.0,
-                'volume': 0.0,
-                'volume_usd': 0.0,
-                'trade_count': 0
-            }
-        
-        else:
-            raise ValueError(f"Exchange '{exchange}' nicht verfügbar")
+    async def _fetch_helius_candle(
+        self,
+        symbol: str,
+        timeframe: str,
+        timestamp: datetime
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch candle from Helius with timeout"""
+        try:
+            return await asyncio.wait_for(
+                self.helius.fetch_candle_data(symbol, timeframe, timestamp),
+                timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("⏱️ Helius timeout")
+            raise Exception("Helius timeout")
     
-    def get_exchange_info(self, exchange: str) -> Dict[str, Any]:
-        """
-        Gibt Info über Exchange zurück (angepasst für neue Collector)
-        """
-        exchange = exchange.lower()
-        
-        # Check CEX (unverändert)
-        if exchange in self.cex_collectors:
-            config = EXCHANGE_CONFIGS.get(exchange, {})
-            return {
-                'exchange': exchange,
-                'type': 'cex',
-                'has_wallet_ids': False,
-                'available': True,
-                'config': config
-            }
-        
-        # Check DEX (angepasst)
-        elif exchange in self.dex_collectors:
-            config = DEX_CONFIGS.get(exchange, {})
-            # Bestimme, ob der zugewiesene Collector Wallets liefert
-            collector = self.dex_collectors[exchange]
-            has_wallets = False
-            if hasattr(collector, 'provides_wallet_ids'):
-                has_wallets = collector.provides_wallet_ids()
-            elif collector.__class__.__name__ == 'DEXCollector': # Vermutlich Helius
-                has_wallets = True
-
-            return {
-                'exchange': exchange,
-                'type': 'dex',
-                'has_wallet_ids': has_wallets,  # Dynamisch
-                'available': True,
-                'blockchain': getattr(config.get('blockchain'), 'value', 'solana'), # Annahme
-                'has_birdeye': self.birdeye_collector is not None,
-                'has_helius': self.helius_collector is not None,
-                'has_bitquery': self.solana_dex_collector is not None, # Neu
-                'config': config
-            }
-        
-        else:
-            return {
-                'exchange': exchange,
-                'type': 'unknown',
-                'available': False,
-                'error': f"Exchange '{exchange}' nicht konfiguriert"
-            }
+    async def _fetch_dexscreener_candle(
+        self,
+        symbol: str,
+        timeframe: str,
+        timestamp: datetime
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch candle from Dexscreener with timeout"""
+        try:
+            return await asyncio.wait_for(
+                self.dexscreener.fetch_candle_data(symbol, timeframe, timestamp),
+                timeout=15.0
+            )
+        except asyncio.TimeoutError:
+            logger.warning("⏱️ Dexscreener timeout")
+            raise Exception("Dexscreener timeout")
     
-    def list_available_exchanges(self) -> Dict[str, List[str]]:
+    def _is_valid_candle(self, candle: Optional[Dict]) -> bool:
         """
-        Listet alle verfügbaren Exchanges (unverändert)
+        Check if candle contains valid data
+        
+        Args:
+            candle: Candle dictionary
+            
+        Returns:
+            True if valid, False otherwise
         """
+        if not candle:
+            return False
+        
+        # Must have OHLCV data
+        required_fields = ['open', 'high', 'low', 'close', 'volume']
+        if not all(field in candle for field in required_fields):
+            return False
+        
+        # At least one price must be > 0
+        prices = [
+            candle.get('open', 0),
+            candle.get('high', 0),
+            candle.get('low', 0),
+            candle.get('close', 0)
+        ]
+        
+        if all(p <= 0 for p in prices):
+            return False
+        
+        # Sanity check: high >= low
+        if candle.get('high', 0) < candle.get('low', 0):
+            logger.warning("⚠️ Invalid candle: high < low")
+            return False
+        
+        return True
+    
+    def _create_empty_candle(self, timestamp: datetime) -> Dict[str, Any]:
+        """Create empty candle placeholder"""
         return {
-            'cex': list(self.cex_collectors.keys()),
-            'dex': list(self.dex_collectors.keys())
+            'timestamp': timestamp,
+            'open': 0.0,
+            'high': 0.0,
+            'low': 0.0,
+            'close': 0.0,
+            'volume': 0.0
         }
     
-    async def health_check(self) -> Dict[str, Any]:
+    async def fetch_trades(
+        self,
+        symbol: str,
+        start_time: datetime,
+        end_time: datetime,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
         """
-        Prüft Health aller Collectors (angepasst für neuen Collector)
+        Fetch trades with aggregation from multiple sources
+        
+        Args:
+            symbol: Trading pair
+            start_time: Start time
+            end_time: End time
+            limit: Maximum trades per source
+            
+        Returns:
+            Combined and deduplicated trades
         """
-        results = {
-            'cex': {},
-            'dex': {},
-            'overall': 'healthy'
+        logger.info(f"🔍 Fetching trades: {symbol} ({start_time} to {end_time})")
+        
+        all_trades = []
+        
+        # Fetch from Helius
+        if self.helius:
+            try:
+                helius_trades = await asyncio.wait_for(
+                    self.helius.fetch_trades(
+                        symbol, start_time, end_time, limit
+                    ),
+                    timeout=10.0
+                )
+                
+                if helius_trades:
+                    logger.info(f"✅ Helius: {len(helius_trades)} trades")
+                    all_trades.extend(helius_trades)
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Helius trades failed: {e}")
+        
+        # Fetch from Dexscreener (if needed)
+        if self.dexscreener and len(all_trades) < limit / 2:
+            try:
+                dex_trades = await asyncio.wait_for(
+                    self.dexscreener.fetch_trades(
+                        symbol, start_time, end_time, limit
+                    ),
+                    timeout=15.0
+                )
+                
+                if dex_trades:
+                    logger.info(f"✅ Dexscreener: {len(dex_trades)} trades")
+                    all_trades.extend(dex_trades)
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Dexscreener trades failed: {e}")
+        
+        # Deduplicate by signature/id
+        unique_trades = self._deduplicate_trades(all_trades)
+        
+        # Sort by timestamp
+        unique_trades.sort(key=lambda t: t.get('timestamp', datetime.min))
+        
+        logger.info(
+            f"✅ Total trades: {len(unique_trades)} "
+            f"(from {len(all_trades)} raw)"
+        )
+        
+        return unique_trades[:limit]
+    
+    def _deduplicate_trades(
+        self, 
+        trades: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Remove duplicate trades based on signature/id
+        
+        Args:
+            trades: List of trades
+            
+        Returns:
+            Deduplicated trades
+        """
+        seen_ids = set()
+        unique = []
+        
+        for trade in trades:
+            trade_id = (
+                trade.get('signature') or 
+                trade.get('id') or 
+                trade.get('tx_hash')
+            )
+            
+            if trade_id and trade_id not in seen_ids:
+                seen_ids.add(trade_id)
+                unique.append(trade)
+            elif not trade_id:
+                # No ID - keep it (might be aggregated)
+                unique.append(trade)
+        
+        return unique
+    
+    async def fetch_current_price(self, symbol: str) -> Optional[float]:
+        """
+        Fetch current price with fallback
+        
+        Args:
+            symbol: Trading pair
+            
+        Returns:
+            Current price or None
+        """
+        # Try Dexscreener first (more reliable for current price)
+        if self.dexscreener:
+            try:
+                price = await asyncio.wait_for(
+                    self.dexscreener.fetch_current_price(symbol),
+                    timeout=5.0
+                )
+                if price and price > 0:
+                    return price
+            except Exception as e:
+                logger.warning(f"⚠️ Dexscreener price failed: {e}")
+        
+        # Fallback to Helius
+        if self.helius:
+            try:
+                # Get latest candle
+                now = datetime.now(timezone.utc)
+                candle = await self.fetch_candle_data(symbol, '1m', now)
+                
+                if candle and candle.get('close', 0) > 0:
+                    return candle['close']
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Helius price failed: {e}")
+        
+        return None
+    
+    async def health_check(self) -> Dict[str, bool]:
+        """
+        Check health of all collectors
+        
+        Returns:
+            Dictionary with health status
+        """
+        health = {}
+        
+        if self.helius:
+            try:
+                health['helius'] = await asyncio.wait_for(
+                    self.helius.health_check(),
+                    timeout=5.0
+                )
+            except Exception as e:
+                logger.error(f"❌ Helius health check failed: {e}")
+                health['helius'] = False
+        
+        if self.dexscreener:
+            try:
+                health['dexscreener'] = await asyncio.wait_for(
+                    self.dexscreener.health_check(),
+                    timeout=5.0
+                )
+            except Exception as e:
+                logger.error(f"❌ Dexscreener health check failed: {e}")
+                health['dexscreener'] = False
+        
+        logger.info(f"🏥 Health check: {health}")
+        return health
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get performance statistics"""
+        stats = {
+            'collectors': self._stats.copy(),
+            'available': {
+                'helius': self.helius is not None,
+                'dexscreener': self.dexscreener is not None
+            }
         }
         
-        # Check CEX (unverändert)
-        for name, collector in self.cex_collectors.items():
-            try:
-                is_healthy = await collector.health_check()
-                results['cex'][name] = is_healthy
-                if not is_healthy:
-                    results['overall'] = 'degraded'
-            except Exception as e:
-                logger.error(f"CEX health check failed {name}: {e}")
-                results['cex'][name] = False
-                results['overall'] = 'degraded'
+        # Add collector-specific stats
+        if self.helius:
+            stats['helius_details'] = self.helius.get_stats()
         
-        # DEX Checks
-        if self.dexscreener_collector:
-            try:
-                results['dex']['dexscreener'] = await self.dexscreener_collector.health_check()
-                if not results['dex']['dexscreener']:
-                    results['overall'] = 'degraded'
-            except Exception as e:
-                logger.error(f"Dexscreener health check failed: {e}")
-                results['dex']['dexscreener'] = False
-                results['overall'] = 'degraded'
-
-        if self.birdeye_collector:
-            try:
-                results['dex']['birdeye'] = await self.birdeye_collector.health_check()
-                if not results['dex']['birdeye']:
-                    results['overall'] = 'degraded'
-            except Exception as e:
-                logger.error(f"Birdeye health check failed: {e}")
-                results['dex']['birdeye'] = False
-                results['overall'] = 'degraded'
-
-        if self.helius_collector:
-            try:
-                results['dex']['helius'] = await self.helius_collector.health_check()
-                if not results['dex']['helius']:
-                    results['overall'] = 'degraded'
-            except Exception as e:
-                logger.error(f"Helius health check failed: {e}")
-                results['dex']['helius'] = False
-                results['overall'] = 'degraded'
-
-        if self.solana_dex_collector:
-            try:
-                results['dex']['solana_bitquery'] = await self.solana_dex_collector.health_check()
-                if not results['dex']['solana_bitquery']:
-                    results['overall'] = 'degraded'
-            except Exception as e:
-                logger.error(f"SolanaDex (Bitquery) health check failed: {e}")
-                results['dex']['solana_bitquery'] = False
-                results['overall'] = 'degraded'
-
-        # DEX Exchanges inherit health
-        # Hier könntest du entscheiden, welche Quelle die "Gesundheit" bestimmt.
-        # Annahme: Die Quelle, die für Trades zuständig ist, bestimmt die Gesundheit.
-        for dex_name in self.dex_collectors.keys():
-            primary_trade_collector = self.dex_collectors[dex_name]
-            collector_name_key = 'unknown'
-            if primary_trade_collector == self.helius_collector:
-                collector_name_key = 'helius'
-            elif primary_trade_collector == self.solana_dex_collector:
-                collector_name_key = 'solana_bitquery'
-            # Wenn Dexscreener nur für OHLCV genutzt wird, beeinflusst es die Trade-Gesundheit nicht direkt.
-            results['dex'][dex_name] = results['dex'].get(collector_name_key, False)
-
-        return results
+        return stats
     
     async def close(self):
-        """Schließt alle Collectors (angepasst für neuen Collector)"""
-        # Close CEX (unverändert)
-        for name, collector in self.cex_collectors.items():
-            try:
-                await collector.close()
-                logger.debug(f"Closed CEX collector: {name}")
-            except Exception as e:
-                logger.error(f"Error closing CEX collector {name}: {e}")
+        """Clean up all collectors"""
+        if self.helius:
+            await self.helius.close()
         
-        # Schließe DEX Collector
-        for collector in [self.dexscreener_collector, self.birdeye_collector, self.helius_collector, self.solana_dex_collector]:
-            if collector:
-                try: await collector.close()
-                except: pass
+        if self.dexscreener:
+            await self.dexscreener.close()
+        
+        logger.info(f"📊 Final stats: {self.get_stats()}")
+        logger.info("🔌 UnifiedCollector closed")
 
-        logger.info("✓ All collectors closed")
 
+# Factory function for easy instantiation
+def create_unified_collector(
+    helius_api_key: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None
+) -> UnifiedCollector:
+    """
+    Create production-ready Unified Collector
     
-    def __str__(self) -> str:
-        dex_info = []
-        if self.birdeye_collector:
-            dex_info.append("birdeye")
-        if self.helius_collector:
-            dex_info.append("helius")
-        if self.solana_dex_collector:
-            dex_info.append("solana_bitquery") # Neu
-
-        return (
-            f"UnifiedCollector("
-            f"CEX={len(self.cex_collectors)}, "
-            f"DEX={len(self.dex_collectors)}, "
-            f"Providers={dex_info})"
-        )
-    
-    def __repr__(self) -> str:
-        return self.__str__()
+    Args:
+        helius_api_key: Helius API key
+        config: Configuration dictionary
+        
+    Returns:
+        UnifiedCollector instance
+    """
+    return UnifiedCollector(
+        helius_api_key=helius_api_key,
+        config=config or {}
+    )
