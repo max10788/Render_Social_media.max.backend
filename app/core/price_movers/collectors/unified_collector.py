@@ -1,10 +1,10 @@
-# app/core/price_movers/collectors/unified_collector.py (korrigierte und vollständige Version)
 """
 Unified Collector - PRODUCTION VERSION
 
 🎯 RESPONSIBILITIES:
-- Orchestrates multiple DEX collectors
-- Aggregates data from Helius, Dexscreener, etc.
+- Orchestrates multiple DEX collectors (Helius, Dexscreener)
+- Orchestrates multiple CEX collectors (Binance, Bitget, Kraken)
+- Aggregates data from all sources
 - Provides unified interface
 - Handles fallbacks gracefully
 
@@ -21,95 +21,82 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 
-from .helius_collector import HeliusCollector, create_helius_collector
-from .dexscreener_collector import DexscreenerCollector
-from ..utils.constants import BlockchainNetwork
-
 
 logger = logging.getLogger(__name__)
 
 
 class UnifiedCollector:
     """
-    Unified DEX Collector - PRODUCTION VERSION
+    Unified DEX + CEX Collector - PRODUCTION VERSION
     
     🎯 Features:
-    - Multi-source data aggregation
+    - Multi-source data aggregation (DEX + CEX)
     - Intelligent fallback strategy
     - Error isolation (one failure doesn't break everything)
     - Performance monitoring
     - Comprehensive logging
     
     Architecture:
-    1. Primary: Helius (fast, pool-based)
-    2. Fallback: Dexscreener (slower but reliable)
-    3. Aggregation: Combine and deduplicate
+    1. Primary: Helius (fast, pool-based) for DEX
+    2. Fallback: Dexscreener (slower but reliable) for DEX
+    3. CEX: Binance/Bitget/Kraken for historical data
+    4. Aggregation: Combine and deduplicate
     """
     
     def __init__(
         self,
-        helius_api_key: Optional[str] = None,
+        helius_collector: Optional[Any] = None,
+        dexscreener_collector: Optional[Any] = None,
+        cex_collectors: Optional[Dict[str, Any]] = None,
         config: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize Unified Collector
         
         Args:
-            helius_api_key: Helius API key
+            helius_collector: Helius DEX collector
+            dexscreener_collector: Dexscreener collector
+            cex_collectors: Dictionary of CEX collectors
             config: Configuration dictionary
         """
         self.config = config or {}
         
         # Initialize collectors
-        self.helius: Optional[HeliusCollector] = None
-        self.dexscreener: Optional[DexscreenerCollector] = None
-        
-        # Setup Helius if API key provided
-        if helius_api_key:
-            try:
-                self.helius = create_helius_collector(
-                    api_key=helius_api_key,
-                    config=self.config.get('helius', {})
-                )
-                logger.info("✅ Helius collector initialized")
-            except Exception as e:
-                logger.error(f"❌ Failed to initialize Helius: {e}")
-        else:
-            logger.warning("⚠️ Helius API key not provided, Helius disabled")
-        
-        # Setup Dexscreener
-        try:
-            self.dexscreener = DexscreenerCollector(
-                config=self.config.get('dexscreener', {})
-            )
-            logger.info("✅ Dexscreener collector initialized")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Dexscreener: {e}")
+        self.helius_collector = helius_collector
+        self.dexscreener_collector = dexscreener_collector
+        self.cex_collectors = cex_collectors or {}
         
         # Performance stats
         self._stats = {
             'helius': {'success': 0, 'errors': 0, 'fallbacks': 0},
             'dexscreener': {'success': 0, 'errors': 0},
+            'cex': {name: {'success': 0, 'errors': 0} for name in self.cex_collectors.keys()},
             'combined': {'success': 0, 'errors': 0}
         }
         
-        logger.info("🚀 UnifiedCollector initialized (PRODUCTION)")
+        logger.info(
+            f"🚀 UnifiedCollector initialized (PRODUCTION) - "
+            f"DEX: {bool(helius_collector)}/{bool(dexscreener_collector)}, "
+            f"CEX: {len(self.cex_collectors)} exchanges"
+        )
     
     async def fetch_candle_data(
         self,
+        exchange: str,
         symbol: str,
         timeframe: str,
         timestamp: datetime
     ) -> Dict[str, Any]:
         """
-        Fetch candle data with intelligent fallback
+        Fetch candle data with intelligent routing and fallback
         
         Strategy:
-        1. Try Helius (fast, pool-based)
-        2. On failure: Try Dexscreener
-        3. On failure: Return empty candle with error flag
+        1. Determine if CEX or DEX based on exchange name
+        2. For DEX: Try Helius → Dexscreener → Empty
+        3. For CEX: Route to appropriate exchange
         
         Args:
+            exchange: Exchange name (jupiter/raydium/binance/bitget/etc)
             symbol: Trading pair (e.g., SOL/USDT)
             timeframe: Timeframe (e.g., 5m)
             timestamp: Candle timestamp
@@ -117,21 +104,55 @@ class UnifiedCollector:
         Returns:
             Candle data dictionary with metadata
         """
-        logger.info(f"📊 Fetching candle: {symbol} {timeframe} @ {timestamp}")
+        logger.info(f"📊 Fetching candle: {exchange} {symbol} {timeframe} @ {timestamp}")
         
         # Ensure timezone-aware
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
         
+        # Route based on exchange type
+        is_dex = self._is_dex_exchange(exchange)
+        
+        if is_dex:
+            return await self._fetch_dex_candle(symbol, timeframe, timestamp)
+        else:
+            return await self._fetch_cex_candle(exchange, symbol, timeframe, timestamp)
+    
+    def _is_dex_exchange(self, exchange: str) -> bool:
+        """Check if exchange is a DEX"""
+        dex_exchanges = [
+            'jupiter', 'raydium', 'orca',  # Solana
+            'uniswap', 'uniswapv2', 'uniswapv3', 'sushiswap',  # Ethereum
+            'pancakeswap', 'pancakeswapv2', 'pancakeswapv3',  # BSC
+        ]
+        return exchange.lower() in dex_exchanges
+    
+    async def _fetch_dex_candle(
+        self,
+        symbol: str,
+        timeframe: str,
+        timestamp: datetime
+    ) -> Dict[str, Any]:
+        """
+        Fetch DEX candle with intelligent fallback
+        
+        Strategy:
+        1. Try Helius (fast, pool-based)
+        2. On failure: Try Dexscreener
+        3. On failure: Return empty candle with error flag
+        """
         candle = None
         source = None
         error = None
         
         # 1️⃣ TRY HELIUS FIRST
-        if self.helius:
+        if self.helius_collector:
             try:
-                candle = await self._fetch_helius_candle(
-                    symbol, timeframe, timestamp
+                candle = await asyncio.wait_for(
+                    self.helius_collector.fetch_candle_data(
+                        symbol, timeframe, timestamp
+                    ),
+                    timeout=10.0
                 )
                 
                 if self._is_valid_candle(candle):
@@ -142,19 +163,26 @@ class UnifiedCollector:
                     logger.warning(f"⚠️ Helius returned invalid candle")
                     candle = None
                     
+            except asyncio.TimeoutError:
+                error = "Helius timeout"
+                self._stats['helius']['errors'] += 1
+                logger.warning(f"⏱️ Helius timeout for {symbol}")
             except Exception as e:
                 error = str(e)
                 self._stats['helius']['errors'] += 1
                 logger.warning(f"⚠️ Helius failed: {e}")
         
         # 2️⃣ FALLBACK TO DEXSCREENER
-        if not candle and self.dexscreener:
+        if not candle and self.dexscreener_collector:
             try:
                 logger.info(f"🔄 Falling back to Dexscreener for {symbol}")
                 self._stats['helius']['fallbacks'] += 1
                 
-                candle = await self._fetch_dexscreener_candle(
-                    symbol, timeframe, timestamp
+                candle = await asyncio.wait_for(
+                    self.dexscreener_collector.fetch_candle_data(
+                        symbol, timeframe, timestamp
+                    ),
+                    timeout=15.0
                 )
                 
                 if self._is_valid_candle(candle):
@@ -165,6 +193,10 @@ class UnifiedCollector:
                     logger.warning(f"⚠️ Dexscreener returned invalid candle")
                     candle = None
                     
+            except asyncio.TimeoutError:
+                error = "Dexscreener timeout"
+                self._stats['dexscreener']['errors'] += 1
+                logger.warning(f"⏱️ Dexscreener timeout")
             except Exception as e:
                 error = str(e)
                 self._stats['dexscreener']['errors'] += 1
@@ -183,41 +215,60 @@ class UnifiedCollector:
             empty_candle['source'] = 'none'
             
             logger.error(
-                f"❌ Failed to fetch candle for {symbol}: {error or 'No data'}"
+                f"❌ Failed to fetch DEX candle for {symbol}: {error or 'No data'}"
             )
             return empty_candle
     
-    async def _fetch_helius_candle(
+    async def _fetch_cex_candle(
         self,
+        exchange: str,
         symbol: str,
         timeframe: str,
         timestamp: datetime
-    ) -> Optional[Dict[str, Any]]:
-        """Fetch candle from Helius with timeout"""
+    ) -> Dict[str, Any]:
+        """
+        Fetch CEX candle
+        
+        Args:
+            exchange: CEX name (binance/bitget/kraken)
+            symbol: Trading pair
+            timeframe: Timeframe
+            timestamp: Candle timestamp
+            
+        Returns:
+            Candle data dictionary
+        """
+        exchange_lower = exchange.lower()
+        
+        if exchange_lower not in self.cex_collectors:
+            logger.error(f"❌ Unknown CEX exchange: {exchange}")
+            return self._create_empty_candle(timestamp)
+        
+        collector = self.cex_collectors[exchange_lower]
+        
         try:
-            return await asyncio.wait_for(
-                self.helius.fetch_candle_data(symbol, timeframe, timestamp),
+            candle = await asyncio.wait_for(
+                collector.fetch_candle_data(symbol, timeframe, timestamp),
                 timeout=10.0
             )
+            
+            if self._is_valid_candle(candle):
+                candle['source'] = f'cex_{exchange_lower}'
+                self._stats['cex'][exchange_lower]['success'] += 1
+                logger.info(f"✅ Candle from {exchange}: {symbol}")
+                return candle
+            else:
+                logger.warning(f"⚠️ {exchange} returned invalid candle")
+                return self._create_empty_candle(timestamp)
+                
         except asyncio.TimeoutError:
-            logger.warning("⏱️ Helius timeout")
-            raise Exception("Helius timeout")
-    
-    async def _fetch_dexscreener_candle(
-        self,
-        symbol: str,
-        timeframe: str,
-        timestamp: datetime
-    ) -> Optional[Dict[str, Any]]:
-        """Fetch candle from Dexscreener with timeout"""
-        try:
-            return await asyncio.wait_for(
-                self.dexscreener.fetch_candle_data(symbol, timeframe, timestamp),
-                timeout=15.0
-            )
-        except asyncio.TimeoutError:
-            logger.warning("⏱️ Dexscreener timeout")
-            raise Exception("Dexscreener timeout")
+            self._stats['cex'][exchange_lower]['errors'] += 1
+            logger.warning(f"⏱️ {exchange} timeout")
+            return self._create_empty_candle(timestamp)
+        except Exception as e:
+            self._stats['cex'][exchange_lower]['errors'] += 1
+            logger.error(f"❌ {exchange} failed: {e}")
+            return self._create_empty_candle(timestamp)
     
     def _is_valid_candle(self, candle: Optional[Dict]) -> bool:
         """
@@ -268,32 +319,59 @@ class UnifiedCollector:
     
     async def fetch_trades(
         self,
+        exchange: str,
         symbol: str,
         start_time: datetime,
         end_time: datetime,
         limit: int = 100
-    ) -> List[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """
         Fetch trades with aggregation from multiple sources
         
         Args:
+            exchange: Exchange name
             symbol: Trading pair
             start_time: Start time
             end_time: End time
             limit: Maximum trades per source
             
         Returns:
-            Combined and deduplicated trades
+            Dictionary with trades and metadata
         """
-        logger.info(f"🔍 Fetching trades: {symbol} ({start_time} to {end_time})")
+        logger.info(f"🔍 Fetching trades: {exchange} {symbol} ({start_time} to {end_time})")
         
+        # Route based on exchange type
+        is_dex = self._is_dex_exchange(exchange)
+        
+        if is_dex:
+            trades = await self._fetch_dex_trades(symbol, start_time, end_time, limit)
+        else:
+            trades = await self._fetch_cex_trades(exchange, symbol, start_time, end_time, limit)
+        
+        return {
+            'trades': trades,
+            'count': len(trades),
+            'exchange': exchange,
+            'symbol': symbol,
+            'start_time': start_time,
+            'end_time': end_time
+        }
+    
+    async def _fetch_dex_trades(
+        self,
+        symbol: str,
+        start_time: datetime,
+        end_time: datetime,
+        limit: int
+    ) -> List[Dict[str, Any]]:
+        """Fetch DEX trades with fallback"""
         all_trades = []
         
         # Fetch from Helius
-        if self.helius:
+        if self.helius_collector:
             try:
                 helius_trades = await asyncio.wait_for(
-                    self.helius.fetch_trades(
+                    self.helius_collector.fetch_trades(
                         symbol, start_time, end_time, limit
                     ),
                     timeout=10.0
@@ -307,10 +385,10 @@ class UnifiedCollector:
                 logger.warning(f"⚠️ Helius trades failed: {e}")
         
         # Fetch from Dexscreener (if needed)
-        if self.dexscreener and len(all_trades) < limit / 2:
+        if self.dexscreener_collector and len(all_trades) < limit / 2:
             try:
                 dex_trades = await asyncio.wait_for(
-                    self.dexscreener.fetch_trades(
+                    self.dexscreener_collector.fetch_trades(
                         symbol, start_time, end_time, limit
                     ),
                     timeout=15.0
@@ -330,11 +408,41 @@ class UnifiedCollector:
         unique_trades.sort(key=lambda t: t.get('timestamp', datetime.min))
         
         logger.info(
-            f"✅ Total trades: {len(unique_trades)} "
+            f"✅ Total DEX trades: {len(unique_trades)} "
             f"(from {len(all_trades)} raw)"
         )
         
         return unique_trades[:limit]
+    
+    async def _fetch_cex_trades(
+        self,
+        exchange: str,
+        symbol: str,
+        start_time: datetime,
+        end_time: datetime,
+        limit: int
+    ) -> List[Dict[str, Any]]:
+        """Fetch CEX trades"""
+        exchange_lower = exchange.lower()
+        
+        if exchange_lower not in self.cex_collectors:
+            logger.error(f"❌ Unknown CEX exchange: {exchange}")
+            return []
+        
+        collector = self.cex_collectors[exchange_lower]
+        
+        try:
+            trades = await asyncio.wait_for(
+                collector.fetch_trades(symbol, start_time, end_time, limit),
+                timeout=10.0
+            )
+            
+            logger.info(f"✅ {exchange}: {len(trades)} trades")
+            return trades
+            
+        except Exception as e:
+            logger.error(f"❌ {exchange} trades failed: {e}")
+            return []
     
     def _deduplicate_trades(
         self, 
@@ -379,10 +487,10 @@ class UnifiedCollector:
             Current price or None
         """
         # Try Dexscreener first (more reliable for current price)
-        if self.dexscreener:
+        if self.dexscreener_collector:
             try:
                 price = await asyncio.wait_for(
-                    self.dexscreener.fetch_current_price(symbol),
+                    self.dexscreener_collector.fetch_current_price(symbol),
                     timeout=5.0
                 )
                 if price and price > 0:
@@ -391,17 +499,32 @@ class UnifiedCollector:
                 logger.warning(f"⚠️ Dexscreener price failed: {e}")
         
         # Fallback to Helius
-        if self.helius:
+        if self.helius_collector:
             try:
                 # Get latest candle
                 now = datetime.now(timezone.utc)
-                candle = await self.fetch_candle_data(symbol, '1m', now)
+                candle = await self.fetch_candle_data(
+                    'jupiter', symbol, '1m', now
+                )
                 
                 if candle and candle.get('close', 0) > 0:
                     return candle['close']
                     
             except Exception as e:
                 logger.warning(f"⚠️ Helius price failed: {e}")
+        
+        # Try CEX as last resort
+        for cex_name, collector in self.cex_collectors.items():
+            try:
+                price = await asyncio.wait_for(
+                    collector.fetch_current_price(symbol),
+                    timeout=5.0
+                )
+                if price and price > 0:
+                    logger.info(f"✅ Price from {cex_name}: {price}")
+                    return price
+            except Exception as e:
+                logger.warning(f"⚠️ {cex_name} price failed: {e}")
         
         return None
     
@@ -414,25 +537,38 @@ class UnifiedCollector:
         """
         health = {}
         
-        if self.helius:
+        # Check Helius
+        if self.helius_collector:
             try:
                 health['helius'] = await asyncio.wait_for(
-                    self.helius.health_check(),
+                    self.helius_collector.health_check(),
                     timeout=5.0
                 )
             except Exception as e:
                 logger.error(f"❌ Helius health check failed: {e}")
                 health['helius'] = False
         
-        if self.dexscreener:
+        # Check Dexscreener
+        if self.dexscreener_collector:
             try:
                 health['dexscreener'] = await asyncio.wait_for(
-                    self.dexscreener.health_check(),
+                    self.dexscreener_collector.health_check(),
                     timeout=5.0
                 )
             except Exception as e:
                 logger.error(f"❌ Dexscreener health check failed: {e}")
                 health['dexscreener'] = False
+        
+        # Check CEX collectors
+        for cex_name, collector in self.cex_collectors.items():
+            try:
+                health[f'cex_{cex_name}'] = await asyncio.wait_for(
+                    collector.health_check(),
+                    timeout=5.0
+                )
+            except Exception as e:
+                logger.error(f"❌ {cex_name} health check failed: {e}")
+                health[f'cex_{cex_name}'] = False
         
         logger.info(f"🏥 Health check: {health}")
         return health
@@ -442,24 +578,32 @@ class UnifiedCollector:
         stats = {
             'collectors': self._stats.copy(),
             'available': {
-                'helius': self.helius is not None,
-                'dexscreener': self.dexscreener is not None
+                'helius': self.helius_collector is not None,
+                'dexscreener': self.dexscreener_collector is not None,
+                'cex': list(self.cex_collectors.keys())
             }
         }
         
         # Add collector-specific stats
-        if self.helius:
-            stats['helius_details'] = self.helius.get_stats()
+        if self.helius_collector and hasattr(self.helius_collector, 'get_stats'):
+            stats['helius_details'] = self.helius_collector.get_stats()
         
         return stats
     
     async def close(self):
         """Clean up all collectors"""
-        if self.helius:
-            await self.helius.close()
+        # Close Helius
+        if self.helius_collector and hasattr(self.helius_collector, 'close'):
+            await self.helius_collector.close()
         
-        if self.dexscreener:
-            await self.dexscreener.close()
+        # Close Dexscreener
+        if self.dexscreener_collector and hasattr(self.dexscreener_collector, 'close'):
+            await self.dexscreener_collector.close()
+        
+        # Close CEX collectors
+        for cex_name, collector in self.cex_collectors.items():
+            if hasattr(collector, 'close'):
+                await collector.close()
         
         logger.info(f"📊 Final stats: {self.get_stats()}")
         logger.info("🔌 UnifiedCollector closed")
@@ -467,20 +611,26 @@ class UnifiedCollector:
 
 # Factory function for easy instantiation
 def create_unified_collector(
-    helius_api_key: Optional[str] = None,
+    helius_collector: Optional[Any] = None,
+    dexscreener_collector: Optional[Any] = None,
+    cex_collectors: Optional[Dict[str, Any]] = None,
     config: Optional[Dict[str, Any]] = None
 ) -> UnifiedCollector:
     """
     Create production-ready Unified Collector
     
     Args:
-        helius_api_key: Helius API key
+        helius_collector: Helius collector instance
+        dexscreener_collector: Dexscreener collector instance
+        cex_collectors: Dictionary of CEX collectors
         config: Configuration dictionary
         
     Returns:
         UnifiedCollector instance
     """
     return UnifiedCollector(
-        helius_api_key=helius_api_key,
+        helius_collector=helius_collector,
+        dexscreener_collector=dexscreener_collector,
+        cex_collectors=cex_collectors or {},
         config=config or {}
     )
