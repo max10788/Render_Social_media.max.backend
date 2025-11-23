@@ -117,106 +117,60 @@ class UnifiedCollector:
         )
     
     def _initialize_cex_collectors(self, cex_credentials: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Initialize CEX collectors from credentials
-        
-        Args:
-            cex_credentials: Dictionary with CEX credentials
-            
-        Returns:
-            Dictionary of initialized collectors
-        """
+        """Initialize CEX collectors using CCXT"""
         collectors = {}
         
-        logger.info(f"🔧 Initializing CEX collectors from credentials: {list(cex_credentials.keys())}")
+        logger.info(f"🔧 Initializing CEX with CCXT: {list(cex_credentials.keys())}")
         
-        # Try to initialize Binance
+        try:
+            import ccxt
+        except ImportError:
+            logger.error("❌ CCXT not installed! Run: pip install ccxt")
+            return collectors
+        
+        # Binance
         binance_creds = cex_credentials.get('binance', {})
-        if binance_creds.get('api_key') and binance_creds.get('api_secret'):
-            try:
-                # Try different import paths
-                try:
-                    from app.core.price_movers.collectors.binance_collector import BinanceCollector
-                except ImportError:
-                    from app.core.price_movers.collectors.exchange_collector import ExchangeCollector
-                    logger.debug("Using ExchangeCollector for Binance")
-                    collectors['binance'] = ExchangeCollector(
-                        exchange_name='binance',
-                        api_key=binance_creds['api_key'],
-                        api_secret=binance_creds['api_secret']
-                    )
-                    logger.info("✅ Binance collector initialized (ExchangeCollector)")
-                else:
-                    collectors['binance'] = BinanceCollector(
-                        api_key=binance_creds['api_key'],
-                        api_secret=binance_creds['api_secret']
-                    )
-                    logger.info("✅ Binance collector initialized (BinanceCollector)")
-            except Exception as e:
-                logger.error(f"❌ Failed to initialize Binance: {e}", exc_info=True)
-        else:
-            logger.debug("⚠️ Binance credentials incomplete")
+        try:
+            config = {
+                'enableRateLimit': True,
+                'options': {'defaultType': 'spot'}
+            }
+            if binance_creds.get('api_key'):
+                config['apiKey'] = binance_creds['api_key']
+            if binance_creds.get('api_secret'):
+                config['secret'] = binance_creds['api_secret']
+            
+            collectors['binance'] = ccxt.binance(config)
+            logger.info("✅ Binance initialized (CCXT)")
+        except Exception as e:
+            logger.error(f"❌ Binance init failed: {e}")
         
-        # Try to initialize Bitget
+        # Bitget
         bitget_creds = cex_credentials.get('bitget', {})
         if bitget_creds.get('api_key') and bitget_creds.get('api_secret'):
             try:
-                # Try different import paths
-                try:
-                    from app.core.price_movers.collectors.bitget_collector import BitgetCollector
-                except ImportError:
-                    from app.core.price_movers.collectors.exchange_collector import ExchangeCollector
-                    logger.debug("Using ExchangeCollector for Bitget")
-                    collectors['bitget'] = ExchangeCollector(
-                        exchange_name='bitget',
-                        api_key=bitget_creds['api_key'],
-                        api_secret=bitget_creds['api_secret'],
-                        passphrase=bitget_creds.get('passphrase', '')
-                    )
-                    logger.info("✅ Bitget collector initialized (ExchangeCollector)")
-                else:
-                    collectors['bitget'] = BitgetCollector(
-                        api_key=bitget_creds['api_key'],
-                        api_secret=bitget_creds['api_secret'],
-                        passphrase=bitget_creds.get('passphrase', '')
-                    )
-                    logger.info("✅ Bitget collector initialized (BitgetCollector)")
+                collectors['bitget'] = ccxt.bitget({
+                    'apiKey': bitget_creds['api_key'],
+                    'secret': bitget_creds['api_secret'],
+                    'password': bitget_creds.get('passphrase', ''),
+                    'enableRateLimit': True,
+                })
+                logger.info("✅ Bitget initialized (CCXT)")
             except Exception as e:
-                logger.error(f"❌ Failed to initialize Bitget: {e}", exc_info=True)
-        else:
-            logger.debug("⚠️ Bitget credentials incomplete")
+                logger.error(f"❌ Bitget init failed: {e}")
         
-        # Try to initialize Kraken
+        # Kraken
         kraken_creds = cex_credentials.get('kraken', {})
         if kraken_creds.get('api_key') and kraken_creds.get('api_secret'):
             try:
-                # Try different import paths
-                try:
-                    from app.core.price_movers.collectors.kraken_collector import KrakenCollector
-                except ImportError:
-                    from app.core.price_movers.collectors.exchange_collector import ExchangeCollector
-                    logger.debug("Using ExchangeCollector for Kraken")
-                    collectors['kraken'] = ExchangeCollector(
-                        exchange_name='kraken',
-                        api_key=kraken_creds['api_key'],
-                        api_secret=kraken_creds['api_secret']
-                    )
-                    logger.info("✅ Kraken collector initialized (ExchangeCollector)")
-                else:
-                    collectors['kraken'] = KrakenCollector(
-                        api_key=kraken_creds['api_key'],
-                        api_secret=kraken_creds['api_secret']
-                    )
-                    logger.info("✅ Kraken collector initialized (KrakenCollector)")
+                collectors['kraken'] = ccxt.kraken({
+                    'apiKey': kraken_creds['api_key'],
+                    'secret': kraken_creds['api_secret'],
+                    'enableRateLimit': True,
+                })
+                logger.info("✅ Kraken initialized (CCXT)")
             except Exception as e:
-                logger.error(f"❌ Failed to initialize Kraken: {e}", exc_info=True)
-        else:
-            logger.debug("⚠️ Kraken credentials incomplete")
-        
-        if not collectors:
-            logger.warning("⚠️ No CEX collectors initialized successfully!")
-        else:
-            logger.info(f"✅ CEX collectors initialized: {list(collectors.keys())}")
+                logger.error(f"❌ Kraken init failed: {e}")
         
         return collectors
     
