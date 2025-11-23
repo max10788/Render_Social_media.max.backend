@@ -47,7 +47,11 @@ class UnifiedCollector:
         self,
         helius_collector: Optional[Any] = None,
         dexscreener_collector: Optional[Any] = None,
+        moralis_collector: Optional[Any] = None,
+        birdeye_collector: Optional[Any] = None,
+        bitquery_collector: Optional[Any] = None,
         cex_collectors: Optional[Dict[str, Any]] = None,
+        cex_credentials: Optional[Dict[str, Any]] = None,  # ✅ NEU!
         config: Optional[Dict[str, Any]] = None
     ):
         """
