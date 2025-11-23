@@ -117,7 +117,7 @@ class UnifiedCollector:
         )
     
     def _initialize_cex_collectors(self, cex_credentials: Dict[str, Any]) -> Dict[str, Any]:
-        """Initialize CEX collectors using CCXT"""
+        """Initialize CEX collectors using CCXT with geo-restriction bypass"""
         collectors = {}
         
         logger.info(f"🔧 Initializing CEX with CCXT: {list(cex_credentials.keys())}")
@@ -128,24 +128,36 @@ class UnifiedCollector:
             logger.error("❌ CCXT not installed! Run: pip install ccxt")
             return collectors
         
-        # Binance
+        # Try Binance alternatives in order
         binance_creds = cex_credentials.get('binance', {})
+        
+        # 1. Try Binance US (no geo-restrictions)
         try:
             config = {
                 'enableRateLimit': True,
-                'options': {'defaultType': 'spot'}
+                'options': {'defaultType': 'spot'},
             }
             if binance_creds.get('api_key'):
                 config['apiKey'] = binance_creds['api_key']
             if binance_creds.get('api_secret'):
                 config['secret'] = binance_creds['api_secret']
             
-            collectors['binance'] = ccxt.binance(config)
-            logger.info("✅ Binance initialized (CCXT)")
+            collectors['binance'] = ccxt.binanceus(config)  # ✅ Binance US
+            logger.info("✅ Binance US initialized (CCXT)")
         except Exception as e:
-            logger.error(f"❌ Binance init failed: {e}")
+            logger.warning(f"⚠️ Binance US init failed: {e}")
+            
+            # 2. Try OKX as fallback (no geo-restrictions)
+            try:
+                collectors['binance'] = ccxt.okx({
+                    'enableRateLimit': True,
+                    'options': {'defaultType': 'spot'},
+                })
+                logger.info("✅ OKX initialized as Binance fallback (CCXT)")
+            except Exception as e2:
+                logger.error(f"❌ All Binance alternatives failed: {e2}")
         
-        # Bitget
+        # Bitget (backup)
         bitget_creds = cex_credentials.get('bitget', {})
         if bitget_creds.get('api_key') and bitget_creds.get('api_secret'):
             try:
@@ -159,7 +171,7 @@ class UnifiedCollector:
             except Exception as e:
                 logger.error(f"❌ Bitget init failed: {e}")
         
-        # Kraken
+        # Kraken (backup)
         kraken_creds = cex_credentials.get('kraken', {})
         if kraken_creds.get('api_key') and kraken_creds.get('api_secret'):
             try:
@@ -171,6 +183,15 @@ class UnifiedCollector:
                 logger.info("✅ Kraken initialized (CCXT)")
             except Exception as e:
                 logger.error(f"❌ Kraken init failed: {e}")
+        
+        if not collectors:
+            logger.warning("⚠️ No CEX collectors initialized - trying free alternatives...")
+            # Last resort: Try completely free exchanges
+            try:
+                collectors['binance'] = ccxt.kucoin({'enableRateLimit': True})
+                logger.info("✅ KuCoin initialized as free fallback")
+            except:
+                pass
         
         return collectors
     
