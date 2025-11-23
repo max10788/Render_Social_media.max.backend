@@ -5,7 +5,7 @@ HYBRID Price Mover Analyzer - CEX + DEX Combined Analysis - FIXED VERSION
 1. ✅ JSON Serialization: float('inf') → 999.0
 2. ✅ Datetime: Added timezone awareness
 3. ✅ NaN/Inf Validation before JSON response
-4. ✅ **NEW**: Dict/Object compatibility in _analyze_dex_trades - KRITISCHER FIX!
+4. ✅ **KRITISCHER FIX**: Dict/Object compatibility in _analyze_dex_trades() ← NEU!
 
 🆕 NEUE FEATURES:
 - ✅ CEX (Bitget/Binance/Kraken) + DEX (Jupiter/Raydium/Orca) PARALLEL
@@ -495,7 +495,7 @@ class HybridPriceMoverAnalyzer:
     
     async def _analyze_dex_trades(
         self,
-        trades: Union[List[Trade], List[Dict]],  # 🔧 FIX: Accept both Trade objects and dicts
+        trades: Union[List[Trade], List[Dict]],  # 🔧 FIX: Accept both Trade objects and dicts!
         candle: Candle,
         symbol: str,
         exchange: str,
@@ -505,7 +505,7 @@ class HybridPriceMoverAnalyzer:
         Analyze DEX trades (wallet-based)
         
         🔧 KRITISCHER FIX: Diese Methode akzeptiert jetzt sowohl Trade-Objekte 
-        als auch Dictionaries, da die Route direkt Dicts übergibt.
+        als auch Dictionaries, da die Route direkt Dicts übergibt!
         """
         if not trades:
             return []
