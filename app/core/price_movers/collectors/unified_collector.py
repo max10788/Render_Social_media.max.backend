@@ -320,45 +320,40 @@ class UnifiedCollector:
         timeframe: str,
         timestamp: datetime
     ) -> Dict[str, Any]:
-        """
-        Fetch CEX candle
-        
-        Args:
-            exchange: CEX name (binance/bitget/kraken)
-            symbol: Trading pair
-            timeframe: Timeframe
-            timestamp: Candle timestamp
-            
-        Returns:
-            Candle data dictionary
-        """
+        """Fetch CEX candle using CCXT"""
         exchange_lower = exchange.lower()
         
         if exchange_lower not in self.cex_collectors:
-            logger.error(f"❌ Unknown CEX exchange: {exchange}")
+            logger.error(f"❌ Unknown CEX: {exchange}")
             return self._create_empty_candle(timestamp)
         
-        collector = self.cex_collectors[exchange_lower]
+        ccxt_exchange = self.cex_collectors[exchange_lower]
         
         try:
-            candle = await asyncio.wait_for(
-                collector.fetch_candle_data(symbol, timeframe, timestamp),
-                timeout=10.0
+            since = int(timestamp.timestamp() * 1000)
+            
+            ohlcv = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: ccxt_exchange.fetch_ohlcv(symbol, timeframe, since, 1)
             )
             
-            if self._is_valid_candle(candle):
-                candle['source'] = f'cex_{exchange_lower}'
+            if ohlcv and len(ohlcv) > 0:
+                candle = ohlcv[0]
+                result = {
+                    'timestamp': datetime.fromtimestamp(candle[0] / 1000, tz=timezone.utc),
+                    'open': float(candle[1]),
+                    'high': float(candle[2]),
+                    'low': float(candle[3]),
+                    'close': float(candle[4]),
+                    'volume': float(candle[5]),
+                    'source': f'cex_{exchange_lower}'
+                }
                 self._stats['cex'][exchange_lower]['success'] += 1
-                logger.info(f"✅ Candle from {exchange}: {symbol}")
-                return candle
-            else:
-                logger.warning(f"⚠️ {exchange} returned invalid candle")
-                return self._create_empty_candle(timestamp)
-                
-        except asyncio.TimeoutError:
-            self._stats['cex'][exchange_lower]['errors'] += 1
-            logger.warning(f"⏱️ {exchange} timeout")
+                logger.info(f"✅ Candle from {exchange}: {result['close']}")
+                return result
+            
             return self._create_empty_candle(timestamp)
+            
         except Exception as e:
             self._stats['cex'][exchange_lower]['errors'] += 1
             logger.error(f"❌ {exchange} failed: {e}")
