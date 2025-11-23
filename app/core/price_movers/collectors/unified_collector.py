@@ -128,45 +128,95 @@ class UnifiedCollector:
         """
         collectors = {}
         
+        logger.info(f"🔧 Initializing CEX collectors from credentials: {list(cex_credentials.keys())}")
+        
         # Try to initialize Binance
         binance_creds = cex_credentials.get('binance', {})
         if binance_creds.get('api_key') and binance_creds.get('api_secret'):
             try:
-                from app.core.price_movers.collectors.binance_collector import BinanceCollector
-                collectors['binance'] = BinanceCollector(
-                    api_key=binance_creds['api_key'],
-                    api_secret=binance_creds['api_secret']
-                )
-                logger.info("✅ Binance collector initialized")
+                # Try different import paths
+                try:
+                    from app.core.price_movers.collectors.binance_collector import BinanceCollector
+                except ImportError:
+                    from app.core.price_movers.collectors.exchange_collector import ExchangeCollector
+                    logger.debug("Using ExchangeCollector for Binance")
+                    collectors['binance'] = ExchangeCollector(
+                        exchange_name='binance',
+                        api_key=binance_creds['api_key'],
+                        api_secret=binance_creds['api_secret']
+                    )
+                    logger.info("✅ Binance collector initialized (ExchangeCollector)")
+                else:
+                    collectors['binance'] = BinanceCollector(
+                        api_key=binance_creds['api_key'],
+                        api_secret=binance_creds['api_secret']
+                    )
+                    logger.info("✅ Binance collector initialized (BinanceCollector)")
             except Exception as e:
-                logger.error(f"❌ Failed to initialize Binance: {e}")
+                logger.error(f"❌ Failed to initialize Binance: {e}", exc_info=True)
+        else:
+            logger.debug("⚠️ Binance credentials incomplete")
         
         # Try to initialize Bitget
         bitget_creds = cex_credentials.get('bitget', {})
         if bitget_creds.get('api_key') and bitget_creds.get('api_secret'):
             try:
-                from app.core.price_movers.collectors.bitget_collector import BitgetCollector
-                collectors['bitget'] = BitgetCollector(
-                    api_key=bitget_creds['api_key'],
-                    api_secret=bitget_creds['api_secret'],
-                    passphrase=bitget_creds.get('passphrase', '')
-                )
-                logger.info("✅ Bitget collector initialized")
+                # Try different import paths
+                try:
+                    from app.core.price_movers.collectors.bitget_collector import BitgetCollector
+                except ImportError:
+                    from app.core.price_movers.collectors.exchange_collector import ExchangeCollector
+                    logger.debug("Using ExchangeCollector for Bitget")
+                    collectors['bitget'] = ExchangeCollector(
+                        exchange_name='bitget',
+                        api_key=bitget_creds['api_key'],
+                        api_secret=bitget_creds['api_secret'],
+                        passphrase=bitget_creds.get('passphrase', '')
+                    )
+                    logger.info("✅ Bitget collector initialized (ExchangeCollector)")
+                else:
+                    collectors['bitget'] = BitgetCollector(
+                        api_key=bitget_creds['api_key'],
+                        api_secret=bitget_creds['api_secret'],
+                        passphrase=bitget_creds.get('passphrase', '')
+                    )
+                    logger.info("✅ Bitget collector initialized (BitgetCollector)")
             except Exception as e:
-                logger.error(f"❌ Failed to initialize Bitget: {e}")
+                logger.error(f"❌ Failed to initialize Bitget: {e}", exc_info=True)
+        else:
+            logger.debug("⚠️ Bitget credentials incomplete")
         
         # Try to initialize Kraken
         kraken_creds = cex_credentials.get('kraken', {})
         if kraken_creds.get('api_key') and kraken_creds.get('api_secret'):
             try:
-                from app.core.price_movers.collectors.kraken_collector import KrakenCollector
-                collectors['kraken'] = KrakenCollector(
-                    api_key=kraken_creds['api_key'],
-                    api_secret=kraken_creds['api_secret']
-                )
-                logger.info("✅ Kraken collector initialized")
+                # Try different import paths
+                try:
+                    from app.core.price_movers.collectors.kraken_collector import KrakenCollector
+                except ImportError:
+                    from app.core.price_movers.collectors.exchange_collector import ExchangeCollector
+                    logger.debug("Using ExchangeCollector for Kraken")
+                    collectors['kraken'] = ExchangeCollector(
+                        exchange_name='kraken',
+                        api_key=kraken_creds['api_key'],
+                        api_secret=kraken_creds['api_secret']
+                    )
+                    logger.info("✅ Kraken collector initialized (ExchangeCollector)")
+                else:
+                    collectors['kraken'] = KrakenCollector(
+                        api_key=kraken_creds['api_key'],
+                        api_secret=kraken_creds['api_secret']
+                    )
+                    logger.info("✅ Kraken collector initialized (KrakenCollector)")
             except Exception as e:
-                logger.error(f"❌ Failed to initialize Kraken: {e}")
+                logger.error(f"❌ Failed to initialize Kraken: {e}", exc_info=True)
+        else:
+            logger.debug("⚠️ Kraken credentials incomplete")
+        
+        if not collectors:
+            logger.warning("⚠️ No CEX collectors initialized successfully!")
+        else:
+            logger.info(f"✅ CEX collectors initialized: {list(collectors.keys())}")
         
         return collectors
     
@@ -679,6 +729,61 @@ class UnifiedCollector:
             stats['helius_details'] = self.helius_collector.get_stats()
         
         return stats
+    
+    def list_available_exchanges(self) -> Dict[str, List[str]]:
+        """
+        List all available exchanges
+        
+        Returns:
+            Dictionary with CEX and DEX exchanges
+        """
+        return {
+            'cex': list(self.cex_collectors.keys()),
+            'dex': self._get_available_dex_exchanges()
+        }
+    
+    def _get_available_dex_exchanges(self) -> List[str]:
+        """Get list of available DEX exchanges"""
+        dex_list = []
+        
+        if self.helius_collector:
+            dex_list.extend(['jupiter', 'raydium', 'orca'])  # Solana DEXs
+        
+        if self.dexscreener_collector:
+            # Dexscreener supports many DEXs
+            if 'jupiter' not in dex_list:
+                dex_list.extend(['jupiter', 'raydium', 'orca'])
+        
+        if self.moralis_collector:
+            dex_list.extend(['uniswap', 'sushiswap', 'pancakeswap'])
+        
+        return list(set(dex_list))  # Remove duplicates
+    
+    def get_collector_for_exchange(self, exchange: str) -> Optional[Any]:
+        """
+        Get collector instance for a specific exchange
+        
+        Args:
+            exchange: Exchange name
+            
+        Returns:
+            Collector instance or None
+        """
+        exchange_lower = exchange.lower()
+        
+        # Check CEX
+        if exchange_lower in self.cex_collectors:
+            return self.cex_collectors[exchange_lower]
+        
+        # Check DEX
+        dex_exchanges = {
+            'jupiter': self.helius_collector,
+            'raydium': self.helius_collector,
+            'orca': self.helius_collector,
+            'dexscreener': self.dexscreener_collector,
+        }
+        
+        return dex_exchanges.get(exchange_lower)
     
     async def close(self):
         """Clean up all collectors"""
