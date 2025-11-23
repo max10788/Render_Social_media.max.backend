@@ -245,43 +245,49 @@ async def get_dex_chart_candles(
         num_candles = int((end_time - start_time).total_seconds() / timeframe_seconds)
         
         # ==================== STRATEGY: CEX for Historical ====================
-        
-        if time_range_hours > 1:  # Multiple candles needed
+
+        if time_range_hours > 1:
             logger.info(f"📊 Strategy: CEX Historical ({time_range_hours:.1f}h)")
             
-            # Choose CEX (Binance preferred)
             cex_exchange = 'binance' if 'binance' in unified_collector.cex_collectors else 'bitget'
-            cex_collector = unified_collector.cex_collectors.get(cex_exchange)
+            ccxt_exchange = unified_collector.cex_collectors.get(cex_exchange)
             
-            if cex_collector:
+            if ccxt_exchange:
                 try:
                     cex_symbol = get_cex_symbol(base_token, quote_token, cex_exchange)
+                    logger.info(f"Fetching {num_candles - 1} candles from {cex_exchange}...")
                     
-                    logger.info(f"Fetching {num_candles - 1} historical candles from {cex_exchange}...")
+                    # CCXT batch fetch
+                    since = int(start_time.timestamp() * 1000)
+                    limit = min(num_candles, 100)
                     
-                    # Fetch all historical candles (except last one)
-                    for i in range(min(num_candles - 1, 99)):
-                        candle_time = start_time + timedelta(seconds=i * timeframe_seconds)
-                        
-                        try:
-                            candle = await cex_collector.fetch_candle_data(
-                                symbol=cex_symbol,
-                                timeframe=str(timeframe.value),
-                                timestamp=candle_time
-                            )
-                            
-                            if candle and candle.get('open', 0) > 0:
-                                candles_data.append(candle)
-                        except Exception as e:
-                            logger.warning(f"CEX candle {i} failed: {e}")
-                            continue
+                    ohlcv_data = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: ccxt_exchange.fetch_ohlcv(
+                            cex_symbol,
+                            str(timeframe.value),
+                            since,
+                            limit
+                        )
+                    )
+                    
+                    # Convert to candle format (skip last candle)
+                    for candle_data in ohlcv_data[:-1]:
+                        candles_data.append({
+                            'timestamp': datetime.fromtimestamp(candle_data[0] / 1000, tz=timezone.utc),
+                            'open': float(candle_data[1]),
+                            'high': float(candle_data[2]),
+                            'low': float(candle_data[3]),
+                            'close': float(candle_data[4]),
+                            'volume': float(candle_data[5]),
+                        })
                     
                     logger.info(f"✅ CEX Historical: {len(candles_data)} candles from {cex_exchange}")
                     data_source = f"cex_{cex_exchange}"
                     data_quality = "historical_reliable"
                     
                 except Exception as e:
-                    logger.error(f"CEX historical failed: {e}")
+                    logger.error(f"CEX historical failed: {e}", exc_info=True)
         
         # ==================== STRATEGY: DEX for Current Candle ====================
         
