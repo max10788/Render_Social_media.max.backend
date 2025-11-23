@@ -80,24 +80,15 @@ class UnifiedCollector:
 
     def _init_dex_collectors(self, api_keys: Dict[str, str]):
         """
-        Initialisiert DEX Collectors mit ETH + Solana Support
+        Initialisiert DEX Collectors
         
-        Priorität für OHLCV:
-        1. DEXSCREENER (kostenlos, current only)
-        2. MORALIS (Solana + Ethereum, historisch!)
-        3. BIRDEYE (Solana only, wenn nicht suspended)
-        4. SOLANADEX (Bitquery)
-        5. HELIUS (Solana fallback)
-        
-        Priorität für Trades:
-        1. HELIUS (Solana)
-        2. SOLANADEX (Bitquery Solana)
+        🔧 UPDATE: Helius bekommt jetzt Dexscreener für Pool-Lookup
         """
         
-        # 1. Dexscreener (OHLCV only, no trades)
+        # 1. Dexscreener ZUERST initialisieren (wird von Helius gebraucht!)
         try:
             self.dexscreener_collector = DexscreenerCollector()
-            logger.info("✅ Dexscreener Collector initialized (OHLCV only)")
+            logger.info("✅ Dexscreener Collector initialized (OHLCV + Pool Lookup)")
         except Exception as e:
             logger.error(f"❌ Dexscreener Collector failed: {e}")
             self.dexscreener_collector = None
@@ -143,20 +134,20 @@ class UnifiedCollector:
             self.birdeye_healthy_at_init = False
             logger.info("ℹ️ Birdeye API Key not provided")
         
-        # 4. Helius (Solana Trades + OHLCV fallback)
+        # 4. Helius MIT Dexscreener (🔧 NEU!)
         helius_key = api_keys.get('helius')
         if helius_key:
             try:
                 from .helius_collector import create_helius_collector
                 self.helius_collector = create_helius_collector(
                     api_key=helius_key,
-                    birdeye_collector=self.birdeye_collector,
+                    dexscreener_collector=self.dexscreener_collector,  # 🔧 NEU: Pass Dexscreener!
                     config={
                         'max_requests_per_second': 5,
                         'cache_ttl_seconds': 300,
                     }
                 )
-                logger.info("✅ Helius Collector initialized (Solana Trades + OHLCV)")
+                logger.info("✅ Helius Collector initialized (Pool-based + Trades)")
             except Exception as e:
                 logger.error(f"❌ Helius Collector failed: {e}")
                 self.helius_collector = None
