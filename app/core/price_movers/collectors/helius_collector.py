@@ -479,7 +479,7 @@ class HeliusCollector(DEXCollector):
         Fetch trades from Helius API using Solana RPC + Enhanced Transactions
         
         Strategy:
-        1. Get signatures for pool address via getSignaturesForAddress
+        1. Get signatures for pool address via getSignaturesForAddress (RPC)
         2. Parse transactions via Enhanced Transactions API
         3. Filter for SWAP transactions and time range
         """
@@ -490,10 +490,8 @@ class HeliusCollector(DEXCollector):
         session = await self._get_session()
         
         # Step 1: Get transaction signatures via Solana RPC
-        rpc_url = self.API_BASE  # https://api-mainnet.helius-rpc.com
-        
-        # Convert timestamps to signatures (optional, for time filtering)
-        # For now, we'll fetch recent and filter by timestamp after parsing
+        # WICHTIG: RPC endpoint ist OHNE /v0/
+        rpc_url = f"https://mainnet.helius-rpc.com/?api-key={self.api_key}"
         
         payload = {
             "jsonrpc": "2.0",
@@ -508,12 +506,13 @@ class HeliusCollector(DEXCollector):
         }
         
         logger.info(f"🌐 Step 1: Getting signatures via RPC")
+        logger.info(f"📝 RPC URL: {rpc_url.replace(self.api_key, '***')}")
         
         try:
             async with session.post(
                 rpc_url,
                 json=payload,
-                params={'api-key': self.api_key},
+                headers={'Content-Type': 'application/json'},
                 timeout=aiohttp.ClientTimeout(total=30)
             ) as response:
                 
@@ -525,6 +524,7 @@ class HeliusCollector(DEXCollector):
                     return []
                 
                 rpc_data = await response.json()
+                logger.info(f"📦 RPC response keys: {rpc_data.keys()}")
                 
                 if 'error' in rpc_data:
                     logger.error(f"❌ RPC error: {rpc_data['error']}")
@@ -554,11 +554,26 @@ class HeliusCollector(DEXCollector):
                 block_time = sig_info.get('blockTime')
                 if block_time and start_ts <= block_time <= end_ts:
                     filtered_sigs.append(sig_info['signature'])
+                elif block_time:
+                    # Log why filtered out (first few only)
+                    if len(signatures) - len(filtered_sigs) <= 3:
+                        logger.debug(
+                            f"⏭️ Filtered signature: blockTime {block_time} "
+                            f"outside range ({start_ts} to {end_ts})"
+                        )
             
             logger.info(f"📊 Filtered to {len(filtered_sigs)} signatures in time range")
             
             if not filtered_sigs:
                 logger.warning("⚠️ No signatures in requested time range")
+                # Log time range info
+                if signatures:
+                    first_time = signatures[0].get('blockTime')
+                    last_time = signatures[-1].get('blockTime')
+                    logger.warning(
+                        f"Available range: {first_time} to {last_time} "
+                        f"(requested: {start_ts} to {end_ts})"
+                    )
                 return []
             
             # Limit to requested amount
@@ -567,6 +582,7 @@ class HeliusCollector(DEXCollector):
             # Step 3: Parse transactions via Enhanced Transactions API
             logger.info(f"🌐 Step 2: Parsing {len(filtered_sigs)} transactions via Enhanced API")
             
+            # WICHTIG: Enhanced API hat andere URL
             enhanced_url = f"{self.API_BASE}/v0/transactions"
             
             async with session.post(
@@ -594,8 +610,10 @@ class HeliusCollector(DEXCollector):
                 
                 # Log first transaction for debugging
                 if transactions:
-                    logger.debug(f"🔍 First transaction type: {transactions[0].get('type')}")
-                    logger.debug(f"🔍 First transaction keys: {transactions[0].keys()}")
+                    logger.info(f"🔍 First transaction type: {transactions[0].get('type')}")
+                    logger.info(f"🔍 First transaction keys: {list(transactions[0].keys())}")
+                    # Log full first transaction for debugging
+                    logger.debug(f"🔍 First transaction FULL: {transactions[0]}")
             
             # Step 4: Parse and filter trades
             trades = []
@@ -628,7 +646,7 @@ class HeliusCollector(DEXCollector):
                             
                             # Log first few trades
                             if len(trades) <= 3:
-                                logger.debug(
+                                logger.info(
                                     f"✅ Trade {len(trades)}: "
                                     f"{trade['trade_type']} {trade['amount']:.4f} "
                                     f"@ ${trade['price']:.2f} at {trade['timestamp']}"
