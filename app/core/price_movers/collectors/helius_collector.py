@@ -2,22 +2,21 @@
 Helius Collector - PRODUCTION VERSION
 
 🎯 FEATURES:
-- Hardcoded pool addresses for top trading pairs
-- Multi-level fallback strategy
+- Token-based transaction fetching (not pool-based)
+- Solana RPC + Enhanced Transactions API
 - Robust error handling
 - Comprehensive logging
 - Cache management
-- Solana RPC + Enhanced Transactions API
 
 🔧 ARCHITECTURE:
-1. Known pools (instant, no API calls)
-2. Cached pools (from previous Dexscreener lookups)
-3. Dexscreener API (for unknown pairs)
-4. Token address fallback (last resort)
+1. Resolve symbol to token address (USDT for SOL/USDT)
+2. Fetch signatures via Solana RPC
+3. Parse transactions via Enhanced Transactions API
+4. Filter for SWAP transactions
 
 📊 PERFORMANCE:
-- 99% of requests use hardcoded pools
-- No dependency on Dexscreener rate limits
+- Direct token address lookup (no pool discovery needed)
+- Works with Helius indexing
 - Fast and reliable
 """
 
@@ -66,49 +65,32 @@ class HeliusCollector(DEXCollector):
     Helius Collector - PRODUCTION VERSION
     
     🎯 Strategy:
-    1. Use hardcoded pool addresses for known pairs (instant)
-    2. Check cache for recently found pools
-    3. Query Dexscreener API for unknown pairs
-    4. Fallback to token address if all else fails
+    - Use token addresses (not pool addresses) for Helius RPC
+    - Fetch all transactions for token
+    - Filter for SWAP type
+    - Parse swap details
     
     Benefits:
-    - ✅ No rate limit issues (hardcoded pools)
-    - ✅ Fast response times (no API calls needed)
-    - ✅ Reliable for top trading pairs
-    - ✅ Graceful degradation for edge cases
+    - ✅ Works with Helius indexing
+    - ✅ No pool discovery needed
+    - ✅ Gets all swaps for a token
+    - ✅ Reliable and fast
     """
     
     API_BASE = "https://api-mainnet.helius-rpc.com"
-    DEXSCREENER_API = "https://api.dexscreener.com/latest/dex"
     
-    # 🎯 HARDCODED POOLS for top trading pairs
-    # Source: Dexscreener (highest liquidity pools)
-    # Updated: 2024-11-23
-    KNOWN_POOLS = {
-        # Raydium Pools (highest liquidity)
-        'SOL/USDT': 'FwewVm8uAK9NZXp8qttX7gZiKLe5MGiyNKQGzMjTQoGe',  # Raydium SOL/USDT
-        'SOL/USDC': '7XawhbbxtsRcQA8KTkHT9f9nc6d69UwqCDh6U5EEbEmX',  # Raydium SOL/USDC
-        'BONK/SOL': 'Dpzc3tKdJjVGSpeBmTKJiKN6cTkyX9AsnzMZyPzLZxEP',  # Raydium BONK/SOL
-        'JUP/SOL': 'GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL',   # Raydium JUP/SOL
-        'WIF/SOL': 'EP2ib6dYdEeqD8MfE2ezHCxX3kP3K2eLKkirfPm5eyMx',   # Raydium WIF/SOL
-        
-        # Orca Pools (alternative)
-        'SOL/USDC-ORCA': 'HJPjoWUrhoZzkNfRpHuieeFk9WcZWjwy6PBjZ81ngndJ',  # Orca SOL/USDC
-        
-        # Add more as needed
-    }
-    
-    # Token Mint Addresses
+    # Token Mint Addresses (Solana SPL Tokens)
     TOKEN_MINTS = {
-        'SOL': 'So11111111111111111111111111111111111111112',
+        'SOL': 'So11111111111111111111111111111111111111112',  # Wrapped SOL
         'WSOL': 'So11111111111111111111111111111111111111112',
-        'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-        'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
-        'BONK': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
-        'JTO': 'jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL',
-        'JUP': 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',
-        'WIF': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',
-        'PYTH': 'HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3',
+        'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',  # USDC
+        'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',  # USDT (Tether)
+        'BONK': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',  # BONK
+        'JTO': 'jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL',   # Jito
+        'JUP': 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',   # Jupiter
+        'WIF': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',  # Dogwifhat
+        'PYTH': 'HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3', # Pyth
+        'RAY': '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R',  # Raydium
     }
     
     def __init__(
@@ -125,21 +107,12 @@ class HeliusCollector(DEXCollector):
         )
         
         self.session: Optional[aiohttp.ClientSession] = None
-        self.pool_cache = SimpleCache(ttl_seconds=600)  # 10 min cache for dynamic pools
         self.candle_cache = SimpleCache(ttl_seconds=60)  # 1 min cache for candles
         self.dexscreener = dexscreener_collector
         
-        # Stats for monitoring
-        self._pool_lookup_stats = {
-            'hardcoded': 0,
-            'cached': 0,
-            'dexscreener': 0,
-            'fallback': 0,
-        }
-        
         logger.info(
-            f"✅ Helius Collector initialized (PRODUCTION) "
-            f"- Known pools: {len(self.KNOWN_POOLS)}"
+            f"✅ Helius Collector initialized (TOKEN-BASED STRATEGY) "
+            f"- Known tokens: {len(self.TOKEN_MINTS)}"
         )
     
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -148,184 +121,25 @@ class HeliusCollector(DEXCollector):
             self.session = aiohttp.ClientSession()
         return self.session
     
-    async def _find_pool_address(self, symbol: str) -> Optional[str]:
+    async def _resolve_symbol_to_token_address(self, symbol: str) -> Optional[str]:
         """
-        Find pool address with multi-level fallback strategy
+        Resolve symbol to token address (NOT pool address)
         
-        Priority:
-        1. Hardcoded pools (instant, no API)
-        2. Cache (recent Dexscreener lookups)
-        3. Dexscreener API (might be rate-limited)
-        4. Returns None (will use token fallback)
+        For Helius Enhanced Transactions API, we use token addresses
+        because getSignaturesForAddress works with token accounts, not pools.
+        
+        Strategy:
+        - For SOL/USDT: Use USDT token address (gets all USDT transactions including SOL swaps)
+        - For SOL/USDC: Use USDC token address
+        - For TOKEN/SOL: Use TOKEN address
         
         Args:
             symbol: Trading pair (e.g., SOL/USDT)
             
         Returns:
-            Pool address or None
+            Token address or None
         """
-        symbol_upper = symbol.upper()
-        
-        # 1️⃣ PRIORITY 1: Check hardcoded pools
-        if symbol_upper in self.KNOWN_POOLS:
-            pool_address = self.KNOWN_POOLS[symbol_upper]
-            self._pool_lookup_stats['hardcoded'] += 1
-            logger.info(
-                f"📌 Using hardcoded pool for {symbol}: {pool_address[:8]}... "
-                f"(lookup: hardcoded)"
-            )
-            return pool_address
-        
-        # 2️⃣ PRIORITY 2: Check cache
-        cache_key = f"pool_{symbol_upper}"
-        cached_pool = self.pool_cache.get(cache_key)
-        if cached_pool:
-            self._pool_lookup_stats['cached'] += 1
-            logger.debug(
-                f"📦 Using cached pool for {symbol}: {cached_pool[:8]}... "
-                f"(lookup: cached)"
-            )
-            return cached_pool
-        
-        # Parse symbol for API lookup
-        try:
-            base, quote = symbol_upper.split('/')
-        except ValueError:
-            logger.error(f"❌ Invalid symbol format: {symbol}")
-            return None
-        
-        # 3️⃣ PRIORITY 3: Query Dexscreener API
-        try:
-            pool = await self._find_pool_via_dexscreener_api(base, quote)
-            if pool:
-                # Cache for future use
-                self.pool_cache.set(cache_key, pool)
-                self._pool_lookup_stats['dexscreener'] += 1
-                logger.info(
-                    f"✅ Found pool via Dexscreener for {symbol}: {pool[:8]}... "
-                    f"(lookup: dexscreener)"
-                )
-                return pool
-        except Exception as e:
-            logger.warning(f"⚠️ Dexscreener lookup failed for {symbol}: {e}")
-        
-        # 4️⃣ PRIORITY 4: No pool found - will use token fallback
-        self._pool_lookup_stats['fallback'] += 1
-        logger.warning(
-            f"⚠️ No pool found for {symbol}, will use token address fallback "
-            f"(lookup: fallback)"
-        )
-        return None
-    
-    async def _find_pool_via_dexscreener_api(
-        self, 
-        base: str, 
-        quote: str
-    ) -> Optional[str]:
-        """
-        Query Dexscreener API to find pool address
-        
-        Args:
-            base: Base token symbol (e.g., SOL)
-            quote: Quote token symbol (e.g., USDT)
-            
-        Returns:
-            Pool address or None
-        """
-        session = await self._get_session()
-        
-        # Get token address
-        base_mint = self.TOKEN_MINTS.get(base)
-        quote_mint = self.TOKEN_MINTS.get(quote)
-        
-        if not base_mint:
-            logger.warning(f"❌ Unknown base token: {base}")
-            return None
-        
-        try:
-            # Search for pools with this token
-            url = f"{self.DEXSCREENER_API}/tokens/{base_mint}"
-            
-            async with session.get(
-                url, 
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as response:
-                
-                if response.status == 429:
-                    logger.warning("⚠️ Dexscreener rate limited (429)")
-                    return None
-                
-                if response.status != 200:
-                    logger.warning(f"⚠️ Dexscreener error: {response.status}")
-                    return None
-                
-                data = await response.json()
-                pairs = data.get('pairs', [])
-                
-                if not pairs:
-                    logger.debug(f"No pairs found for {base}")
-                    return None
-                
-                # Filter for Solana and matching quote token
-                best_pool = None
-                highest_liquidity = 0
-                
-                for pair in pairs:
-                    # Must be on Solana
-                    if pair.get('chainId') != 'solana':
-                        continue
-                    
-                    # Check if quote matches
-                    pair_quote_addr = pair.get('quoteToken', {}).get('address')
-                    if quote_mint and pair_quote_addr != quote_mint:
-                        continue
-                    
-                    # Get liquidity
-                    liquidity = float(pair.get('liquidity', {}).get('usd', 0))
-                    
-                    # Track best pool
-                    if liquidity > highest_liquidity:
-                        highest_liquidity = liquidity
-                        best_pool = pair.get('pairAddress')
-                
-                if best_pool:
-                    logger.debug(
-                        f"🔍 Found {base}/{quote} pool: {best_pool[:8]}... "
-                        f"(liquidity: ${highest_liquidity:,.0f})"
-                    )
-                    return best_pool
-                
-                return None
-                
-        except asyncio.TimeoutError:
-            logger.warning("⚠️ Dexscreener API timeout")
-            return None
-        except Exception as e:
-            logger.error(f"❌ Dexscreener API error: {e}")
-            return None
-    
-    async def _resolve_symbol_to_address(self, symbol: str) -> Optional[str]:
-        """
-        Resolve symbol to pool or token address
-        
-        Priority:
-        1. Pool address (best - only relevant transactions)
-        2. Token address (fallback - need filtering)
-        
-        Args:
-            symbol: Trading pair (e.g., SOL/USDT)
-            
-        Returns:
-            Pool or token address
-        """
-        # Try to find pool address
-        pool_address = await self._find_pool_address(symbol)
-        if pool_address:
-            logger.info(f"🎯 Using pool address for {symbol}")
-            return pool_address
-        
-        # Fallback to token address
-        logger.info(f"⚠️ Using token address fallback for {symbol}")
+        logger.info(f"🔍 Resolving {symbol} to token address...")
         
         try:
             base_token, quote_token = symbol.upper().split('/')
@@ -333,21 +147,31 @@ class HeliusCollector(DEXCollector):
             logger.error(f"❌ Invalid symbol format: {symbol}")
             return None
         
-        # For SOL pairs, query the quote token (USDT/USDC)
+        # Strategy: For SOL pairs, use the quote token (USDT/USDC)
         # This gives us all USDT/USDC transactions which include SOL swaps
         if base_token in ['SOL', 'WSOL']:
             token_address = self.TOKEN_MINTS.get(quote_token)
             if token_address:
-                logger.info(f"💡 Using {quote_token} token address: {token_address[:8]}...")
+                logger.info(
+                    f"💡 Using {quote_token} token address for {symbol}: "
+                    f"{token_address[:8]}..."
+                )
                 return token_address
+            else:
+                logger.error(f"❌ Unknown quote token: {quote_token}")
+                return None
         else:
+            # For non-SOL pairs, use the base token
             token_address = self.TOKEN_MINTS.get(base_token)
             if token_address:
-                logger.info(f"💡 Using {base_token} token address: {token_address[:8]}...")
+                logger.info(
+                    f"💡 Using {base_token} token address for {symbol}: "
+                    f"{token_address[:8]}..."
+                )
                 return token_address
-        
-        logger.error(f"❌ Could not resolve address for {symbol}")
-        return None
+            else:
+                logger.error(f"❌ Unknown base token: {base_token}")
+                return None
     
     async def fetch_candle_data(
         self,
@@ -356,7 +180,7 @@ class HeliusCollector(DEXCollector):
         timestamp: datetime
     ) -> Dict[str, Any]:
         """
-        Fetch CURRENT candle using pool-based approach
+        Fetch CURRENT candle using token-based approach
         
         Args:
             symbol: Trading pair (e.g., SOL/USDT)
@@ -366,7 +190,7 @@ class HeliusCollector(DEXCollector):
         Returns:
             Candle data dictionary
         """
-        logger.info(f"🔗 Helius: Fetching candle for {symbol} (pool-based)")
+        logger.info(f"🔗 Helius: Fetching candle for {symbol} (token-based)")
         
         # Ensure timezone-aware
         if timestamp.tzinfo is None:
@@ -396,7 +220,7 @@ class HeliusCollector(DEXCollector):
             symbol=symbol,
             start_time=start_time,
             end_time=end_time,
-            limit=100
+            limit=1000
         )
         
         # Build candle from trades
@@ -449,7 +273,7 @@ class HeliusCollector(DEXCollector):
         Fetch trades for symbol
         
         Args:
-            symbol: Trading pair
+            symbol: Trading pair (e.g., SOL/USDT)
             start_time: Start time
             end_time: End time
             limit: Maximum trades
@@ -457,17 +281,18 @@ class HeliusCollector(DEXCollector):
         Returns:
             List of trade dictionaries
         """
-        # Resolve to pool or token address
-        address = await self._resolve_symbol_to_address(symbol)
-        if not address:
-            logger.error(f"❌ Cannot resolve address for {symbol}")
+        # Resolve to TOKEN address (not pool!)
+        token_address = await self._resolve_symbol_to_token_address(symbol)
+        if not token_address:
+            logger.error(f"❌ Cannot resolve token address for {symbol}")
             return []
         
         return await self.fetch_dex_trades(
-            token_address=address,
+            token_address=token_address,
             start_time=start_time,
             end_time=end_time,
-            limit=limit
+            limit=limit,
+            symbol=symbol  # Pass symbol for filtering
         )
 
     async def fetch_dex_trades(
@@ -475,17 +300,27 @@ class HeliusCollector(DEXCollector):
         token_address: str,
         start_time: datetime,
         end_time: datetime,
-        limit: Optional[int] = 100
+        limit: Optional[int] = 100,
+        symbol: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Fetch trades from Helius API using Solana RPC + Enhanced Transactions
         
         Strategy:
-        1. Get signatures for address via getSignaturesForAddress (RPC)
+        1. Get signatures for token address via getSignaturesForAddress (RPC)
         2. Parse transactions via Enhanced Transactions API  
         3. Filter for SWAP transactions and time range
+        
+        Args:
+            token_address: Token mint address (e.g., USDT address)
+            start_time: Start time
+            end_time: End time
+            limit: Maximum signatures to fetch
+            symbol: Original symbol (for logging)
         """
-        logger.info(f"🔍 Fetching trades from: {token_address[:8]}...")
+        logger.info(f"🔍 Fetching trades from token: {token_address[:8]}...")
+        if symbol:
+            logger.info(f"📊 Symbol: {symbol}")
         logger.info(f"⏰ Time range: {start_time} to {end_time}")
         logger.info(f"📊 Limit: {limit}")
         
@@ -534,28 +369,26 @@ class HeliusCollector(DEXCollector):
                     return []
                 
                 signatures = rpc_data['result']
-                logger.info(f"📦 Found {len(signatures)} signatures for address")
+                logger.info(f"📦 Found {len(signatures)} signatures for token")
                 
                 if not signatures:
-                    logger.warning("⚠️ No signatures found for this address")
+                    logger.warning("⚠️ No signatures found for this token address")
                     return []
                 
                 # Log first/last signature times
                 if signatures:
                     first_sig = signatures[0]
                     last_sig = signatures[-1]
-                    logger.info(
-                        f"🔍 Signature range: "
-                        f"{datetime.fromtimestamp(first_sig.get('blockTime', 0), tz=timezone.utc)} to "
-                        f"{datetime.fromtimestamp(last_sig.get('blockTime', 0), tz=timezone.utc)}"
-                    )
+                    first_time = datetime.fromtimestamp(first_sig.get('blockTime', 0), tz=timezone.utc)
+                    last_time = datetime.fromtimestamp(last_sig.get('blockTime', 0), tz=timezone.utc)
+                    logger.info(f"🔍 Signature time range: {first_time} to {last_time}")
             
             # Step 2: Filter signatures by timestamp
             filtered_sigs = []
             start_ts = int(start_time.timestamp())
             end_ts = int(end_time.timestamp())
             
-            logger.info(f"📅 Filtering for range: {start_ts} to {end_ts}")
+            logger.info(f"📅 Filtering for: {start_time} to {end_time}")
             
             for sig_info in signatures:
                 block_time = sig_info.get('blockTime')
@@ -574,13 +407,11 @@ class HeliusCollector(DEXCollector):
                         f"{datetime.fromtimestamp(first_time, tz=timezone.utc)} to "
                         f"{datetime.fromtimestamp(last_time, tz=timezone.utc)}"
                     )
-                    logger.warning(
-                        f"📅 Requested: {start_time} to {end_time}"
-                    )
+                    logger.warning(f"📅 Requested: {start_time} to {end_time}")
                 return []
             
             # Limit to requested amount
-            filtered_sigs = filtered_sigs[:limit]
+            filtered_sigs = filtered_sigs[:min(len(filtered_sigs), 100)]  # Limit to 100 for Enhanced API
             
             # Step 3: Parse transactions via Enhanced Transactions API
             logger.info(f"🌐 Step 2: Parsing {len(filtered_sigs)} transactions via Enhanced API")
@@ -619,8 +450,8 @@ class HeliusCollector(DEXCollector):
                 logger.info(f"📊 Transaction types found: {tx_types}")
                 
                 # Log first transaction for debugging
-                if transactions:
-                    logger.debug(f"🔍 First transaction: {transactions[0].get('type')} - {transactions[0].get('signature')[:16]}...")
+                if transactions and logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(f"🔍 First transaction sample: {transactions[0].get('type')} - {transactions[0].get('signature')[:16]}...")
             
             # Step 4: Parse and filter trades
             trades = []
@@ -638,7 +469,7 @@ class HeliusCollector(DEXCollector):
                     swap_count += 1
                     
                     # Parse the swap transaction
-                    trade = self._parse_helius_enhanced_swap(tx)
+                    trade = self._parse_helius_enhanced_swap(tx, symbol)
                     
                     if trade:
                         if start_time <= trade['timestamp'] <= end_time:
@@ -649,7 +480,7 @@ class HeliusCollector(DEXCollector):
                                 logger.info(
                                     f"✅ Trade {len(trades)}: "
                                     f"{trade['trade_type']} {trade['amount']:.4f} "
-                                    f"@ ${trade.get('price', 0):.2f} at {trade['timestamp']}"
+                                    f"@ ${trade.get('price', 0):.6f} at {trade['timestamp']}"
                                 )
                     else:
                         if len(parse_errors) < 3:
@@ -675,6 +506,13 @@ class HeliusCollector(DEXCollector):
                 )
                 if parse_errors:
                     logger.warning(f"Parse error examples: {parse_errors[:3]}")
+                    
+                # Log first SWAP transaction for debugging
+                if transactions and logger.isEnabledFor(logging.DEBUG):
+                    for tx in transactions:
+                        if tx.get('type') == 'SWAP':
+                            logger.debug(f"🔍 Sample SWAP transaction: {json.dumps(tx, indent=2)[:1000]}...")
+                            break
             
             return trades
             
@@ -685,7 +523,11 @@ class HeliusCollector(DEXCollector):
             logger.error(f"❌ Helius fetch error: {e}", exc_info=True)
             return []
     
-    def _parse_helius_enhanced_swap(self, tx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _parse_helius_enhanced_swap(
+        self, 
+        tx: Dict[str, Any],
+        symbol: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Parse a Helius Enhanced Transaction (SWAP type)
         
@@ -702,6 +544,10 @@ class HeliusCollector(DEXCollector):
             "accountData": [...],
             "events": {...}
         }
+        
+        Args:
+            tx: Enhanced transaction data
+            symbol: Original trading pair (e.g., SOL/USDT) for filtering
         """
         try:
             # Extract basic info
@@ -709,72 +555,100 @@ class HeliusCollector(DEXCollector):
             timestamp = tx.get('timestamp')
             
             if not timestamp:
-                logger.debug(f"⚠️ No timestamp in transaction {signature}")
                 return None
             
             # Convert timestamp to datetime
             trade_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
             
-            # Parse token transfers to determine trade direction and amounts
+            # Parse token transfers
             token_transfers = tx.get('tokenTransfers', [])
+            native_transfers = tx.get('nativeTransfers', [])
             
-            if not token_transfers:
-                logger.debug(f"⚠️ No token transfers in swap {signature}")
+            if not token_transfers and not native_transfers:
                 return None
             
-            # Try to identify the swap
+            # Initialize variables
             amount = 0
             price = 0
             trade_type = 'unknown'
             wallet_address = None
             
-            # Enhanced transactions have an 'events' field with structured swap data
+            # Strategy 1: Try events.swap (structured data)
             events = tx.get('events', {})
             
             if 'swap' in events:
                 swap_event = events['swap']
                 
-                # Extract swap details
                 token_inputs = swap_event.get('tokenInputs', [])
                 token_outputs = swap_event.get('tokenOutputs', [])
                 
                 if token_inputs and token_outputs:
-                    # Determine direction based on SOL/USDT
                     input_token = token_inputs[0]
                     output_token = token_outputs[0]
                     
-                    wallet_address = input_token.get('userAccount')
+                    wallet_address = input_token.get('userAccount') or output_token.get('userAccount')
                     
-                    # Simplified: check if buying or selling SOL
-                    if 'SOL' in str(output_token.get('mint', '')).upper():
+                    # Get amounts
+                    input_amount = float(input_token.get('tokenAmount', 0))
+                    output_amount = float(output_token.get('tokenAmount', 0))
+                    
+                    input_mint = input_token.get('mint', '')
+                    output_mint = output_token.get('mint', '')
+                    
+                    # Determine if this is SOL swap
+                    sol_mint = 'So11111111111111111111111111111111111111112'
+                    
+                    if output_mint == sol_mint:
+                        # Buying SOL
                         trade_type = 'buy'
-                        amount = float(output_token.get('tokenAmount', 0))
-                        input_amount = float(input_token.get('tokenAmount', 0))
+                        amount = output_amount
                         if amount > 0:
                             price = input_amount / amount
-                    else:
+                    elif input_mint == sol_mint:
+                        # Selling SOL
                         trade_type = 'sell'
-                        amount = float(input_token.get('tokenAmount', 0))
-                        output_amount = float(output_token.get('tokenAmount', 0))
+                        amount = input_amount
                         if amount > 0:
                             price = output_amount / amount
+                    else:
+                        # Not a SOL swap, skip
+                        return None
             
-            # Fallback: parse from tokenTransfers if events.swap not available
-            if amount == 0 and len(token_transfers) >= 2:
-                # First transfer: user -> pool
-                # Second transfer: pool -> user
-                first_transfer = token_transfers[0]
-                second_transfer = token_transfers[1]
+            # Strategy 2: Fallback to tokenTransfers
+            if amount == 0 and len(token_transfers) >= 1:
+                # Try to find SOL transfer
+                sol_mint = 'So11111111111111111111111111111111111111112'
                 
-                wallet_address = first_transfer.get('fromUserAccount')
-                
-                # Simplified parsing
-                amount = float(first_transfer.get('tokenAmount', 0))
-                price = 1.0  # Placeholder - need to calculate from both transfers
+                for transfer in token_transfers:
+                    mint = transfer.get('mint', '')
+                    if mint == sol_mint:
+                        amount = float(transfer.get('tokenAmount', 0))
+                        wallet_address = transfer.get('fromUserAccount') or transfer.get('toUserAccount')
+                        
+                        # Determine direction
+                        from_account = transfer.get('fromUserAccount', '')
+                        to_account = transfer.get('toUserAccount', '')
+                        
+                        # Simple heuristic: if there are multiple transfers, this is a swap
+                        if len(token_transfers) >= 2:
+                            # Find the other token
+                            for other_transfer in token_transfers:
+                                if other_transfer.get('mint') != sol_mint:
+                                    other_amount = float(other_transfer.get('tokenAmount', 0))
+                                    if amount > 0 and other_amount > 0:
+                                        price = other_amount / amount
+                                    break
+                        
+                        trade_type = 'swap'
+                        break
             
+            # Validate we have minimum required data
             if amount == 0 or not wallet_address:
-                logger.debug(f"⚠️ Could not parse swap details from {signature}")
                 return None
+            
+            # If price is still 0, set a placeholder
+            if price == 0:
+                price = 1.0
             
             return {
                 'timestamp': trade_time,
@@ -788,7 +662,7 @@ class HeliusCollector(DEXCollector):
             }
             
         except Exception as e:
-            logger.error(f"❌ Error parsing enhanced swap: {e}")
+            logger.debug(f"❌ Error parsing swap {tx.get('signature', 'unknown')[:16]}...: {e}")
             return None
     
     async def health_check(self) -> bool:
@@ -825,15 +699,12 @@ class HeliusCollector(DEXCollector):
     def get_stats(self) -> Dict[str, Any]:
         """Get collector statistics"""
         return {
-            'pool_lookups': self._pool_lookup_stats,
-            'known_pools': len(self.KNOWN_POOLS),
-            'cached_pools': self.pool_cache.size(),
+            'known_tokens': len(self.TOKEN_MINTS),
             'cached_candles': self.candle_cache.size(),
         }
     
     def clear_cache(self):
         """Clear all caches"""
-        self.pool_cache.clear()
         self.candle_cache.clear()
         logger.info("🗑️ Helius caches cleared")
     
@@ -842,7 +713,6 @@ class HeliusCollector(DEXCollector):
         if self.session and not self.session.closed:
             await self.session.close()
         
-        self.pool_cache.clear()
         self.candle_cache.clear()
         
         # Log final stats
@@ -859,7 +729,7 @@ def create_helius_collector(
     
     Args:
         api_key: Helius API key
-        dexscreener_collector: Optional Dexscreener collector (not required anymore)
+        dexscreener_collector: Optional Dexscreener collector (not used anymore)
         config: Optional configuration
         
     Returns:
