@@ -476,7 +476,12 @@ class HeliusCollector(DEXCollector):
         limit: Optional[int] = 100
     ) -> List[Dict[str, Any]]:
         """
-        Fetch trades from Helius API - DEBUG VERSION
+        Fetch trades from Helius API using Solana RPC + Enhanced Transactions
+        
+        Strategy:
+        1. Get signatures for pool address via getSignaturesForAddress
+        2. Parse transactions via Enhanced Transactions API
+        3. Filter for SWAP transactions and time range
         """
         logger.info(f"🔍 Fetching trades from: {token_address[:8]}...")
         logger.info(f"⏰ Time range: {start_time} to {end_time}")
@@ -484,204 +489,296 @@ class HeliusCollector(DEXCollector):
         
         session = await self._get_session()
         
-        url = f"{self.API_BASE}/v0/addresses/{token_address}/transactions"
-    
-        params = {
-            'api-key': self.api_key,
-            'limit': min(limit, 100),
-            # 'type': 'SWAP',
+        # Step 1: Get transaction signatures via Solana RPC
+        rpc_url = self.API_BASE  # https://api-mainnet.helius-rpc.com
+        
+        # Convert timestamps to signatures (optional, for time filtering)
+        # For now, we'll fetch recent and filter by timestamp after parsing
+        
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getSignaturesForAddress",
+            "params": [
+                token_address,
+                {
+                    "limit": min(limit, 1000),  # Max 1000 per request
+                }
+            ]
         }
         
-        logger.info(f"🌐 Calling Helius API: {url}")
-        logger.info(f"📝 Params: {params}")
+        logger.info(f"🌐 Step 1: Getting signatures via RPC")
         
         try:
-            async with session.get(
-                url, 
-                params=params, 
-                timeout=aiohttp.ClientTimeout(total=10)
+            async with session.post(
+                rpc_url,
+                json=payload,
+                params={'api-key': self.api_key},
+                timeout=aiohttp.ClientTimeout(total=30)
             ) as response:
                 
-                logger.info(f"📡 Response status: {response.status}")
-                logger.info(f"📡 Response headers: {dict(response.headers)}")
-                
-                # ← NEU: Log die komplette rohe Response als Text
-                raw_text = await response.text()
-                logger.info(f"📦 RAW RESPONSE TEXT (full): {raw_text}")
-                logger.info(f"📦 RAW RESPONSE LENGTH: {len(raw_text)} chars")
+                logger.info(f"📡 RPC Response status: {response.status}")
                 
                 if response.status != 200:
-                    logger.error(f"❌ Helius error: {response.status}")
-                    logger.error(f"❌ Response body: {raw_text[:500]}")
+                    error_text = await response.text()
+                    logger.error(f"❌ RPC error {response.status}: {error_text[:500]}")
                     return []
                 
-                # Parse JSON aus dem Text
+                rpc_data = await response.json()
+                
+                if 'error' in rpc_data:
+                    logger.error(f"❌ RPC error: {rpc_data['error']}")
+                    return []
+                
+                if 'result' not in rpc_data:
+                    logger.error(f"❌ No result in RPC response: {rpc_data}")
+                    return []
+                
+                signatures = rpc_data['result']
+                logger.info(f"📦 Found {len(signatures)} signatures for pool")
+                
+                if not signatures:
+                    logger.warning("⚠️ No signatures found for this address")
+                    return []
+                
+                # Log sample signature
+                if signatures:
+                    logger.debug(f"🔍 First signature: {signatures[0]}")
+            
+            # Step 2: Filter signatures by timestamp (blockTime)
+            filtered_sigs = []
+            start_ts = int(start_time.timestamp())
+            end_ts = int(end_time.timestamp())
+            
+            for sig_info in signatures:
+                block_time = sig_info.get('blockTime')
+                if block_time and start_ts <= block_time <= end_ts:
+                    filtered_sigs.append(sig_info['signature'])
+            
+            logger.info(f"📊 Filtered to {len(filtered_sigs)} signatures in time range")
+            
+            if not filtered_sigs:
+                logger.warning("⚠️ No signatures in requested time range")
+                return []
+            
+            # Limit to requested amount
+            filtered_sigs = filtered_sigs[:limit]
+            
+            # Step 3: Parse transactions via Enhanced Transactions API
+            logger.info(f"🌐 Step 2: Parsing {len(filtered_sigs)} transactions via Enhanced API")
+            
+            enhanced_url = f"{self.API_BASE}/v0/transactions"
+            
+            async with session.post(
+                enhanced_url,
+                json={"transactions": filtered_sigs},
+                params={'api-key': self.api_key},
+                headers={'Content-Type': 'application/json'},
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                
+                logger.info(f"📡 Enhanced API Response status: {response.status}")
+                
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"❌ Enhanced API error {response.status}: {error_text[:500]}")
+                    return []
+                
+                transactions = await response.json()
+                
+                logger.info(f"📦 Received {len(transactions)} parsed transactions")
+                
+                if not transactions:
+                    logger.warning("⚠️ No transactions returned from Enhanced API")
+                    return []
+                
+                # Log first transaction for debugging
+                if transactions:
+                    logger.debug(f"🔍 First transaction type: {transactions[0].get('type')}")
+                    logger.debug(f"🔍 First transaction keys: {transactions[0].keys()}")
+            
+            # Step 4: Parse and filter trades
+            trades = []
+            swap_count = 0
+            other_types = {}
+            parse_errors = []
+            
+            for i, tx in enumerate(transactions):
                 try:
-                    data = json.loads(raw_text)
-                except json.JSONDecodeError as e:
-                    logger.error(f"❌ JSON decode error: {e}")
-                    logger.error(f"❌ Raw text was: {raw_text[:1000]}")
-                    return []
-                
-                logger.info(f"📦 Response type: {type(data)}")
-                logger.info(f"📦 Received {len(data) if data else 0} transactions from Helius")
-                
-                if not data:
-                    logger.warning("⚠️ No transactions returned from Helius API")
-                    return []
-                
-                # Log erste Transaction komplett
-                if data:
-                    logger.info(f"🔍 First transaction FULL: {json.dumps(data[0], indent=2)}")
-                
-                # Parse trades
-                trades = []
-                parsed_count = 0
-                filtered_count = 0
-                parse_errors = []
-                
-                for i, tx in enumerate(data):
-                    try:
-                        trade = self._parse_transaction(tx)
-                        
-                        if trade:
-                            parsed_count += 1
-                            
-                            if len(trades) < 3:
-                                logger.debug(
-                                    f"✅ Trade {len(trades)+1}: "
-                                    f"{trade['trade_type']} {trade['amount']:.4f} @ ${trade['price']:.2f} "
-                                    f"at {trade['timestamp']}"
-                                )
-                            
-                            if start_time <= trade['timestamp'] <= end_time:
-                                trades.append(trade)
-                            else:
-                                filtered_count += 1
-                                if filtered_count <= 3:
-                                    logger.debug(
-                                        f"⏭️ Filtered trade {filtered_count}: "
-                                        f"timestamp {trade['timestamp']} outside range "
-                                        f"({start_time} to {end_time})"
-                                    )
-                        else:
-                            if len(parse_errors) < 3:
-                                logger.debug(f"⚠️ Trade {i+1} parsed to None")
-                            
-                    except Exception as e:
-                        parse_errors.append(str(e))
-                        if len(parse_errors) <= 3:
-                            logger.debug(f"❌ Parse error {len(parse_errors)}: {e}")
+                    tx_type = tx.get('type')
+                    
+                    # Count transaction types
+                    if tx_type not in other_types:
+                        other_types[tx_type] = 0
+                    other_types[tx_type] += 1
+                    
+                    # Only process SWAP transactions
+                    if tx_type != 'SWAP':
                         continue
-                
-                logger.info(
-                    f"✅ Helius: {len(trades)} trades returned "
-                    f"(parsed: {parsed_count}/{len(data)}, filtered by time: {filtered_count}, "
-                    f"parse errors: {len(parse_errors)})"
+                    
+                    swap_count += 1
+                    
+                    # Parse the swap transaction
+                    trade = self._parse_helius_enhanced_swap(tx)
+                    
+                    if trade:
+                        # Double-check timestamp (should already be filtered)
+                        if start_time <= trade['timestamp'] <= end_time:
+                            trades.append(trade)
+                            
+                            # Log first few trades
+                            if len(trades) <= 3:
+                                logger.debug(
+                                    f"✅ Trade {len(trades)}: "
+                                    f"{trade['trade_type']} {trade['amount']:.4f} "
+                                    f"@ ${trade['price']:.2f} at {trade['timestamp']}"
+                                )
+                    else:
+                        if len(parse_errors) < 3:
+                            logger.debug(f"⚠️ Trade {i+1} parsed to None")
+                            
+                except Exception as e:
+                    parse_errors.append(str(e))
+                    if len(parse_errors) <= 3:
+                        logger.error(f"❌ Parse error {len(parse_errors)}: {e}")
+                    continue
+            
+            # Summary logging
+            logger.info(
+                f"✅ Helius: {len(trades)} trades returned "
+                f"(SWAP txs: {swap_count}/{len(transactions)}, "
+                f"parse errors: {len(parse_errors)})"
+            )
+            logger.info(f"📊 Transaction types: {other_types}")
+            
+            if len(trades) == 0:
+                logger.warning(
+                    f"⚠️ NO TRADES RETURNED! "
+                    f"Total transactions: {len(transactions)}, "
+                    f"SWAP transactions: {swap_count}, "
+                    f"Successfully parsed: {len(trades)}, "
+                    f"Parse errors: {len(parse_errors)}"
                 )
-                
-                if len(trades) == 0:
-                    logger.warning(
-                        f"⚠️ NO TRADES RETURNED! "
-                        f"Raw transactions: {len(data)}, "
-                        f"Successfully parsed: {parsed_count}, "
-                        f"Filtered out: {filtered_count}, "
-                        f"Parse errors: {len(parse_errors)}"
-                    )
-                    if parse_errors:
-                        logger.warning(f"Parse error examples: {parse_errors[:3]}")
-                
-                return trades
-                
+                if parse_errors:
+                    logger.warning(f"Parse error examples: {parse_errors[:3]}")
+            
+            return trades
+            
         except asyncio.TimeoutError:
             logger.error("❌ Helius API timeout")
             return []
         except Exception as e:
             logger.error(f"❌ Helius fetch error: {e}", exc_info=True)
             return []
-        
-    def _parse_transaction(self, tx: Dict) -> Optional[Dict[str, Any]]:
+    
+    
+    def _parse_helius_enhanced_swap(self, tx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Parse Helius transaction to trade format - DEBUG VERSION
+        Parse a Helius Enhanced Transaction (SWAP type)
+        
+        Enhanced transaction structure:
+        {
+            "type": "SWAP",
+            "signature": "...",
+            "timestamp": 1234567890,
+            "slot": 123456,
+            "fee": 5000,
+            "feePayer": "...",
+            "nativeTransfers": [...],
+            "tokenTransfers": [...],
+            "accountData": [...],
+            "events": {...}
+        }
         """
         try:
-            # ← FÜGE HINZU: Log transaction structure
-            if not hasattr(self, '_logged_tx_structure'):
-                logger.debug(f"📋 Transaction keys: {list(tx.keys())}")
-                self._logged_tx_structure = True
+            # Extract basic info
+            signature = tx.get('signature')
+            timestamp = tx.get('timestamp')
             
-            # Get timestamp
-            timestamp = datetime.fromtimestamp(
-                tx.get('timestamp', 0), 
-                tz=timezone.utc
-            )
+            if not timestamp:
+                logger.debug(f"⚠️ No timestamp in transaction {signature}")
+                return None
             
-            # Get token transfers
+            # Convert timestamp to datetime
+            trade_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            
+            # Parse token transfers to determine trade direction and amounts
             token_transfers = tx.get('tokenTransfers', [])
+            
             if not token_transfers:
-                # ← FÜGE HINZU: Log warum rejected
-                logger.debug(f"⏭️ No tokenTransfers in tx {tx.get('signature', 'unknown')[:8]}")
+                logger.debug(f"⚠️ No token transfers in swap {signature}")
                 return None
             
-            transfer = token_transfers[0]
+            # Try to identify the swap
+            # Usually: 2 token transfers (token A -> pool, pool -> token B)
+            # or SPL token <-> SOL
             
-            # Get wallet address
-            wallet = (
-                transfer.get('fromUserAccount') or 
-                transfer.get('toUserAccount')
-            )
-            if not wallet:
-                logger.debug(f"⏭️ No wallet in tx {tx.get('signature', 'unknown')[:8]}")
+            amount = 0
+            price = 0
+            trade_type = 'unknown'
+            wallet_address = None
+            
+            # Enhanced transactions have an 'events' field with structured swap data
+            events = tx.get('events', {})
+            
+            if 'swap' in events:
+                swap_event = events['swap']
+                
+                # Extract swap details
+                token_inputs = swap_event.get('tokenInputs', [])
+                token_outputs = swap_event.get('tokenOutputs', [])
+                
+                if token_inputs and token_outputs:
+                    # Determine direction based on SOL/USDT
+                    input_token = token_inputs[0]
+                    output_token = token_outputs[0]
+                    
+                    wallet_address = input_token.get('userAccount')
+                    
+                    # Simplified: check if buying or selling SOL
+                    if 'SOL' in str(output_token.get('mint', '')).upper():
+                        trade_type = 'buy'
+                        amount = float(output_token.get('tokenAmount', 0))
+                        input_amount = float(input_token.get('tokenAmount', 0))
+                        if amount > 0:
+                            price = input_amount / amount
+                    else:
+                        trade_type = 'sell'
+                        amount = float(input_token.get('tokenAmount', 0))
+                        output_amount = float(output_token.get('tokenAmount', 0))
+                        if amount > 0:
+                            price = output_amount / amount
+            
+            # Fallback: parse from tokenTransfers if events.swap not available
+            if amount == 0 and len(token_transfers) >= 2:
+                # First transfer: user -> pool
+                # Second transfer: pool -> user
+                first_transfer = token_transfers[0]
+                second_transfer = token_transfers[1]
+                
+                wallet_address = first_transfer.get('fromUserAccount')
+                
+                # Simplified parsing
+                amount = float(first_transfer.get('tokenAmount', 0))
+                price = 1.0  # Placeholder - need to calculate from both transfers
+            
+            if amount == 0 or not wallet_address:
+                logger.debug(f"⚠️ Could not parse swap details from {signature}")
                 return None
-            
-            # Get amount
-            raw_amount = float(transfer.get('tokenAmount', 0))
-            if raw_amount <= 0:
-                logger.debug(f"⏭️ Invalid amount {raw_amount} in tx {tx.get('signature', 'unknown')[:8]}")
-                return None
-            
-            # Determine decimals
-            mint = transfer.get('mint', '')
-            decimals = 9 if 'So111' in mint else 6
-            amount = raw_amount / (10 ** decimals)
-            
-            # Calculate price from native transfers
-            native_transfers = tx.get('nativeTransfers', [])
-            
-            if not native_transfers:
-                # ← FÜGE HINZU: Log wenn keine native transfers
-                logger.debug(f"⏭️ No nativeTransfers in tx {tx.get('signature', 'unknown')[:8]}")
-                return None
-            
-            sol_amount = sum(
-                float(nt.get('amount', 0)) 
-                for nt in native_transfers
-            ) / 1e9
-            
-            if sol_amount <= 0 or amount <= 0:
-                logger.debug(f"⏭️ Invalid sol_amount ({sol_amount}) or amount ({amount})")
-                return None
-            
-            price = sol_amount / amount
-            
-            # Determine trade type
-            trade_type = 'buy' if transfer.get('fromUserAccount') == wallet else 'sell'
             
             return {
-                'id': tx.get('signature', ''),
-                'timestamp': timestamp,
-                'trade_type': trade_type,
-                'amount': amount,
+                'timestamp': trade_time,
                 'price': price,
-                'value_usd': amount * price,
-                'wallet_address': wallet,
-                'dex': 'jupiter',
-                'signature': tx.get('signature'),
-                'blockchain': 'solana',
+                'amount': amount,
+                'trade_type': trade_type,
+                'wallet_address': wallet_address,
+                'transaction_hash': signature,
+                'dex': 'jupiter',  # Most swaps on Solana are Jupiter
+                'raw_data': tx  # Keep full transaction for debugging
             }
             
         except Exception as e:
-            logger.debug(f"❌ Parse exception: {e}")
+            logger.error(f"❌ Error parsing enhanced swap: {e}")
             return None
 
     
