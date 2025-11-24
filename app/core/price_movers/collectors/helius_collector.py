@@ -7,6 +7,7 @@ Helius Collector - PRODUCTION VERSION
 - Robust error handling
 - Comprehensive logging
 - Cache management
+- Solana RPC + Enhanced Transactions API
 
 🔧 ARCHITECTURE:
 1. Known pools (instant, no API calls)
@@ -332,16 +333,17 @@ class HeliusCollector(DEXCollector):
             logger.error(f"❌ Invalid symbol format: {symbol}")
             return None
         
-        # For SOL pairs, query the quote token
+        # For SOL pairs, query the quote token (USDT/USDC)
+        # This gives us all USDT/USDC transactions which include SOL swaps
         if base_token in ['SOL', 'WSOL']:
             token_address = self.TOKEN_MINTS.get(quote_token)
             if token_address:
-                logger.debug(f"Using {quote_token} token address: {token_address[:8]}...")
+                logger.info(f"💡 Using {quote_token} token address: {token_address[:8]}...")
                 return token_address
         else:
             token_address = self.TOKEN_MINTS.get(base_token)
             if token_address:
-                logger.debug(f"Using {base_token} token address: {token_address[:8]}...")
+                logger.info(f"💡 Using {base_token} token address: {token_address[:8]}...")
                 return token_address
         
         logger.error(f"❌ Could not resolve address for {symbol}")
@@ -479,8 +481,8 @@ class HeliusCollector(DEXCollector):
         Fetch trades from Helius API using Solana RPC + Enhanced Transactions
         
         Strategy:
-        1. Get signatures for pool address via getSignaturesForAddress (RPC)
-        2. Parse transactions via Enhanced Transactions API
+        1. Get signatures for address via getSignaturesForAddress (RPC)
+        2. Parse transactions via Enhanced Transactions API  
         3. Filter for SWAP transactions and time range
         """
         logger.info(f"🔍 Fetching trades from: {token_address[:8]}...")
@@ -490,7 +492,6 @@ class HeliusCollector(DEXCollector):
         session = await self._get_session()
         
         # Step 1: Get transaction signatures via Solana RPC
-        # WICHTIG: RPC endpoint ist OHNE /v0/
         rpc_url = f"https://mainnet.helius-rpc.com/?api-key={self.api_key}"
         
         payload = {
@@ -506,7 +507,6 @@ class HeliusCollector(DEXCollector):
         }
         
         logger.info(f"🌐 Step 1: Getting signatures via RPC")
-        logger.info(f"📝 RPC URL: {rpc_url.replace(self.api_key, '***')}")
         
         try:
             async with session.post(
@@ -524,55 +524,58 @@ class HeliusCollector(DEXCollector):
                     return []
                 
                 rpc_data = await response.json()
-                logger.info(f"📦 RPC response keys: {rpc_data.keys()}")
                 
                 if 'error' in rpc_data:
                     logger.error(f"❌ RPC error: {rpc_data['error']}")
                     return []
                 
                 if 'result' not in rpc_data:
-                    logger.error(f"❌ No result in RPC response: {rpc_data}")
+                    logger.error(f"❌ No result in RPC response")
                     return []
                 
                 signatures = rpc_data['result']
-                logger.info(f"📦 Found {len(signatures)} signatures for pool")
+                logger.info(f"📦 Found {len(signatures)} signatures for address")
                 
                 if not signatures:
                     logger.warning("⚠️ No signatures found for this address")
                     return []
                 
-                # Log sample signature
+                # Log first/last signature times
                 if signatures:
-                    logger.debug(f"🔍 First signature: {signatures[0]}")
+                    first_sig = signatures[0]
+                    last_sig = signatures[-1]
+                    logger.info(
+                        f"🔍 Signature range: "
+                        f"{datetime.fromtimestamp(first_sig.get('blockTime', 0), tz=timezone.utc)} to "
+                        f"{datetime.fromtimestamp(last_sig.get('blockTime', 0), tz=timezone.utc)}"
+                    )
             
-            # Step 2: Filter signatures by timestamp (blockTime)
+            # Step 2: Filter signatures by timestamp
             filtered_sigs = []
             start_ts = int(start_time.timestamp())
             end_ts = int(end_time.timestamp())
+            
+            logger.info(f"📅 Filtering for range: {start_ts} to {end_ts}")
             
             for sig_info in signatures:
                 block_time = sig_info.get('blockTime')
                 if block_time and start_ts <= block_time <= end_ts:
                     filtered_sigs.append(sig_info['signature'])
-                elif block_time:
-                    # Log why filtered out (first few only)
-                    if len(signatures) - len(filtered_sigs) <= 3:
-                        logger.debug(
-                            f"⏭️ Filtered signature: blockTime {block_time} "
-                            f"outside range ({start_ts} to {end_ts})"
-                        )
             
             logger.info(f"📊 Filtered to {len(filtered_sigs)} signatures in time range")
             
             if not filtered_sigs:
                 logger.warning("⚠️ No signatures in requested time range")
-                # Log time range info
                 if signatures:
                     first_time = signatures[0].get('blockTime')
                     last_time = signatures[-1].get('blockTime')
                     logger.warning(
-                        f"Available range: {first_time} to {last_time} "
-                        f"(requested: {start_ts} to {end_ts})"
+                        f"📅 Available: "
+                        f"{datetime.fromtimestamp(first_time, tz=timezone.utc)} to "
+                        f"{datetime.fromtimestamp(last_time, tz=timezone.utc)}"
+                    )
+                    logger.warning(
+                        f"📅 Requested: {start_time} to {end_time}"
                     )
                 return []
             
@@ -582,7 +585,6 @@ class HeliusCollector(DEXCollector):
             # Step 3: Parse transactions via Enhanced Transactions API
             logger.info(f"🌐 Step 2: Parsing {len(filtered_sigs)} transactions via Enhanced API")
             
-            # WICHTIG: Enhanced API hat andere URL
             enhanced_url = f"{self.API_BASE}/v0/transactions"
             
             async with session.post(
@@ -608,27 +610,26 @@ class HeliusCollector(DEXCollector):
                     logger.warning("⚠️ No transactions returned from Enhanced API")
                     return []
                 
+                # Log transaction types found
+                tx_types = {}
+                for tx in transactions:
+                    tx_type = tx.get('type', 'UNKNOWN')
+                    tx_types[tx_type] = tx_types.get(tx_type, 0) + 1
+                
+                logger.info(f"📊 Transaction types found: {tx_types}")
+                
                 # Log first transaction for debugging
                 if transactions:
-                    logger.info(f"🔍 First transaction type: {transactions[0].get('type')}")
-                    logger.info(f"🔍 First transaction keys: {list(transactions[0].keys())}")
-                    # Log full first transaction for debugging
-                    logger.debug(f"🔍 First transaction FULL: {transactions[0]}")
+                    logger.debug(f"🔍 First transaction: {transactions[0].get('type')} - {transactions[0].get('signature')[:16]}...")
             
             # Step 4: Parse and filter trades
             trades = []
             swap_count = 0
-            other_types = {}
             parse_errors = []
             
             for i, tx in enumerate(transactions):
                 try:
                     tx_type = tx.get('type')
-                    
-                    # Count transaction types
-                    if tx_type not in other_types:
-                        other_types[tx_type] = 0
-                    other_types[tx_type] += 1
                     
                     # Only process SWAP transactions
                     if tx_type != 'SWAP':
@@ -640,41 +641,36 @@ class HeliusCollector(DEXCollector):
                     trade = self._parse_helius_enhanced_swap(tx)
                     
                     if trade:
-                        # Double-check timestamp (should already be filtered)
                         if start_time <= trade['timestamp'] <= end_time:
                             trades.append(trade)
                             
                             # Log first few trades
-                            if len(trades) <= 3:
+                            if len(trades) <= 5:
                                 logger.info(
                                     f"✅ Trade {len(trades)}: "
                                     f"{trade['trade_type']} {trade['amount']:.4f} "
-                                    f"@ ${trade['price']:.2f} at {trade['timestamp']}"
+                                    f"@ ${trade.get('price', 0):.2f} at {trade['timestamp']}"
                                 )
                     else:
                         if len(parse_errors) < 3:
-                            logger.debug(f"⚠️ Trade {i+1} parsed to None")
+                            logger.debug(f"⚠️ Swap {swap_count} could not be parsed")
                             
                 except Exception as e:
                     parse_errors.append(str(e))
                     if len(parse_errors) <= 3:
-                        logger.error(f"❌ Parse error {len(parse_errors)}: {e}")
+                        logger.error(f"❌ Parse error {len(parse_errors)}: {e}", exc_info=True)
                     continue
             
-            # Summary logging
+            # Summary
             logger.info(
                 f"✅ Helius: {len(trades)} trades returned "
                 f"(SWAP txs: {swap_count}/{len(transactions)}, "
                 f"parse errors: {len(parse_errors)})"
             )
-            logger.info(f"📊 Transaction types: {other_types}")
             
-            if len(trades) == 0:
+            if len(trades) == 0 and swap_count > 0:
                 logger.warning(
-                    f"⚠️ NO TRADES RETURNED! "
-                    f"Total transactions: {len(transactions)}, "
-                    f"SWAP transactions: {swap_count}, "
-                    f"Successfully parsed: {len(trades)}, "
+                    f"⚠️ Found {swap_count} SWAP transactions but could not parse any! "
                     f"Parse errors: {len(parse_errors)}"
                 )
                 if parse_errors:
@@ -688,7 +684,6 @@ class HeliusCollector(DEXCollector):
         except Exception as e:
             logger.error(f"❌ Helius fetch error: {e}", exc_info=True)
             return []
-    
     
     def _parse_helius_enhanced_swap(self, tx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
@@ -728,9 +723,6 @@ class HeliusCollector(DEXCollector):
                 return None
             
             # Try to identify the swap
-            # Usually: 2 token transfers (token A -> pool, pool -> token B)
-            # or SPL token <-> SOL
-            
             amount = 0
             price = 0
             trade_type = 'unknown'
@@ -798,23 +790,23 @@ class HeliusCollector(DEXCollector):
         except Exception as e:
             logger.error(f"❌ Error parsing enhanced swap: {e}")
             return None
-
-    
     
     async def health_check(self) -> bool:
         """Check if Helius API is accessible"""
         try:
             session = await self._get_session()
-            url = f"{self.API_BASE}/v0/addresses/So11111111111111111111111111111111111111112/transactions"
             
-            params = {
-                'api-key': self.api_key,
-                'limit': 1
+            # Test RPC endpoint
+            rpc_url = f"https://mainnet.helius-rpc.com/?api-key={self.api_key}"
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getHealth"
             }
             
-            async with session.get(
-                url, 
-                params=params, 
+            async with session.post(
+                rpc_url,
+                json=payload,
                 timeout=aiohttp.ClientTimeout(total=5)
             ) as response:
                 is_healthy = response.status == 200
