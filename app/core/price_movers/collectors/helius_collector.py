@@ -477,14 +477,14 @@ class HeliusCollector(DEXCollector):
         """
         Fetch trades from Helius API - DEBUG VERSION
         """
-        logger.info(f"🔍 Fetching trades from: {token_address[:8]}...")  # ← Dieser Log fehlt in deinen Logs!
+        logger.info(f"🔍 Fetching trades from: {token_address[:8]}...")
         logger.info(f"⏰ Time range: {start_time} to {end_time}")
         logger.info(f"📊 Limit: {limit}")
         
         session = await self._get_session()
         
         url = f"{self.API_BASE}/v0/addresses/{token_address}/transactions"
-
+    
         params = {
             'api-key': self.api_key,
             'limit': min(limit, 100),
@@ -505,7 +505,6 @@ class HeliusCollector(DEXCollector):
                 
                 if response.status != 200:
                     logger.error(f"❌ Helius error: {response.status}")
-                    # ← FÜGE HINZU: Log die Response für debugging
                     try:
                         error_text = await response.text()
                         logger.error(f"❌ Response body: {error_text[:500]}")
@@ -515,16 +514,19 @@ class HeliusCollector(DEXCollector):
                 
                 data = await response.json()
                 
-                # ← KRITISCH: Log wie viele Transactions zurückkommen
+                # ← NEU: Log die komplette rohe Antwort
+                logger.info(f"📦 RAW HELIUS RESPONSE (first 2000 chars): {str(data)[:2000]}")
+                logger.info(f"📦 Response type: {type(data)}")
                 logger.info(f"📦 Received {len(data) if data else 0} transactions from Helius")
                 
                 if not data:
                     logger.warning("⚠️ No transactions returned from Helius API")
                     return []
                 
-                # ← FÜGE HINZU: Log erste Transaction für debugging
+                # ← Log erste Transaction komplett
                 if data:
-                    logger.debug(f"🔍 First transaction sample: {data[0].keys() if isinstance(data, list) else 'Not a list'}")
+                    logger.info(f"🔍 First transaction FULL: {data[0]}")
+                    logger.debug(f"🔍 First transaction keys: {data[0].keys() if isinstance(data, list) else 'Not a list'}")
                 
                 # Parse trades
                 trades = []
@@ -539,7 +541,6 @@ class HeliusCollector(DEXCollector):
                         if trade:
                             parsed_count += 1
                             
-                            # ← FÜGE HINZU: Log erste paar Trades
                             if len(trades) < 3:
                                 logger.debug(
                                     f"✅ Trade {len(trades)+1}: "
@@ -552,7 +553,6 @@ class HeliusCollector(DEXCollector):
                                 trades.append(trade)
                             else:
                                 filtered_count += 1
-                                # ← FÜGE HINZU: Log warum gefiltert wird
                                 if filtered_count <= 3:
                                     logger.debug(
                                         f"⏭️ Filtered trade {filtered_count}: "
@@ -560,7 +560,6 @@ class HeliusCollector(DEXCollector):
                                         f"({start_time} to {end_time})"
                                     )
                         else:
-                            # ← FÜGE HINZU: Log wenn Trade None ist
                             if len(parse_errors) < 3:
                                 logger.debug(f"⚠️ Trade {i+1} parsed to None")
                             
@@ -570,14 +569,12 @@ class HeliusCollector(DEXCollector):
                             logger.debug(f"❌ Parse error {len(parse_errors)}: {e}")
                         continue
                 
-                # ← ERWEITERE diesen Log:
                 logger.info(
                     f"✅ Helius: {len(trades)} trades returned "
                     f"(parsed: {parsed_count}/{len(data)}, filtered by time: {filtered_count}, "
                     f"parse errors: {len(parse_errors)})"
                 )
                 
-                # ← FÜGE HINZU: Wenn keine Trades, log details
                 if len(trades) == 0:
                     logger.warning(
                         f"⚠️ NO TRADES RETURNED! "
@@ -597,7 +594,6 @@ class HeliusCollector(DEXCollector):
         except Exception as e:
             logger.error(f"❌ Helius fetch error: {e}", exc_info=True)
             return []
-
 
     def _parse_transaction(self, tx: Dict) -> Optional[Dict[str, Any]]:
         """
