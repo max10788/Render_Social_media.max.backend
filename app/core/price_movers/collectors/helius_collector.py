@@ -484,11 +484,11 @@ class HeliusCollector(DEXCollector):
         session = await self._get_session()
         
         url = f"{self.API_BASE}/v0/addresses/{token_address}/transactions"
-        
+
         params = {
             'api-key': self.api_key,
             'limit': min(limit, 100),
-            'type': 'SWAP',
+            # 'type': 'SWAP',  # ← Auskommentiert zum Testen
         }
         
         logger.info(f"🌐 Calling Helius API: {url}")
