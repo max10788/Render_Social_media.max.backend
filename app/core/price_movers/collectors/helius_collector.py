@@ -26,6 +26,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 import time
+import json
 
 from .dex_collector import DEXCollector
 from ..utils.constants import BlockchainNetwork
