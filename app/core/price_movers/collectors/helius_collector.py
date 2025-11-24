@@ -466,7 +466,7 @@ class HeliusCollector(DEXCollector):
             end_time=end_time,
             limit=limit
         )
-    
+
     async def fetch_dex_trades(
         self,
         token_address: str,
@@ -475,18 +475,11 @@ class HeliusCollector(DEXCollector):
         limit: Optional[int] = 100
     ) -> List[Dict[str, Any]]:
         """
-        Fetch trades from Helius API
-        
-        Args:
-            token_address: Pool or token address
-            start_time: Start time
-            end_time: End time
-            limit: Maximum number of trades
-            
-        Returns:
-            List of trade dictionaries
+        Fetch trades from Helius API - DEBUG VERSION
         """
-        logger.debug(f"🔍 Fetching trades from: {token_address[:8]}...")
+        logger.info(f"🔍 Fetching trades from: {token_address[:8]}...")  # ← Dieser Log fehlt in deinen Logs!
+        logger.info(f"⏰ Time range: {start_time} to {end_time}")
+        logger.info(f"📊 Limit: {limit}")
         
         session = await self._get_session()
         
@@ -498,6 +491,9 @@ class HeliusCollector(DEXCollector):
             'type': 'SWAP',
         }
         
+        logger.info(f"🌐 Calling Helius API: {url}")
+        logger.info(f"📝 Params: {params}")
+        
         try:
             async with session.get(
                 url, 
@@ -505,63 +501,114 @@ class HeliusCollector(DEXCollector):
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as response:
                 
+                logger.info(f"📡 Response status: {response.status}")
+                
                 if response.status != 200:
                     logger.error(f"❌ Helius error: {response.status}")
+                    # ← FÜGE HINZU: Log die Response für debugging
+                    try:
+                        error_text = await response.text()
+                        logger.error(f"❌ Response body: {error_text[:500]}")
+                    except:
+                        pass
                     return []
                 
                 data = await response.json()
                 
+                # ← KRITISCH: Log wie viele Transactions zurückkommen
+                logger.info(f"📦 Received {len(data) if data else 0} transactions from Helius")
+                
                 if not data:
-                    logger.debug("No transactions returned")
+                    logger.warning("⚠️ No transactions returned from Helius API")
                     return []
+                
+                # ← FÜGE HINZU: Log erste Transaction für debugging
+                if data:
+                    logger.debug(f"🔍 First transaction sample: {data[0].keys() if isinstance(data, list) else 'Not a list'}")
                 
                 # Parse trades
                 trades = []
                 parsed_count = 0
                 filtered_count = 0
+                parse_errors = []
                 
-                for tx in data:
+                for i, tx in enumerate(data):
                     try:
                         trade = self._parse_transaction(tx)
                         
                         if trade:
                             parsed_count += 1
                             
+                            # ← FÜGE HINZU: Log erste paar Trades
+                            if len(trades) < 3:
+                                logger.debug(
+                                    f"✅ Trade {len(trades)+1}: "
+                                    f"{trade['trade_type']} {trade['amount']:.4f} @ ${trade['price']:.2f} "
+                                    f"at {trade['timestamp']}"
+                                )
+                            
                             # Time filter
                             if start_time <= trade['timestamp'] <= end_time:
                                 trades.append(trade)
                             else:
                                 filtered_count += 1
+                                # ← FÜGE HINZU: Log warum gefiltert wird
+                                if filtered_count <= 3:
+                                    logger.debug(
+                                        f"⏭️ Filtered trade {filtered_count}: "
+                                        f"timestamp {trade['timestamp']} outside range "
+                                        f"({start_time} to {end_time})"
+                                    )
+                        else:
+                            # ← FÜGE HINZU: Log wenn Trade None ist
+                            if len(parse_errors) < 3:
+                                logger.debug(f"⚠️ Trade {i+1} parsed to None")
                             
                     except Exception as e:
-                        logger.debug(f"Parse error: {e}")
+                        parse_errors.append(str(e))
+                        if len(parse_errors) <= 3:
+                            logger.debug(f"❌ Parse error {len(parse_errors)}: {e}")
                         continue
                 
+                # ← ERWEITERE diesen Log:
                 logger.info(
-                    f"✅ Helius: {len(trades)} trades "
-                    f"(parsed: {parsed_count}, filtered: {filtered_count}, "
-                    f"from {len(data)} transactions)"
+                    f"✅ Helius: {len(trades)} trades returned "
+                    f"(parsed: {parsed_count}/{len(data)}, filtered by time: {filtered_count}, "
+                    f"parse errors: {len(parse_errors)})"
                 )
+                
+                # ← FÜGE HINZU: Wenn keine Trades, log details
+                if len(trades) == 0:
+                    logger.warning(
+                        f"⚠️ NO TRADES RETURNED! "
+                        f"Raw transactions: {len(data)}, "
+                        f"Successfully parsed: {parsed_count}, "
+                        f"Filtered out: {filtered_count}, "
+                        f"Parse errors: {len(parse_errors)}"
+                    )
+                    if parse_errors:
+                        logger.warning(f"Parse error examples: {parse_errors[:3]}")
+                
                 return trades
                 
         except asyncio.TimeoutError:
             logger.error("❌ Helius API timeout")
             return []
         except Exception as e:
-            logger.error(f"❌ Helius fetch error: {e}")
+            logger.error(f"❌ Helius fetch error: {e}", exc_info=True)
             return []
-    
+
+
     def _parse_transaction(self, tx: Dict) -> Optional[Dict[str, Any]]:
         """
-        Parse Helius transaction to trade format
-        
-        Args:
-            tx: Helius transaction object
-            
-        Returns:
-            Trade dictionary or None if invalid
+        Parse Helius transaction to trade format - DEBUG VERSION
         """
         try:
+            # ← FÜGE HINZU: Log transaction structure
+            if not hasattr(self, '_logged_tx_structure'):
+                logger.debug(f"📋 Transaction keys: {list(tx.keys())}")
+                self._logged_tx_structure = True
+            
             # Get timestamp
             timestamp = datetime.fromtimestamp(
                 tx.get('timestamp', 0), 
@@ -571,6 +618,8 @@ class HeliusCollector(DEXCollector):
             # Get token transfers
             token_transfers = tx.get('tokenTransfers', [])
             if not token_transfers:
+                # ← FÜGE HINZU: Log warum rejected
+                logger.debug(f"⏭️ No tokenTransfers in tx {tx.get('signature', 'unknown')[:8]}")
                 return None
             
             transfer = token_transfers[0]
@@ -581,11 +630,13 @@ class HeliusCollector(DEXCollector):
                 transfer.get('toUserAccount')
             )
             if not wallet:
+                logger.debug(f"⏭️ No wallet in tx {tx.get('signature', 'unknown')[:8]}")
                 return None
             
             # Get amount
             raw_amount = float(transfer.get('tokenAmount', 0))
             if raw_amount <= 0:
+                logger.debug(f"⏭️ Invalid amount {raw_amount} in tx {tx.get('signature', 'unknown')[:8]}")
                 return None
             
             # Determine decimals
@@ -597,7 +648,8 @@ class HeliusCollector(DEXCollector):
             native_transfers = tx.get('nativeTransfers', [])
             
             if not native_transfers:
-                # No SOL involved - not a SOL pair swap
+                # ← FÜGE HINZU: Log wenn keine native transfers
+                logger.debug(f"⏭️ No nativeTransfers in tx {tx.get('signature', 'unknown')[:8]}")
                 return None
             
             sol_amount = sum(
@@ -606,6 +658,7 @@ class HeliusCollector(DEXCollector):
             ) / 1e9
             
             if sol_amount <= 0 or amount <= 0:
+                logger.debug(f"⏭️ Invalid sol_amount ({sol_amount}) or amount ({amount})")
                 return None
             
             price = sol_amount / amount
@@ -627,8 +680,10 @@ class HeliusCollector(DEXCollector):
             }
             
         except Exception as e:
-            logger.debug(f"Parse error: {e}")
+            logger.debug(f"❌ Parse exception: {e}")
             return None
+
+    
     
     async def health_check(self) -> bool:
         """Check if Helius API is accessible"""
