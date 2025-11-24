@@ -489,7 +489,7 @@ class HeliusCollector(DEXCollector):
         params = {
             'api-key': self.api_key,
             'limit': min(limit, 100),
-            # 'type': 'SWAP',  # ← Auskommentiert zum Testen
+            # 'type': 'SWAP',
         }
         
         logger.info(f"🌐 Calling Helius API: {url}")
@@ -503,20 +503,26 @@ class HeliusCollector(DEXCollector):
             ) as response:
                 
                 logger.info(f"📡 Response status: {response.status}")
+                logger.info(f"📡 Response headers: {dict(response.headers)}")
+                
+                # ← NEU: Log die komplette rohe Response als Text
+                raw_text = await response.text()
+                logger.info(f"📦 RAW RESPONSE TEXT (full): {raw_text}")
+                logger.info(f"📦 RAW RESPONSE LENGTH: {len(raw_text)} chars")
                 
                 if response.status != 200:
                     logger.error(f"❌ Helius error: {response.status}")
-                    try:
-                        error_text = await response.text()
-                        logger.error(f"❌ Response body: {error_text[:500]}")
-                    except:
-                        pass
+                    logger.error(f"❌ Response body: {raw_text[:500]}")
                     return []
                 
-                data = await response.json()
+                # Parse JSON aus dem Text
+                try:
+                    data = json.loads(raw_text)
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ JSON decode error: {e}")
+                    logger.error(f"❌ Raw text was: {raw_text[:1000]}")
+                    return []
                 
-                # ← NEU: Log die komplette rohe Antwort
-                logger.info(f"📦 RAW HELIUS RESPONSE (first 2000 chars): {str(data)[:2000]}")
                 logger.info(f"📦 Response type: {type(data)}")
                 logger.info(f"📦 Received {len(data) if data else 0} transactions from Helius")
                 
@@ -524,10 +530,9 @@ class HeliusCollector(DEXCollector):
                     logger.warning("⚠️ No transactions returned from Helius API")
                     return []
                 
-                # ← Log erste Transaction komplett
+                # Log erste Transaction komplett
                 if data:
-                    logger.info(f"🔍 First transaction FULL: {data[0]}")
-                    logger.debug(f"🔍 First transaction keys: {data[0].keys() if isinstance(data, list) else 'Not a list'}")
+                    logger.info(f"🔍 First transaction FULL: {json.dumps(data[0], indent=2)}")
                 
                 # Parse trades
                 trades = []
@@ -549,7 +554,6 @@ class HeliusCollector(DEXCollector):
                                     f"at {trade['timestamp']}"
                                 )
                             
-                            # Time filter
                             if start_time <= trade['timestamp'] <= end_time:
                                 trades.append(trade)
                             else:
@@ -595,7 +599,7 @@ class HeliusCollector(DEXCollector):
         except Exception as e:
             logger.error(f"❌ Helius fetch error: {e}", exc_info=True)
             return []
-
+        
     def _parse_transaction(self, tx: Dict) -> Optional[Dict[str, Any]]:
         """
         Parse Helius transaction to trade format - DEBUG VERSION
