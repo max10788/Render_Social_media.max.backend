@@ -449,57 +449,67 @@ class ImpactCalculator:
         return min(slippage_score, 1.0)
 
     def calculate_liquidity_multiplier(
-        self,
-        trade: Dict[str, Any],
-        candle_volume: float
-    ) -> float:
-        """
-        Berechnet Liquidity Event Multiplier
-        
-        KRITISCH: Liquidity Events haben 3-5x höheren Impact!
-        
-        Args:
-            trade: Trade dict mit transaction_type und liquidity_delta
-            candle_volume: Candle volume für Kontext
+            self,
+            trade: Dict[str, Any],
+            candle_volume: float
+        ) -> float:
+            """
+            Berechnet Liquidity Event Multiplier
             
-        Returns:
-            Impact multiplier (1.0-5.0)
-        """
-        tx_type = trade.get('transaction_type', 'SWAP')
-        
-        # Normale SWAPs = 1.0x
-        if tx_type not in ['ADD_LIQUIDITY', 'REMOVE_LIQUIDITY']:
+            KRITISCH: Liquidity Events haben 2-5x höheren Impact!
+            - REMOVE_LIQUIDITY: 2-5x (erhöht Slippage für alle anderen)
+            - ADD_LIQUIDITY: 1.5-2.5x (reduziert Slippage)
+            
+            Args:
+                trade: Trade dict mit transaction_type und liquidity_delta
+                candle_volume: Candle volume für Kontext
+                
+            Returns:
+                Impact multiplier (1.0-5.0)
+            """
+            tx_type = trade.get('transaction_type', 'SWAP')
+            
+            # Normale SWAPs = 1.0x
+            if tx_type not in ['ADD_LIQUIDITY', 'REMOVE_LIQUIDITY']:
+                return 1.0
+            
+            liquidity_delta = trade.get('liquidity_delta', 0)
+            
+            if liquidity_delta == 0 or candle_volume == 0:
+                return 1.0
+            
+            # Liquidity als % vom Volume
+            liquidity_ratio = liquidity_delta / candle_volume
+            
+            if tx_type == 'REMOVE_LIQUIDITY':
+                # Liquidity Removal: 2-5x Impact (erhöht Slippage drastisch)
+                if liquidity_ratio > 0.10:  # >10% of volume - KRITISCH!
+                    logger.debug(
+                        f"💧 CRITICAL REMOVE_LIQUIDITY: {liquidity_delta:.2f} "
+                        f"({liquidity_ratio*100:.1f}% of volume) → 5.0x impact"
+                    )
+                    return 5.0
+                elif liquidity_ratio > 0.05:  # >5%
+                    return 4.0
+                elif liquidity_ratio > 0.02:  # >2%
+                    return 3.0
+                else:
+                    return 2.0  # Mindestens 2x
+            
+            elif tx_type == 'ADD_LIQUIDITY':
+                # Liquidity Addition: 1.5-2.5x Impact (reduziert Slippage)
+                if liquidity_ratio > 0.10:
+                    logger.debug(
+                        f"💧 LARGE ADD_LIQUIDITY: {liquidity_delta:.2f} "
+                        f"({liquidity_ratio*100:.1f}% of volume) → 2.5x impact"
+                    )
+                    return 2.5
+                elif liquidity_ratio > 0.05:
+                    return 2.0
+                else:
+                    return 1.5
+            
             return 1.0
-        
-        liquidity_delta = trade.get('liquidity_delta', 0)
-        
-        if liquidity_delta == 0 or candle_volume == 0:
-            return 1.0
-        
-        # Liquidity als % vom Volume
-        liquidity_ratio = liquidity_delta / candle_volume
-        
-        if tx_type == 'REMOVE_LIQUIDITY':
-            # Liquidity Removal: 2-5x Impact (erhöht Slippage)
-            if liquidity_ratio > 0.10:  # >10% of volume
-                return 5.0
-            elif liquidity_ratio > 0.05:  # >5%
-                return 4.0
-            elif liquidity_ratio > 0.02:  # >2%
-                return 3.0
-            else:
-                return 2.0
-        
-        elif tx_type == 'ADD_LIQUIDITY':
-            # Liquidity Addition: 1.5-2.5x Impact (reduziert Slippage)
-            if liquidity_ratio > 0.10:
-                return 2.5
-            elif liquidity_ratio > 0.05:
-                return 2.0
-            else:
-                return 1.5
-        
-        return 1.0
 
     def _get_impact_level(self, score: float) -> str:
         """
