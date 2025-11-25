@@ -249,8 +249,27 @@ async def get_dex_chart_candles(
         if time_range_hours > 1:
             logger.info(f"📊 Strategy: CEX Historical ({time_range_hours:.1f}h)")
             
-            cex_exchange = 'bitget' if 'bitget' in unified_collector.cex_collectors else 'binance'
-            ccxt_exchange = unified_collector.cex_collectors.get(cex_exchange)
+            # ✅ PRIORITÄT: Bitget vor Binance
+            cex_exchange = None
+            ccxt_exchange = None
+            
+            # 1. Versuche zuerst Bitget
+            if 'bitget' in unified_collector.cex_collectors:
+                cex_exchange = 'bitget'
+                ccxt_exchange = unified_collector.cex_collectors['bitget']
+                logger.info("✅ Using Bitget for historical data")
+            
+            # 2. Fallback zu Binance nur wenn Bitget nicht verfügbar
+            elif 'binance' in unified_collector.cex_collectors:
+                cex_exchange = 'binance'
+                ccxt_exchange = unified_collector.cex_collectors['binance']
+                logger.info("⚠️ Using Binance (Bitget not available)")
+            
+            # 3. Versuche Kraken als letzten Fallback
+            elif 'kraken' in unified_collector.cex_collectors:
+                cex_exchange = 'kraken'
+                ccxt_exchange = unified_collector.cex_collectors['kraken']
+                logger.info("⚠️ Using Kraken (Bitget and Binance not available)")
             
             if ccxt_exchange:
                 try:
@@ -287,7 +306,38 @@ async def get_dex_chart_candles(
                     data_quality = "historical_reliable"
                     
                 except Exception as e:
-                    logger.error(f"CEX historical failed: {e}", exc_info=True)
+                    logger.error(f"CEX historical failed ({cex_exchange}): {e}", exc_info=True)
+                    # Wenn der primäre CEX fehlschlägt, versuche den nächsten
+                    if cex_exchange == 'bitget' and 'binance' in unified_collector.cex_collectors:
+                        logger.info("🔄 Bitget failed, trying Binance as fallback...")
+                        try:
+                            ccxt_exchange = unified_collector.cex_collectors['binance']
+                            cex_symbol = get_cex_symbol(base_token, quote_token, 'binance')
+                            since = int(start_time.timestamp() * 1000)
+                            limit = min(num_candles, 100)
+                            
+                            ohlcv_data = await asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: ccxt_exchange.fetch_ohlcv(cex_symbol, str(timeframe.value), since, limit)
+                            )
+                            
+                            for candle_data in ohlcv_data[:-1]:
+                                candles_data.append({
+                                    'timestamp': datetime.fromtimestamp(candle_data[0] / 1000, tz=timezone.utc),
+                                    'open': float(candle_data[1]),
+                                    'high': float(candle_data[2]),
+                                    'low': float(candle_data[3]),
+                                    'close': float(candle_data[4]),
+                                    'volume': float(candle_data[5]),
+                                })
+                            
+                            logger.info(f"✅ CEX Historical from Binance fallback: {len(candles_data)} candles")
+                            data_source = "cex_binance"
+                            data_quality = "historical_reliable"
+                        except Exception as fallback_error:
+                            logger.error(f"Binance fallback also failed: {fallback_error}")
+            else:
+                logger.warning("⚠️ No CEX collectors available for historical data")
         
         # ==================== STRATEGY: DEX for Current Candle ====================
         
