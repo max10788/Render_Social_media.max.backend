@@ -46,7 +46,6 @@ class SimpleCache:
             value, timestamp = self.cache[key]
             if time.time() - timestamp < self.ttl_seconds:
                 return value
-            # Expired - remove from cache
             del self.cache[key]
         return None
     
@@ -61,36 +60,22 @@ class SimpleCache:
 
 
 class HeliusCollector(DEXCollector):
-    """
-    Helius Collector - PRODUCTION VERSION
-    
-    🎯 Strategy:
-    - Use token addresses (not pool addresses) for Helius RPC
-    - Fetch all transactions for token
-    - Filter for SWAP type
-    - Parse swap details
-    
-    Benefits:
-    - ✅ Works with Helius indexing
-    - ✅ No pool discovery needed
-    - ✅ Gets all swaps for a token
-    - ✅ Reliable and fast
-    """
+    """Helius Collector - Token-based strategy for Solana DEX trades"""
     
     API_BASE = "https://api-mainnet.helius-rpc.com"
     
     # Token Mint Addresses (Solana SPL Tokens)
     TOKEN_MINTS = {
-        'SOL': 'So11111111111111111111111111111111111111112',  # Wrapped SOL
+        'SOL': 'So11111111111111111111111111111111111111112',
         'WSOL': 'So11111111111111111111111111111111111111112',
-        'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',  # USDC
-        'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',  # USDT (Tether)
-        'BONK': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',  # BONK
-        'JTO': 'jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL',   # Jito
-        'JUP': 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',   # Jupiter
-        'WIF': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',  # Dogwifhat
-        'PYTH': 'HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3', # Pyth
-        'RAY': '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R',  # Raydium
+        'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+        'BONK': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
+        'JTO': 'jtojtomepa8beP8AuQc6eXt5FriJwfFMwQx2v2f9mCL',
+        'JUP': 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',
+        'WIF': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',
+        'PYTH': 'HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3',
+        'RAY': '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R',
     }
     
     def __init__(
@@ -107,7 +92,7 @@ class HeliusCollector(DEXCollector):
         )
         
         self.session: Optional[aiohttp.ClientSession] = None
-        self.candle_cache = SimpleCache(ttl_seconds=60)  # 1 min cache for candles
+        self.candle_cache = SimpleCache(ttl_seconds=60)
         self.dexscreener = dexscreener_collector
         
         logger.info(
@@ -125,19 +110,8 @@ class HeliusCollector(DEXCollector):
         """
         Resolve symbol to token address (NOT pool address)
         
-        For Helius Enhanced Transactions API, we use token addresses
-        because getSignaturesForAddress works with token accounts, not pools.
-        
-        Strategy:
-        - For SOL/USDT: Use USDT token address (gets all USDT transactions including SOL swaps)
-        - For SOL/USDC: Use USDC token address
-        - For TOKEN/SOL: Use TOKEN address
-        
-        Args:
-            symbol: Trading pair (e.g., SOL/USDT)
-            
-        Returns:
-            Token address or None
+        For Helius Enhanced Transactions API, we use token addresses.
+        Strategy: For SOL/USDT, use USDT token address
         """
         logger.info(f"🔍 Resolving {symbol} to token address...")
         
@@ -147,8 +121,7 @@ class HeliusCollector(DEXCollector):
             logger.error(f"❌ Invalid symbol format: {symbol}")
             return None
         
-        # Strategy: For SOL pairs, use the quote token (USDT/USDC)
-        # This gives us all USDT/USDC transactions which include SOL swaps
+        # For SOL pairs, use the quote token (USDT/USDC)
         if base_token in ['SOL', 'WSOL']:
             token_address = self.TOKEN_MINTS.get(quote_token)
             if token_address:
@@ -161,7 +134,6 @@ class HeliusCollector(DEXCollector):
                 logger.error(f"❌ Unknown quote token: {quote_token}")
                 return None
         else:
-            # For non-SOL pairs, use the base token
             token_address = self.TOKEN_MINTS.get(base_token)
             if token_address:
                 logger.info(
@@ -173,49 +145,37 @@ class HeliusCollector(DEXCollector):
                 logger.error(f"❌ Unknown base token: {base_token}")
                 return None
     
+    # ✅ REQUIRED: Abstract method implementation from DEXCollector
+    async def _resolve_symbol_to_address(self, symbol: str) -> Optional[str]:
+        """Resolve symbol to address (abstract method from DEXCollector)"""
+        return await self._resolve_symbol_to_token_address(symbol)
+    
     async def fetch_candle_data(
         self,
         symbol: str,
         timeframe: str,
         timestamp: datetime
     ) -> Dict[str, Any]:
-        """
-        Fetch CURRENT candle using token-based approach
-        
-        Args:
-            symbol: Trading pair (e.g., SOL/USDT)
-            timeframe: Timeframe (e.g., 5m)
-            timestamp: Candle timestamp
-            
-        Returns:
-            Candle data dictionary
-        """
+        """Fetch CURRENT candle using token-based approach"""
         logger.info(f"🔗 Helius: Fetching candle for {symbol} (token-based)")
         
-        # Ensure timezone-aware
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
         
-        # Check cache
         cache_key = f"candle_{symbol}_{timeframe}_{int(timestamp.timestamp())}"
         cached = self.candle_cache.get(cache_key)
         if cached:
             logger.debug("📦 Using cached candle")
             return cached
         
-        # Get timeframe in seconds
         timeframe_seconds = {
             '1m': 60, '5m': 300, '15m': 900, '30m': 1800,
             '1h': 3600, '4h': 14400, '1d': 86400,
         }.get(timeframe, 300)
         
-        # Calculate time window
         start_time = timestamp
         end_time = timestamp + timedelta(seconds=timeframe_seconds)
         
-        logger.info(f"🔍 Time window: {start_time} to {end_time}")
-        
-        # Fetch trades
         trades = await self.fetch_trades(
             symbol=symbol,
             start_time=start_time,
@@ -223,12 +183,10 @@ class HeliusCollector(DEXCollector):
             limit=1000
         )
         
-        # Build candle from trades
         if not trades:
             logger.warning(f"⚠️ No trades found for {symbol}")
             return self._empty_candle(timestamp)
         
-        # Aggregate to candle
         prices = [t['price'] for t in trades if t.get('price', 0) > 0]
         volumes = [t['amount'] for t in trades if t.get('amount', 0) > 0]
         
@@ -245,9 +203,7 @@ class HeliusCollector(DEXCollector):
             'volume': sum(volumes) if volumes else 0.0
         }
         
-        # Cache result
         self.candle_cache.set(cache_key, candle)
-        
         logger.info(f"✅ Helius: Candle built from {len(trades)} trades")
         return candle
     
@@ -269,19 +225,7 @@ class HeliusCollector(DEXCollector):
         end_time: datetime,
         limit: Optional[int] = 100
     ) -> List[Dict[str, Any]]:
-        """
-        Fetch trades for symbol
-        
-        Args:
-            symbol: Trading pair (e.g., SOL/USDT)
-            start_time: Start time
-            end_time: End time
-            limit: Maximum trades
-            
-        Returns:
-            List of trade dictionaries
-        """
-        # Resolve to TOKEN address (not pool!)
+        """Fetch trades for symbol"""
         token_address = await self._resolve_symbol_to_token_address(symbol)
         if not token_address:
             logger.error(f"❌ Cannot resolve token address for {symbol}")
@@ -292,7 +236,7 @@ class HeliusCollector(DEXCollector):
             start_time=start_time,
             end_time=end_time,
             limit=limit,
-            symbol=symbol  # Pass symbol for filtering
+            symbol=symbol
         )
 
     async def fetch_dex_trades(
@@ -303,21 +247,7 @@ class HeliusCollector(DEXCollector):
         limit: Optional[int] = 100,
         symbol: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """
-        Fetch trades from Helius API using Solana RPC + Enhanced Transactions
-        
-        Strategy:
-        1. Get signatures for token address via getSignaturesForAddress (RPC)
-        2. Parse transactions via Enhanced Transactions API  
-        3. Filter for SWAP transactions and time range
-        
-        Args:
-            token_address: Token mint address (e.g., USDT address)
-            start_time: Start time
-            end_time: End time
-            limit: Maximum signatures to fetch
-            symbol: Original symbol (for logging)
-        """
+        """Fetch trades from Helius API using Solana RPC + Enhanced Transactions"""
         logger.info(f"🔍 Fetching trades from token: {token_address[:8]}...")
         if symbol:
             logger.info(f"📊 Symbol: {symbol}")
@@ -335,9 +265,7 @@ class HeliusCollector(DEXCollector):
             "method": "getSignaturesForAddress",
             "params": [
                 token_address,
-                {
-                    "limit": min(limit, 1000),  # Max 1000 per request
-                }
+                {"limit": min(limit, 1000)}
             ]
         }
         
@@ -375,7 +303,6 @@ class HeliusCollector(DEXCollector):
                     logger.warning("⚠️ No signatures found for this token address")
                     return []
                 
-                # Log first/last signature times
                 if signatures:
                     first_sig = signatures[0]
                     last_sig = signatures[-1]
@@ -410,8 +337,7 @@ class HeliusCollector(DEXCollector):
                     logger.warning(f"📅 Requested: {start_time} to {end_time}")
                 return []
             
-            # Limit to requested amount
-            filtered_sigs = filtered_sigs[:min(len(filtered_sigs), 100)]  # Limit to 100 for Enhanced API
+            filtered_sigs = filtered_sigs[:min(len(filtered_sigs), 100)]
             
             # Step 3: Parse transactions via Enhanced Transactions API
             logger.info(f"🌐 Step 2: Parsing {len(filtered_sigs)} transactions via Enhanced API")
@@ -441,17 +367,12 @@ class HeliusCollector(DEXCollector):
                     logger.warning("⚠️ No transactions returned from Enhanced API")
                     return []
                 
-                # Log transaction types found
                 tx_types = {}
                 for tx in transactions:
                     tx_type = tx.get('type', 'UNKNOWN')
                     tx_types[tx_type] = tx_types.get(tx_type, 0) + 1
                 
                 logger.info(f"📊 Transaction types found: {tx_types}")
-                
-                # Log first transaction for debugging
-                if transactions and logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"🔍 First transaction sample: {transactions[0].get('type')} - {transactions[0].get('signature')[:16]}...")
             
             # Step 4: Parse and filter trades
             trades = []
@@ -462,20 +383,17 @@ class HeliusCollector(DEXCollector):
                 try:
                     tx_type = tx.get('type')
                     
-                    # Only process SWAP transactions
                     if tx_type != 'SWAP':
                         continue
                     
                     swap_count += 1
                     
-                    # Parse the swap transaction
                     trade = self._parse_helius_enhanced_swap(tx, symbol)
                     
                     if trade:
                         if start_time <= trade['timestamp'] <= end_time:
                             trades.append(trade)
                             
-                            # Log first few trades
                             if len(trades) <= 5:
                                 logger.info(
                                     f"✅ Trade {len(trades)}: "
@@ -492,7 +410,6 @@ class HeliusCollector(DEXCollector):
                         logger.error(f"❌ Parse error {len(parse_errors)}: {e}", exc_info=True)
                     continue
             
-            # Summary
             logger.info(
                 f"✅ Helius: {len(trades)} trades returned "
                 f"(SWAP txs: {swap_count}/{len(transactions)}, "
@@ -506,13 +423,6 @@ class HeliusCollector(DEXCollector):
                 )
                 if parse_errors:
                     logger.warning(f"Parse error examples: {parse_errors[:3]}")
-                    
-                # Log first SWAP transaction for debugging
-                if transactions and logger.isEnabledFor(logging.DEBUG):
-                    for tx in transactions:
-                        if tx.get('type') == 'SWAP':
-                            logger.debug(f"🔍 Sample SWAP transaction: {json.dumps(tx, indent=2)[:1000]}...")
-                            break
             
             return trades
             
@@ -528,52 +438,27 @@ class HeliusCollector(DEXCollector):
         tx: Dict[str, Any],
         symbol: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """
-        Parse a Helius Enhanced Transaction (SWAP type)
-        
-        Enhanced transaction structure:
-        {
-            "type": "SWAP",
-            "signature": "...",
-            "timestamp": 1234567890,
-            "slot": 123456,
-            "fee": 5000,
-            "feePayer": "...",
-            "nativeTransfers": [...],
-            "tokenTransfers": [...],
-            "accountData": [...],
-            "events": {...}
-        }
-        
-        Args:
-            tx: Enhanced transaction data
-            symbol: Original trading pair (e.g., SOL/USDT) for filtering
-        """
+        """Parse a Helius Enhanced Transaction (SWAP type)"""
         try:
-            # Extract basic info
             signature = tx.get('signature')
             timestamp = tx.get('timestamp')
             
             if not timestamp:
                 return None
             
-            # Convert timestamp to datetime
             trade_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
             
-            # Parse token transfers
             token_transfers = tx.get('tokenTransfers', [])
             native_transfers = tx.get('nativeTransfers', [])
             
             if not token_transfers and not native_transfers:
                 return None
             
-            # Initialize variables
             amount = 0
             price = 0
             trade_type = 'unknown'
             wallet_address = None
             
-            # Strategy 1: Try events.swap (structured data)
             events = tx.get('events', {})
             
             if 'swap' in events:
@@ -588,35 +473,28 @@ class HeliusCollector(DEXCollector):
                     
                     wallet_address = input_token.get('userAccount') or output_token.get('userAccount')
                     
-                    # Get amounts
                     input_amount = float(input_token.get('tokenAmount', 0))
                     output_amount = float(output_token.get('tokenAmount', 0))
                     
                     input_mint = input_token.get('mint', '')
                     output_mint = output_token.get('mint', '')
                     
-                    # Determine if this is SOL swap
                     sol_mint = 'So11111111111111111111111111111111111111112'
                     
                     if output_mint == sol_mint:
-                        # Buying SOL
                         trade_type = 'buy'
                         amount = output_amount
                         if amount > 0:
                             price = input_amount / amount
                     elif input_mint == sol_mint:
-                        # Selling SOL
                         trade_type = 'sell'
                         amount = input_amount
                         if amount > 0:
                             price = output_amount / amount
                     else:
-                        # Not a SOL swap, skip
                         return None
             
-            # Strategy 2: Fallback to tokenTransfers
             if amount == 0 and len(token_transfers) >= 1:
-                # Try to find SOL transfer
                 sol_mint = 'So11111111111111111111111111111111111111112'
                 
                 for transfer in token_transfers:
@@ -625,13 +503,7 @@ class HeliusCollector(DEXCollector):
                         amount = float(transfer.get('tokenAmount', 0))
                         wallet_address = transfer.get('fromUserAccount') or transfer.get('toUserAccount')
                         
-                        # Determine direction
-                        from_account = transfer.get('fromUserAccount', '')
-                        to_account = transfer.get('toUserAccount', '')
-                        
-                        # Simple heuristic: if there are multiple transfers, this is a swap
                         if len(token_transfers) >= 2:
-                            # Find the other token
                             for other_transfer in token_transfers:
                                 if other_transfer.get('mint') != sol_mint:
                                     other_amount = float(other_transfer.get('tokenAmount', 0))
@@ -642,11 +514,9 @@ class HeliusCollector(DEXCollector):
                         trade_type = 'swap'
                         break
             
-            # Validate we have minimum required data
             if amount == 0 or not wallet_address:
                 return None
             
-            # If price is still 0, set a placeholder
             if price == 0:
                 price = 1.0
             
@@ -657,8 +527,8 @@ class HeliusCollector(DEXCollector):
                 'trade_type': trade_type,
                 'wallet_address': wallet_address,
                 'transaction_hash': signature,
-                'dex': 'jupiter',  # Most swaps on Solana are Jupiter
-                'raw_data': tx  # Keep full transaction for debugging
+                'dex': 'jupiter',
+                'raw_data': tx
             }
             
         except Exception as e:
@@ -670,7 +540,6 @@ class HeliusCollector(DEXCollector):
         try:
             session = await self._get_session()
             
-            # Test RPC endpoint
             rpc_url = f"https://mainnet.helius-rpc.com/?api-key={self.api_key}"
             payload = {
                 "jsonrpc": "2.0",
@@ -714,8 +583,6 @@ class HeliusCollector(DEXCollector):
             await self.session.close()
         
         self.candle_cache.clear()
-        
-        # Log final stats
         logger.info(f"📊 Helius Collector stats: {self.get_stats()}")
 
 
@@ -724,17 +591,7 @@ def create_helius_collector(
     dexscreener_collector: Optional[Any] = None,
     config: Optional[Dict[str, Any]] = None
 ) -> HeliusCollector:
-    """
-    Create production-ready Helius Collector
-    
-    Args:
-        api_key: Helius API key
-        dexscreener_collector: Optional Dexscreener collector (not used anymore)
-        config: Optional configuration
-        
-    Returns:
-        HeliusCollector instance
-    """
+    """Create production-ready Helius Collector"""
     return HeliusCollector(
         api_key=api_key,
         config=config or {},
