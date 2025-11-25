@@ -267,7 +267,11 @@ class HeliusCollector(DEXCollector):
         limit: Optional[int] = 100,
         symbol: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Fetch trades from Helius API using Solana RPC + Enhanced Transactions"""
+        """
+        Fetch trades from Helius API using Solana RPC + Enhanced Transactions
+        
+        ✅ ENHANCED: Parses SWAP, ADD_LIQUIDITY, REMOVE_LIQUIDITY, UNKNOWN
+        """
         logger.info(f"🔍 Fetching trades from token: {token_address[:8]}...")
         if symbol:
             logger.info(f"📊 Symbol: {symbol}")
@@ -394,55 +398,96 @@ class HeliusCollector(DEXCollector):
                 
                 logger.info(f"📊 Transaction types found: {tx_types}")
             
-            # Step 4: Parse and filter trades
+            # Step 4: Parse and filter trades - ENHANCED VERSION
             trades = []
-            swap_count = 0
-            parse_errors = []
+            stats = {
+                'swap_count': 0,
+                'unknown_parsed': 0,
+                'liquidity_events': 0,
+                'add_liquidity': 0,
+                'remove_liquidity': 0,
+                'parse_errors': []
+            }
             
             for i, tx in enumerate(transactions):
                 try:
                     tx_type = tx.get('type')
+                    trade = None
                     
-                    if tx_type != 'SWAP':
+                    # ✅ Parse known SWAPs
+                    if tx_type == 'SWAP':
+                        stats['swap_count'] += 1
+                        trade = self._parse_helius_enhanced_swap(tx, symbol)
+                    
+                    # ✅ Parse UNKNOWN transactions
+                    elif tx_type == 'UNKNOWN':
+                        trade = self._parse_unknown_transaction(tx, symbol)
+                        
+                        if trade:
+                            stats['unknown_parsed'] += 1
+                            
+                            # Track liquidity events separately
+                            tx_type_parsed = trade.get('transaction_type', '')
+                            if tx_type_parsed == 'ADD_LIQUIDITY':
+                                stats['add_liquidity'] += 1
+                                stats['liquidity_events'] += 1
+                            elif tx_type_parsed == 'REMOVE_LIQUIDITY':
+                                stats['remove_liquidity'] += 1
+                                stats['liquidity_events'] += 1
+                    
+                    # ✅ Other types (TRANSFER, etc.) - ignore
+                    else:
                         continue
                     
-                    swap_count += 1
-                    
-                    trade = self._parse_helius_enhanced_swap(tx, symbol)
-                    
-                    if trade:
-                        if start_time <= trade['timestamp'] <= end_time:
-                            trades.append(trade)
+                    # Add valid trades
+                    if trade and start_time <= trade['timestamp'] <= end_time:
+                        trades.append(trade)
+                        
+                        # Log first 5 trades
+                        if len(trades) <= 5:
+                            tx_type_label = trade.get('transaction_type', 'Trade')
+                            logger.info(
+                                f"✅ {tx_type_label} #{len(trades)}: "
+                                f"{trade['trade_type']} {trade['amount']:.4f} "
+                                f"@ ${trade.get('price', 0):.6f} at {trade['timestamp']}"
+                            )
                             
-                            if len(trades) <= 5:
+                            # Extra info for liquidity events
+                            if 'liquidity_delta' in trade:
                                 logger.info(
-                                    f"✅ Trade {len(trades)}: "
-                                    f"{trade['trade_type']} {trade['amount']:.4f} "
-                                    f"@ ${trade.get('price', 0):.6f} at {trade['timestamp']}"
+                                    f"   💧 Liquidity Delta: {trade['liquidity_delta']:.4f}"
                                 )
-                    else:
-                        if len(parse_errors) < 3:
-                            logger.debug(f"⚠️ Swap {swap_count} could not be parsed")
-                            
+                    
                 except Exception as e:
-                    parse_errors.append(str(e))
-                    if len(parse_errors) <= 3:
-                        logger.error(f"❌ Parse error {len(parse_errors)}: {e}", exc_info=True)
+                    stats['parse_errors'].append(str(e))
+                    if len(stats['parse_errors']) <= 3:
+                        logger.error(f"❌ Parse error {len(stats['parse_errors'])}: {e}", exc_info=True)
                     continue
             
+            # ✅ Enhanced Logging
             logger.info(
                 f"✅ Helius: {len(trades)} trades returned "
-                f"(SWAP txs: {swap_count}/{len(transactions)}, "
-                f"parse errors: {len(parse_errors)})"
+                f"(SWAP: {stats['swap_count']}, "
+                f"UNKNOWN parsed: {stats['unknown_parsed']}, "
+                f"Liquidity: +{stats['add_liquidity']}/-{stats['remove_liquidity']}, "
+                f"Parse errors: {len(stats['parse_errors'])})"
             )
             
-            if len(trades) == 0 and swap_count > 0:
+            # Warning if no trades despite having transactions
+            if len(trades) == 0 and (stats['swap_count'] > 0 or stats['unknown_parsed'] > 0):
                 logger.warning(
-                    f"⚠️ Found {swap_count} SWAP transactions but could not parse any! "
-                    f"Parse errors: {len(parse_errors)}"
+                    f"⚠️ Found {stats['swap_count']} SWAP + {stats['unknown_parsed']} parsed UNKNOWN "
+                    f"but no valid trades in time range! Parse errors: {len(stats['parse_errors'])}"
                 )
-                if parse_errors:
-                    logger.warning(f"Parse error examples: {parse_errors[:3]}")
+                if stats['parse_errors']:
+                    logger.warning(f"Parse error examples: {stats['parse_errors'][:3]}")
+            
+            # Info about liquidity events
+            if stats['liquidity_events'] > 0:
+                logger.info(
+                    f"💧 Liquidity Events: {stats['liquidity_events']} total "
+                    f"(+{stats['add_liquidity']} adds, -{stats['remove_liquidity']} removals)"
+                )
             
             return trades
             
