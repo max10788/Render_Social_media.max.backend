@@ -73,105 +73,118 @@ class ImpactCalculator:
         logger.info("ImpactCalculator initialisiert")
     
     def calculate_impact_score(
-        self,
-        wallet_trades: List[Dict[str, Any]],
-        candle_data: Dict[str, Any],
-        total_volume: float,
-        all_trades: Optional[List[Dict[str, Any]]] = None,
-        apply_liquidity_multipliers: bool = True  # ✅ NEU
-    ) -> Dict[str, Any]:
-        """
-        Berechnet vollständigen Impact Score für ein Wallet
-        
-        Args:
-            wallet_trades: Trades des Wallets
-            candle_data: Candle-Informationen
-            total_volume: Gesamt-Volume der Candle
-            all_trades: Alle Trades (für Kontext)
-            apply_liquidity_multipliers: Ob Liquidity Event Multipliers angewendet werden
+            self,
+            wallet_trades: List[Dict[str, Any]],
+            candle_data: Dict[str, Any],
+            total_volume: float,
+            all_trades: Optional[List[Dict[str, Any]]] = None,
+            apply_liquidity_multipliers: bool = False  # ✅ NEU
+        ) -> Dict[str, Any]:
+            """
+            Berechnet vollständigen Impact Score für ein Wallet
             
-        Returns:
-            Dictionary mit Impact Score und Komponenten
-        """
-        if not wallet_trades:
-            return self._zero_impact()
-        
-        # Berechne alle Komponenten
-        volume_ratio = self._calculate_volume_ratio(wallet_trades, total_volume)
-        
-        # ✅ NEU: Apply Liquidity Multipliers
-        if apply_liquidity_multipliers:
-            weighted_volume_ratio = 0.0
-            
-            for trade in wallet_trades:
-                trade_volume = trade.get("amount", 0.0)
-                trade_ratio = trade_volume / total_volume if total_volume > 0 else 0
+            Args:
+                wallet_trades: Trades des Wallets
+                candle_data: Candle-Informationen
+                total_volume: Gesamt-Volume der Candle
+                all_trades: Alle Trades (für Kontext)
+                apply_liquidity_multipliers: Ob Liquidity Event Multipliers angewendet werden
                 
-                # Get multiplier
-                multiplier = self.calculate_liquidity_multiplier(
-                    trade=trade,
-                    candle_volume=total_volume
+            Returns:
+                Dictionary mit Impact Score und Komponenten
+            """
+            if not wallet_trades:
+                return self._zero_impact()
+            
+            # Berechne volume ratio
+            volume_ratio = self._calculate_volume_ratio(wallet_trades, total_volume)
+            
+            # ✅ NEU: Apply Liquidity Multipliers wenn aktiviert
+            if apply_liquidity_multipliers:
+                weighted_volume_ratio = 0.0
+                has_liquidity_events = False
+                liquidity_event_count = 0
+                
+                for trade in wallet_trades:
+                    trade_volume = trade.get("amount", 0.0)
+                    trade_ratio = trade_volume / total_volume if total_volume > 0 else 0
+                    
+                    # Get multiplier
+                    multiplier = self.calculate_liquidity_multiplier(
+                        trade=trade,
+                        candle_volume=total_volume
+                    )
+                    
+                    # Track liquidity events
+                    tx_type = trade.get('transaction_type', 'SWAP')
+                    if tx_type in ['ADD_LIQUIDITY', 'REMOVE_LIQUIDITY']:
+                        has_liquidity_events = True
+                        liquidity_event_count += 1
+                    
+                    weighted_volume_ratio += trade_ratio * multiplier
+                
+                # Normalize und cap bei 1.0
+                volume_ratio = min(weighted_volume_ratio, 1.0)
+                
+                logger.debug(
+                    f"Liquidity-weighted volume ratio: {volume_ratio:.3f} "
+                    f"(raw: {sum(t.get('amount', 0) for t in wallet_trades) / total_volume:.3f}) "
+                    f"- {liquidity_event_count} liquidity events"
                 )
-                
-                weighted_volume_ratio += trade_ratio * multiplier
             
-            # Normalize und cap bei 1.0
-            volume_ratio = min(weighted_volume_ratio, 1.0)
+            # Berechne alle anderen Komponenten (bleibt gleich)
+            timing_score = self._calculate_timing_score(wallet_trades, candle_data)
+            size_impact = self._calculate_size_impact(wallet_trades, candle_data)
+            price_correlation = self._calculate_price_correlation(
+                wallet_trades, candle_data
+            )
+            slippage_caused = self._calculate_slippage_score(
+                wallet_trades, candle_data
+            )
+            
+            # Erstelle Impact Components
+            components = ImpactComponents(
+                volume_ratio=volume_ratio,
+                timing_score=timing_score,
+                size_impact=size_impact,
+                price_correlation=price_correlation,
+                slippage_caused=slippage_caused
+            )
+            
+            # Gesamt-Score
+            total_score = components.total_score
+            
+            # ✅ NEU: Check for liquidity events
+            has_liquidity_events = any(
+                t.get('transaction_type') in ['ADD_LIQUIDITY', 'REMOVE_LIQUIDITY']
+                for t in wallet_trades
+            )
+            
+            result = {
+                "impact_score": round(total_score, 3),
+                "components": {
+                    "volume_ratio": round(volume_ratio, 3),
+                    "timing_score": round(timing_score, 3),
+                    "size_impact": round(size_impact, 3),
+                    "price_correlation": round(price_correlation, 3),
+                    "slippage_caused": round(slippage_caused, 3)
+                },
+                "impact_level": self._get_impact_level(total_score),
+                "has_liquidity_events": has_liquidity_events  # ✅ NEU
+            }
+            
+            log_suffix = ""
+            if apply_liquidity_multipliers and has_liquidity_events:
+                log_suffix = " [LIQUIDITY-WEIGHTED]"
             
             logger.debug(
-                f"Liquidity-weighted volume ratio: {volume_ratio:.3f} "
-                f"(raw: {sum(t.get('amount', 0) for t in wallet_trades) / total_volume:.3f})"
+                f"Impact Score berechnet: {total_score:.3f} "
+                f"(vol={volume_ratio:.2f}, timing={timing_score:.2f}, "
+                f"size={size_impact:.2f}, corr={price_correlation:.2f}, "
+                f"slip={slippage_caused:.2f}){log_suffix}"
             )
-        
-        timing_score = self._calculate_timing_score(wallet_trades, candle_data)
-        size_impact = self._calculate_size_impact(wallet_trades, candle_data)
-        price_correlation = self._calculate_price_correlation(
-            wallet_trades, candle_data
-        )
-        slippage_caused = self._calculate_slippage_score(
-            wallet_trades, candle_data
-        )
-        
-        # Erstelle Impact Components
-        components = ImpactComponents(
-            volume_ratio=volume_ratio,
-            timing_score=timing_score,
-            size_impact=size_impact,
-            price_correlation=price_correlation,
-            slippage_caused=slippage_caused
-        )
-        
-        # Gesamt-Score
-        total_score = components.total_score
-        
-        # ✅ NEU: Liquidity Event Info hinzufügen
-        has_liquidity_events = any(
-            t.get('transaction_type') in ['ADD_LIQUIDITY', 'REMOVE_LIQUIDITY']
-            for t in wallet_trades
-        )
-        
-        result = {
-            "impact_score": round(total_score, 3),
-            "components": {
-                "volume_ratio": round(volume_ratio, 3),
-                "timing_score": round(timing_score, 3),
-                "size_impact": round(size_impact, 3),
-                "price_correlation": round(price_correlation, 3),
-                "slippage_caused": round(slippage_caused, 3)
-            },
-            "impact_level": self._get_impact_level(total_score),
-            "has_liquidity_events": has_liquidity_events  # ✅ NEU
-        }
-        
-        logger.debug(
-            f"Impact Score berechnet: {total_score:.3f} "
-            f"(vol={volume_ratio:.2f}, timing={timing_score:.2f}, "
-            f"size={size_impact:.2f}, corr={price_correlation:.2f}, "
-            f"slip={slippage_caused:.2f})"
-            + (f" [LIQUIDITY EVENT]" if has_liquidity_events else "")
-        )
-        
-        return result
+            
+            return result
     
     def _calculate_volume_ratio(
         self,
