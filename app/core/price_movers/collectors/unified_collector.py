@@ -39,7 +39,7 @@ class UnifiedCollector:
     - ✅ ULTRA-FLEXIBLE initialization (akzeptiert alle Parameter)
     
     Architecture:
-    1. Primary: Helius (fast, pool-based) for DEX
+    1. Primary: Helius (fast, token-based) for DEX
     2. Fallback: Dexscreener (slower but reliable) for DEX
     3. CEX: Binance/Bitget/Kraken for historical data
     4. Aggregation: Combine and deduplicate
@@ -117,7 +117,7 @@ class UnifiedCollector:
         )
     
     def _initialize_cex_collectors(self, cex_credentials: Dict[str, Any]) -> Dict[str, Any]:
-        """Initialize CEX collectors using CCXT with geo-restriction bypass"""
+        """Initialize CEX collectors using CCXT"""
         collectors = {}
         
         logger.info(f"🔧 Initializing CEX with CCXT: {list(cex_credentials.keys())}")
@@ -128,36 +128,24 @@ class UnifiedCollector:
             logger.error("❌ CCXT not installed! Run: pip install ccxt")
             return collectors
         
-        # Try Binance alternatives in order
+        # Binance
         binance_creds = cex_credentials.get('binance', {})
-        
-        # 1. Try Binance US (no geo-restrictions)
         try:
             config = {
                 'enableRateLimit': True,
-                'options': {'defaultType': 'spot'},
+                'options': {'defaultType': 'spot'}
             }
             if binance_creds.get('api_key'):
                 config['apiKey'] = binance_creds['api_key']
             if binance_creds.get('api_secret'):
                 config['secret'] = binance_creds['api_secret']
             
-            collectors['binance'] = ccxt.binanceus(config)  # ✅ Binance US
+            collectors['binance'] = ccxt.binance(config)
             logger.info("✅ Binance US initialized (CCXT)")
         except Exception as e:
-            logger.warning(f"⚠️ Binance US init failed: {e}")
-            
-            # 2. Try OKX as fallback (no geo-restrictions)
-            try:
-                collectors['binance'] = ccxt.okx({
-                    'enableRateLimit': True,
-                    'options': {'defaultType': 'spot'},
-                })
-                logger.info("✅ OKX initialized as Binance fallback (CCXT)")
-            except Exception as e2:
-                logger.error(f"❌ All Binance alternatives failed: {e2}")
+            logger.error(f"❌ Binance init failed: {e}")
         
-        # Bitget (backup)
+        # Bitget
         bitget_creds = cex_credentials.get('bitget', {})
         if bitget_creds.get('api_key') and bitget_creds.get('api_secret'):
             try:
@@ -171,7 +159,7 @@ class UnifiedCollector:
             except Exception as e:
                 logger.error(f"❌ Bitget init failed: {e}")
         
-        # Kraken (backup)
+        # Kraken
         kraken_creds = cex_credentials.get('kraken', {})
         if kraken_creds.get('api_key') and kraken_creds.get('api_secret'):
             try:
@@ -183,15 +171,6 @@ class UnifiedCollector:
                 logger.info("✅ Kraken initialized (CCXT)")
             except Exception as e:
                 logger.error(f"❌ Kraken init failed: {e}")
-        
-        if not collectors:
-            logger.warning("⚠️ No CEX collectors initialized - trying free alternatives...")
-            # Last resort: Try completely free exchanges
-            try:
-                collectors['binance'] = ccxt.kucoin({'enableRateLimit': True})
-                logger.info("✅ KuCoin initialized as free fallback")
-            except:
-                pass
         
         return collectors
     
@@ -252,7 +231,7 @@ class UnifiedCollector:
         Fetch DEX candle with intelligent fallback
         
         Strategy:
-        1. Try Helius (fast, pool-based)
+        1. Try Helius (fast, token-based)
         2. On failure: Try Dexscreener
         3. On failure: Return empty candle with error flag
         """
@@ -439,7 +418,7 @@ class UnifiedCollector:
         Fetch trades with aggregation from multiple sources
         
         Args:
-            exchange: Exchange name
+            exchange: Exchange name (jupiter/raydium/binance/etc)
             symbol: Trading pair
             start_time: Start time
             end_time: End time
@@ -450,8 +429,12 @@ class UnifiedCollector:
         """
         logger.info(f"🔍 Fetching trades: {exchange} {symbol} ({start_time} to {end_time})")
         
+        # ✅ DEBUG: Log available collectors
+        logger.info(f"📊 Available collectors: Helius={bool(self.helius_collector)}, Dexscreener={bool(self.dexscreener_collector)}, CEX={list(self.cex_collectors.keys())}")
+        
         # Route based on exchange type
         is_dex = self._is_dex_exchange(exchange)
+        logger.info(f"🎯 Exchange '{exchange}' is DEX: {is_dex}")
         
         if is_dex:
             trades = await self._fetch_dex_trades(symbol, start_time, end_time, limit)
@@ -477,26 +460,39 @@ class UnifiedCollector:
         """Fetch DEX trades with fallback"""
         all_trades = []
         
-        # Fetch from Helius
+        logger.info(f"🔄 Fetching DEX trades for {symbol}")
+        
+        # 1️⃣ FETCH FROM HELIUS (PRIMARY)
         if self.helius_collector:
             try:
+                logger.info(f"📡 Calling Helius collector...")
                 helius_trades = await asyncio.wait_for(
                     self.helius_collector.fetch_trades(
                         symbol, start_time, end_time, limit
                     ),
-                    timeout=10.0
+                    timeout=30.0  # ✅ Increased timeout for token-based fetching
                 )
                 
                 if helius_trades:
                     logger.info(f"✅ Helius: {len(helius_trades)} trades")
                     all_trades.extend(helius_trades)
+                    self._stats['helius']['success'] += 1
+                else:
+                    logger.warning(f"⚠️ Helius returned 0 trades")
                     
+            except asyncio.TimeoutError:
+                logger.error(f"⏱️ Helius timeout after 30s")
+                self._stats['helius']['errors'] += 1
             except Exception as e:
-                logger.warning(f"⚠️ Helius trades failed: {e}")
+                logger.error(f"❌ Helius trades failed: {e}", exc_info=True)
+                self._stats['helius']['errors'] += 1
+        else:
+            logger.warning("⚠️ Helius collector not available")
         
-        # Fetch from Dexscreener (if needed)
+        # 2️⃣ FETCH FROM DEXSCREENER (FALLBACK IF NEEDED)
         if self.dexscreener_collector and len(all_trades) < limit / 2:
             try:
+                logger.info(f"🔄 Falling back to Dexscreener (have {len(all_trades)} trades so far)")
                 dex_trades = await asyncio.wait_for(
                     self.dexscreener_collector.fetch_trades(
                         symbol, start_time, end_time, limit
@@ -507,14 +503,17 @@ class UnifiedCollector:
                 if dex_trades:
                     logger.info(f"✅ Dexscreener: {len(dex_trades)} trades")
                     all_trades.extend(dex_trades)
+                    self._stats['dexscreener']['success'] += 1
                     
+            except asyncio.TimeoutError:
+                logger.warning(f"⏱️ Dexscreener timeout")
+                self._stats['dexscreener']['errors'] += 1
             except Exception as e:
                 logger.warning(f"⚠️ Dexscreener trades failed: {e}")
+                self._stats['dexscreener']['errors'] += 1
         
-        # Deduplicate by signature/id
+        # 3️⃣ DEDUPLICATE AND SORT
         unique_trades = self._deduplicate_trades(all_trades)
-        
-        # Sort by timestamp
         unique_trades.sort(key=lambda t: t.get('timestamp', datetime.min))
         
         logger.info(
@@ -573,6 +572,7 @@ class UnifiedCollector:
         for trade in trades:
             trade_id = (
                 trade.get('signature') or 
+                trade.get('transaction_hash') or
                 trade.get('id') or 
                 trade.get('tx_hash')
             )
