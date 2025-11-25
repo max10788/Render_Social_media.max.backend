@@ -554,6 +554,276 @@ class HeliusCollector(DEXCollector):
         except Exception as e:
             logger.debug(f"❌ Error parsing swap {tx.get('signature', 'unknown')[:16]}...: {e}")
             return None
+
+    def _detect_dex_from_program_ids(self, tx: Dict[str, Any]) -> Optional[str]:
+        """
+        Erkenne DEX anhand der Program IDs in der Transaktion
+        
+        Returns:
+            DEX Name (z.B. 'jupiter', 'orca') oder None
+        """
+        try:
+            # Account Keys enthalten die aufgerufenen Programme
+            account_keys = tx.get('accountData', [])
+            
+            for account in account_keys:
+                account_id = account.get('account', '')
+                
+                if account_id in self.DEX_PROGRAM_IDS:
+                    dex_name = self.DEX_PROGRAM_IDS[account_id]
+                    logger.debug(f"🎯 Detected DEX: {dex_name} (program: {account_id[:8]}...)")
+                    return dex_name
+            
+            # Fallback: Prüfe instructions
+            instructions = tx.get('instructions', [])
+            for instruction in instructions:
+                program_id = instruction.get('programId', '')
+                
+                if program_id in self.DEX_PROGRAM_IDS:
+                    dex_name = self.DEX_PROGRAM_IDS[program_id]
+                    logger.debug(f"🎯 Detected DEX via instruction: {dex_name}")
+                    return dex_name
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Error detecting DEX: {e}")
+            return None
+
+    def _parse_unknown_transaction(
+        self, 
+        tx: Dict[str, Any],
+        symbol: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Parse UNKNOWN Transaktionen manuell
+        
+        Strategie:
+        1. Erkenne DEX via Program IDs
+        2. Analysiere Token Transfers
+        3. Identifiziere Liquidity Events vs Swaps
+        """
+        try:
+            signature = tx.get('signature', 'unknown')
+            timestamp = tx.get('timestamp')
+            
+            if not timestamp:
+                return None
+            
+            trade_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            
+            # 1. Erkenne DEX
+            dex_name = self._detect_dex_from_program_ids(tx)
+            if not dex_name:
+                logger.debug(f"⚠️ Cannot identify DEX for {signature[:16]}...")
+                return None
+            
+            # 2. Analysiere Token Transfers
+            token_transfers = tx.get('tokenTransfers', [])
+            native_transfers = tx.get('nativeTransfers', [])
+            
+            if not token_transfers:
+                return None
+            
+            sol_mint = 'So11111111111111111111111111111111111111112'
+            
+            # Zähle SOL transfers
+            sol_transfers = [t for t in token_transfers if t.get('mint') == sol_mint]
+            other_transfers = [t for t in token_transfers if t.get('mint') != sol_mint]
+            
+            # 3. Klassifiziere Transaction Type
+            tx_type = self._classify_transaction_type(
+                tx=tx,
+                sol_transfers=sol_transfers,
+                other_transfers=other_transfers
+            )
+            
+            if tx_type not in ['swap', 'add_liquidity', 'remove_liquidity']:
+                return None
+            
+            # 4. Parse je nach Type
+            if tx_type == 'swap':
+                return self._parse_manual_swap(
+                    tx=tx,
+                    sol_transfers=sol_transfers,
+                    other_transfers=other_transfers,
+                    dex_name=dex_name,
+                    trade_time=trade_time,
+                    signature=signature
+                )
+            elif tx_type in ['add_liquidity', 'remove_liquidity']:
+                return self._parse_liquidity_event(
+                    tx=tx,
+                    event_type=tx_type,
+                    sol_transfers=sol_transfers,
+                    other_transfers=other_transfers,
+                    dex_name=dex_name,
+                    trade_time=trade_time,
+                    signature=signature
+                )
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"❌ Error parsing unknown tx: {e}")
+            return None
+
+    def _classify_transaction_type(
+        self,
+        tx: Dict[str, Any],
+        sol_transfers: List[Dict],
+        other_transfers: List[Dict]
+    ) -> str:
+        """
+        Klassifiziere Transaction Type basierend auf Transfer-Patterns
+        
+        Returns:
+            'swap', 'add_liquidity', 'remove_liquidity', oder 'unknown'
+        """
+        try:
+            # Pattern 1: SWAP (2 transfers in entgegengesetzte Richtungen)
+            if len(sol_transfers) == 1 and len(other_transfers) == 1:
+                sol_from = sol_transfers[0].get('fromUserAccount')
+                sol_to = sol_transfers[0].get('toUserAccount')
+                other_from = other_transfers[0].get('fromUserAccount')
+                other_to = other_transfers[0].get('toUserAccount')
+                
+                # Wenn User SOL gibt und Token bekommt (oder umgekehrt)
+                if sol_from == other_to or sol_to == other_from:
+                    return 'swap'
+            
+            # Pattern 2: ADD_LIQUIDITY (mehrere deposits an Pool)
+            # Typisch: 2+ token transfers ZUM gleichen Pool/Vault
+            if len(token_transfers := tx.get('tokenTransfers', [])) >= 2:
+                to_accounts = [t.get('toUserAccount') for t in token_transfers]
+                
+                # Wenn alle zur gleichen Adresse gehen = Pool deposit
+                if len(set(to_accounts)) == 1 and to_accounts[0]:
+                    return 'add_liquidity'
+            
+            # Pattern 3: REMOVE_LIQUIDITY (mehrere withdrawals vom Pool)
+            if len(token_transfers := tx.get('tokenTransfers', [])) >= 2:
+                from_accounts = [t.get('fromUserAccount') for t in token_transfers]
+                
+                # Wenn alle von der gleichen Adresse kommen = Pool withdrawal
+                if len(set(from_accounts)) == 1 and from_accounts[0]:
+                    return 'remove_liquidity'
+            
+            return 'unknown'
+            
+        except Exception as e:
+            logger.debug(f"Error classifying tx type: {e}")
+            return 'unknown'
+
+    def _parse_manual_swap(
+        self,
+        tx: Dict[str, Any],
+        sol_transfers: List[Dict],
+        other_transfers: List[Dict],
+        dex_name: str,
+        trade_time: datetime,
+        signature: str
+    ) -> Optional[Dict[str, Any]]:
+        """Parse Swap aus Raw Token Transfers"""
+        try:
+            if not sol_transfers or not other_transfers:
+                return None
+            
+            sol_transfer = sol_transfers[0]
+            other_transfer = other_transfers[0]
+            
+            sol_amount = float(sol_transfer.get('tokenAmount', 0))
+            other_amount = float(other_transfer.get('tokenAmount', 0))
+            
+            # Wallet ist der User, der den Swap initiiert
+            wallet = sol_transfer.get('fromUserAccount') or sol_transfer.get('toUserAccount')
+            
+            if not wallet or sol_amount == 0:
+                return None
+            
+            # Bestimme Trade Direction
+            sol_from = sol_transfer.get('fromUserAccount')
+            
+            if sol_from == wallet:
+                # User verkauft SOL
+                trade_type = 'sell'
+                amount = sol_amount
+                price = other_amount / sol_amount if sol_amount > 0 else 0
+            else:
+                # User kauft SOL
+                trade_type = 'buy'
+                amount = sol_amount
+                price = other_amount / sol_amount if sol_amount > 0 else 0
+            
+            return {
+                'timestamp': trade_time,
+                'price': price,
+                'amount': amount,
+                'trade_type': trade_type,
+                'wallet_address': wallet,
+                'transaction_hash': signature,
+                'dex': dex_name,
+                'transaction_type': 'SWAP',  # ✅ NEU
+                'raw_data': tx
+            }
+            
+        except Exception as e:
+            logger.debug(f"Error parsing manual swap: {e}")
+            return None   
+            
+    def _parse_liquidity_event(
+        self,
+        tx: Dict[str, Any],
+        event_type: str,
+        sol_transfers: List[Dict],
+        other_transfers: List[Dict],
+        dex_name: str,
+        trade_time: datetime,
+        signature: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Parse ADD_LIQUIDITY oder REMOVE_LIQUIDITY
+        
+        ⚠️ WICHTIG: Liquidity Events haben großen Price Impact!
+        """
+        try:
+            all_transfers = sol_transfers + other_transfers
+            
+            if not all_transfers:
+                return None
+            
+            # Berechne total value
+            total_sol = sum(float(t.get('tokenAmount', 0)) for t in sol_transfers)
+            total_other = sum(float(t.get('tokenAmount', 0)) for t in other_transfers)
+            
+            # Wallet ist der Liquidity Provider
+            wallet = None
+            if event_type == 'add_liquidity':
+                # Bei ADD: fromUserAccount
+                wallet = all_transfers[0].get('fromUserAccount')
+            else:
+                # Bei REMOVE: toUserAccount
+                wallet = all_transfers[0].get('toUserAccount')
+            
+            if not wallet:
+                return None
+            
+            return {
+                'timestamp': trade_time,
+                'price': total_other / total_sol if total_sol > 0 else 0,
+                'amount': total_sol,
+                'trade_type': event_type,  # 'add_liquidity' oder 'remove_liquidity'
+                'wallet_address': wallet,
+                'transaction_hash': signature,
+                'dex': dex_name,
+                'transaction_type': event_type.upper(),  # ✅ NEU
+                'liquidity_delta': total_sol,  # ✅ NEU: für Impact-Berechnung
+                'raw_data': tx
+            }
+            
+        except Exception as e:
+            logger.debug(f"Error parsing liquidity event: {e}")
+            return None
     
     async def health_check(self) -> bool:
         """Check if Helius API is accessible"""
