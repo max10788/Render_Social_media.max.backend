@@ -503,7 +503,11 @@ class HeliusCollector(DEXCollector):
         tx: Dict[str, Any],
         symbol: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """Parse a Helius Enhanced Transaction (SWAP type)"""
+        """
+        Parse a Helius Enhanced Transaction (SWAP type)
+        
+        ✅ ENHANCED: Adds transaction_type field
+        """
         try:
             signature = tx.get('signature')
             timestamp = tx.get('timestamp')
@@ -593,6 +597,7 @@ class HeliusCollector(DEXCollector):
                 'wallet_address': wallet_address,
                 'transaction_hash': signature,
                 'dex': 'jupiter',
+                'transaction_type': 'SWAP',  # ✅ NEU
                 'raw_data': tx
             }
             
