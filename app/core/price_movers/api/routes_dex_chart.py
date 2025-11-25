@@ -249,7 +249,7 @@ async def get_dex_chart_candles(
         if time_range_hours > 1:
             logger.info(f"📊 Strategy: CEX Historical ({time_range_hours:.1f}h)")
             
-            cex_exchange = 'binance' if 'binance' in unified_collector.cex_collectors else 'bitget'
+            cex_exchange = 'bitget' if 'bitget' in unified_collector.cex_collectors else 'binance'
             ccxt_exchange = unified_collector.cex_collectors.get(cex_exchange)
             
             if ccxt_exchange:
