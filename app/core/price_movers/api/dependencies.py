@@ -34,22 +34,7 @@ _unified_collector_instance: Optional[UnifiedCollector] = None
 # ==================== UNIFIED COLLECTOR DEPENDENCY ====================
 
 async def get_unified_collector() -> UnifiedCollector:
-    """
-    Dependency for UnifiedCollector with CEX + DEX support
-    
-    CEX Priority:
-    1. Binance US (no geo-restrictions)
-    2. OKX (fallback)
-    3. Bitget/Kraken (if credentials available)
-    
-    DEX Priority:
-    1. Dexscreener (free, fast, always available)
-    2. Helius (Solana, if API key set)
-    3. Moralis (multi-chain, if API key set)
-    
-    Returns:
-        UnifiedCollector with all available collectors
-    """
+    """Dependency for UnifiedCollector with CEX + DEX support"""
     global _unified_collector_instance
     
     if _unified_collector_instance is not None:
@@ -57,19 +42,13 @@ async def get_unified_collector() -> UnifiedCollector:
     
     logger.info("🔧 Creating UnifiedCollector with Multi-Chain Support")
     
-    # ==================== Load API Keys ====================
-    
-    # Moralis API Keys (Primary + 2 Fallbacks)
+    # Load API Keys
     moralis_key = os.getenv('MORALIS_API_KEY')
     moralis_fallback = os.getenv('MORALIS_API_KEY_FALLBACK')
     moralis_fallback2 = os.getenv('MORALIS_API_KEY_FALLBACK2')
-    
-    # DEX API Keys
     birdeye_key = os.getenv('BIRDEYE_API_KEY')
     helius_key = os.getenv('HELIUS_API_KEY')
     bitquery_key = os.getenv('BITQUERY_API_KEY')
-    
-    # CEX Credentials
     binance_key = os.getenv('BINANCE_API_KEY', '')
     binance_secret = os.getenv('BINANCE_API_SECRET', '')
     bitget_key = os.getenv('BITGET_API_KEY')
@@ -78,103 +57,54 @@ async def get_unified_collector() -> UnifiedCollector:
     kraken_key = os.getenv('KRAKEN_API_KEY')
     kraken_secret = os.getenv('KRAKEN_API_SECRET')
     
-    # ==================== Log Loaded Keys ====================
-    
+    # Log keys
     moralis_count = sum([bool(k) for k in [moralis_key, moralis_fallback, moralis_fallback2]])
     if moralis_count > 0:
         logger.info(f"✅ Moralis API Keys: {moralis_count} keys (Solana + Ethereum)")
-    else:
-        logger.info("ℹ️ Moralis not configured")
-    
     if birdeye_key:
         logger.info("✅ Birdeye API Key loaded")
-    
     if helius_key:
         logger.info(f"✅ Helius API Key: {helius_key[:8]}...")
-    else:
-        logger.info("ℹ️ Helius not configured")
-    
     if bitquery_key:
         logger.info("✅ Bitquery API Key loaded")
-    
     logger.info("✅ Binance US: Using public API (no geo-restrictions)")
     
-    if bitget_key and bitget_secret:
-        logger.info("✅ Bitget credentials loaded")
-    
-    if kraken_key and kraken_secret:
-        logger.info("✅ Kraken credentials loaded")
-    
-    # ==================== Build CEX Credentials ====================
-    
-    cex_creds = {}
-    
-    # Binance US: Always add
-    cex_creds['binance'] = {
-        'api_key': binance_key,
-        'api_secret': binance_secret
+    # Build CEX credentials
+    cex_creds = {
+        'binance': {'api_key': binance_key, 'api_secret': binance_secret}
     }
-    
-    # Bitget: Only if credentials exist
     if bitget_key and bitget_secret:
         cex_creds['bitget'] = {
             'api_key': bitget_key,
             'api_secret': bitget_secret,
             'passphrase': bitget_passphrase or ''
         }
-    
-    # Kraken: Only if credentials exist
     if kraken_key and kraken_secret:
-        cex_creds['kraken'] = {
-            'api_key': kraken_key,
-            'api_secret': kraken_secret
-        }
+        cex_creds['kraken'] = {'api_key': kraken_key, 'api_secret': kraken_secret}
     
-    # ==================== Build DEX API Keys ====================
-    
-    dex_keys = {}
-    
-    if moralis_key:
-        dex_keys['moralis'] = moralis_key
-        dex_keys['moralis_fallback'] = moralis_fallback
-        dex_keys['moralis_fallback2'] = moralis_fallback2
-    
-    if birdeye_key:
-        dex_keys['birdeye'] = birdeye_key
-    
-    if helius_key:
-        dex_keys['helius'] = helius_key
-    
-    if bitquery_key:
-        dex_keys['bitquery'] = bitquery_key
-    
-    # ==================== Initialize DEX Collectors ====================
-    
+    # Initialize DEX Collectors
     try:
         dex_collectors_dict = {}
         
-        # 1️⃣ Dexscreener (Priority - Free, No API Key Needed)
+        # Dexscreener
         try:
             from app.core.price_movers.collectors.dexscreener_collector import DexscreenerCollector
             dex_collectors_dict['dexscreener'] = DexscreenerCollector()
             logger.info("✅ Dexscreener initialized (free, no API key)")
-        except ImportError as e:
-            logger.warning(f"⚠️ Dexscreener import failed: {e}")
         except Exception as e:
             logger.warning(f"⚠️ Dexscreener init failed: {e}")
         
-        # 2️⃣ Helius (Solana - If API Key Available)
+        # Helius
         if helius_key:
             try:
                 from app.core.price_movers.collectors.helius_collector import HeliusCollector
-                dex_collectors_dict['helius'] = HeliusCollector(api_key=helius_key)
-                logger.info("✅ Helius initialized (Solana)")
-            except ImportError as e:
-                logger.warning(f"⚠️ Helius import failed: {e}")
+                helius_instance = HeliusCollector(api_key=helius_key)
+                dex_collectors_dict['helius'] = helius_instance
+                logger.info(f"✅ Helius initialized (Solana)")
             except Exception as e:
-                logger.warning(f"⚠️ Helius init failed: {e}")
+                logger.error(f"⚠️ Helius init failed: {e}", exc_info=True)
         
-        # 3️⃣ Moralis (Multi-chain - If API Key Available)
+        # Moralis
         if moralis_key:
             try:
                 from app.core.price_movers.collectors.moralis_collector import MoralisCollector
@@ -183,33 +113,27 @@ async def get_unified_collector() -> UnifiedCollector:
                     fallback_keys=[moralis_fallback, moralis_fallback2]
                 )
                 logger.info("✅ Moralis initialized (multi-chain)")
-            except ImportError as e:
-                logger.warning(f"⚠️ Moralis import failed: {e}")
             except Exception as e:
                 logger.warning(f"⚠️ Moralis init failed: {e}")
         
-        # 4️⃣ Birdeye (Solana - If API Key Available)
+        # Birdeye
         if birdeye_key:
             try:
                 from app.core.price_movers.collectors.birdeye_collector import BirdeyeCollector
                 dex_collectors_dict['birdeye'] = BirdeyeCollector(api_key=birdeye_key)
                 logger.info("✅ Birdeye initialized (Solana)")
-            except ImportError as e:
-                logger.warning(f"⚠️ Birdeye import failed: {e}")
             except Exception as e:
                 logger.warning(f"⚠️ Birdeye init failed: {e}")
         
         logger.info(f"📊 DEX Collectors initialized: {list(dex_collectors_dict.keys())}")
         
-        # ==================== Create UnifiedCollector ====================
-        
+        # Create UnifiedCollector
         collector = UnifiedCollector(
             helius_collector=dex_collectors_dict.get('helius'),
             dexscreener_collector=dex_collectors_dict.get('dexscreener'),
             moralis_collector=dex_collectors_dict.get('moralis'),
             birdeye_collector=dex_collectors_dict.get('birdeye'),
-            cex_credentials=cex_creds,
-            dex_api_keys=dex_keys
+            cex_credentials=cex_creds
         )
         
         _unified_collector_instance = collector
@@ -221,21 +145,11 @@ async def get_unified_collector() -> UnifiedCollector:
             f"DEX={available['dex']} ({len(available['dex'])} exchanges)"
         )
         
-        if hasattr(collector, 'moralis_collector') and collector.moralis_collector:
-            try:
-                chains = collector.moralis_collector.get_supported_chains()
-                logger.info(f"🌐 Supported Blockchains: {', '.join(chains)}")
-            except:
-                pass
-        
         return collector
         
     except Exception as e:
         logger.error(f"❌ Failed to create UnifiedCollector: {e}", exc_info=True)
-        # Fallback: Minimal config
-        collector = UnifiedCollector(
-            cex_credentials={'binance': {'api_key': '', 'api_secret': ''}}
-        )
+        collector = UnifiedCollector(cex_credentials={'binance': {'api_key': '', 'api_secret': ''}})
         _unified_collector_instance = collector
         return collector
 
