@@ -64,6 +64,26 @@ class HeliusCollector(DEXCollector):
     
     API_BASE = "https://api-mainnet.helius-rpc.com"
     
+    # ✅ NEU: Solana Program IDs für DEX-Erkennung
+    DEX_PROGRAM_IDS = {
+        'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4': 'jupiter',  # Jupiter V6
+        'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB': 'jupiter',  # Jupiter V4
+        'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc': 'orca',     # Orca Whirlpool
+        '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': 'raydium',  # Raydium AMM V4
+        '27haf8L6oxUeXrHrgEgsexjSY5hbVUWEmvv9Nyxg8vQv': 'raydium',  # Raydium CLMM
+        'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo': 'meteora',  # Meteora
+        'PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY': 'phoenix',   # Phoenix
+    }
+    
+    # ✅ NEU: Wichtige Transaction Types
+    CRITICAL_TX_TYPES = {
+        'SWAP',
+        'ADD_LIQUIDITY', 
+        'REMOVE_LIQUIDITY',
+        'COMPRESSED_NFT_MINT',  # Manchmal getarnte Swaps
+        'UNKNOWN'  # Manuell parsen!
+    }
+    
     # Token Mint Addresses (Solana SPL Tokens)
     TOKEN_MINTS = {
         'SOL': 'So11111111111111111111111111111111111111112',
