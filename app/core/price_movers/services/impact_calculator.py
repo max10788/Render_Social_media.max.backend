@@ -76,7 +76,7 @@ class ImpactCalculator:
             self,
             wallet_trades: List[Dict[str, Any]],
             candle_data: Dict[str, Any],
-            total_volume: float,
+            total_volume: float, # <-- Dies ist der entscheidende Parameter
             all_trades: Optional[List[Dict[str, Any]]] = None,
             apply_liquidity_multipliers: bool = False  # ✅ NEU
         ) -> Dict[str, Any]:
@@ -93,8 +93,19 @@ class ImpactCalculator:
             Returns:
                 Dictionary mit Impact Score und Komponenten
             """
+            # --- NEUES DETAIL-LOGGING ---
+            logger.debug(f"--- calculate_impact_score START ---")
+            logger.debug(f"Wallet ID: {wallet_trades[0].get('wallet_address', 'unknown') if wallet_trades else 'no_trades'}")
+            logger.debug(f"Anzahl Trades: {len(wallet_trades)}")
+            logger.debug(f"Übergebenes total_volume: {total_volume}")
+            logger.debug(f"apply_liquidity_multipliers: {apply_liquidity_multipliers}")
+            # --- ENDE NEUES DETAIL-LOGGING ---
+
             if not wallet_trades:
-                return self._zero_impact()
+                logger.debug("Keine Trades für Wallet vorhanden -> Zero Impact")
+                result = self._zero_impact()
+                logger.debug(f"--- calculate_impact_score END (Zero Impact) ---")
+                return result
             
             # Berechne volume ratio
             volume_ratio = self._calculate_volume_ratio(wallet_trades, total_volume)
@@ -172,6 +183,11 @@ class ImpactCalculator:
                 "impact_level": self._get_impact_level(total_score),
                 "has_liquidity_events": has_liquidity_events  # ✅ NEU
             }
+
+            # --- NEUES DETAIL-LOGGING ---
+            logger.debug(f"Ergebnis für Wallet: {result}")
+            logger.debug(f"--- calculate_impact_score END ---")
+            # --- ENDE NEUES DETAIL-LOGGING ---
             
             log_suffix = ""
             if apply_liquidity_multipliers and has_liquidity_events:
@@ -189,7 +205,7 @@ class ImpactCalculator:
     def _calculate_volume_ratio(
         self,
         wallet_trades: List[Dict[str, Any]],
-        total_volume: float
+        total_volume: float # <-- Dies ist der entscheidende Parameter
     ) -> float:
         """
         Berechnet Volumen-Anteil des Wallets
@@ -201,17 +217,37 @@ class ImpactCalculator:
         Returns:
             Volume Ratio (0-1)
         """
+        # --- NEUES DETAIL-LOGGING ---
+        logger.debug(f"--- _calculate_volume_ratio START ---")
+        logger.debug(f"Anzahl Trades im Wallet: {len(wallet_trades)}")
+        logger.debug(f"Übergebenes total_volume: {total_volume}")
+        # --- ENDE NEUES DETAIL-LOGGING ---
+
         if total_volume == 0:
+            # --- NEUES DETAIL-LOGGING ---
+            logger.warning(f"total_volume ist 0 -> volume_ratio ist 0.0")
+            logger.debug(f"--- _calculate_volume_ratio END (total_volume=0) ---")
+            # --- ENDE NEUES DETAIL-LOGGING ---
             return 0.0
         
         wallet_volume = sum(
             trade.get("amount", 0.0) for trade in wallet_trades
         )
         
+        # --- NEUES DETAIL-LOGGING ---
+        logger.debug(f"Berechnetes wallet_volume: {wallet_volume}")
+        # --- ENDE NEUES DETAIL-LOGGING ---
+
         ratio = wallet_volume / total_volume
         
         # Normalisiere auf 0-1 (Cap bei 50% Volume)
         normalized = min(ratio * 2.0, 1.0)
+        
+        # --- NEUES DETAIL-LOGGING ---
+        logger.debug(f"Rohe Ratio (wallet_vol / total_vol): {ratio:.6f}")
+        logger.debug(f"Normalisierte Ratio (mit *2.0 und cap bei 1.0): {normalized:.6f}")
+        logger.debug(f"--- _calculate_volume_ratio END ---")
+        # --- ENDE NEUES DETAIL-LOGGING ---
         
         return normalized
     
@@ -378,12 +414,12 @@ class ImpactCalculator:
             if trade.get("trade_type") == "sell"
         )
         
-        total_volume = buy_volume + sell_volume
-        if total_volume == 0:
+        total_volume_from_trades = buy_volume + sell_volume
+        if total_volume_from_trades == 0:
             return 0.0
         
         # Buy/Sell Ratio
-        buy_ratio = buy_volume / total_volume
+        buy_ratio = buy_volume / total_volume_from_trades
         
         # Korrelation mit Preisbewegung
         if price_change_pct > 0:
@@ -561,7 +597,7 @@ class ImpactCalculator:
         self,
         wallet_activities: Dict[str, List[Dict[str, Any]]],
         candle_data: Dict[str, Any],
-        total_volume: float
+        total_volume: float # <-- Dies ist der entscheidende Parameter
     ) -> Dict[str, Dict[str, Any]]:
         """
         Berechnet Impact Scores für mehrere Wallets gleichzeitig
@@ -574,9 +610,18 @@ class ImpactCalculator:
         Returns:
             Dictionary wallet_id -> impact_result
         """
+        # --- NEUES DETAIL-LOGGING ---
+        logger.info(f"--- calculate_batch_impact START ---")
+        logger.info(f"Gesamtanzahl Wallets: {len(wallet_activities)}")
+        logger.info(f"Übergebenes total_volume für Batch: {total_volume}")
+        # --- ENDE NEUES DETAIL-LOGGING ---
+
         results = {}
         
         for wallet_id, trades in wallet_activities.items():
+            # --- NEUES DETAIL-LOGGING ---
+            logger.debug(f"Verarbeite Wallet: {wallet_id}")
+            # --- ENDE NEUES DETAIL-LOGGING ---
             results[wallet_id] = self.calculate_impact_score(
                 wallet_trades=trades,
                 candle_data=candle_data,
@@ -584,5 +629,9 @@ class ImpactCalculator:
             )
         
         logger.info(f"Batch Impact berechnet für {len(results)} Wallets")
+        
+        # --- NEUES DETAIL-LOGGING ---
+        logger.info(f"--- calculate_batch_impact END ---")
+        # --- ENDE NEUES DETAIL-LOGGING ---
         
         return results
