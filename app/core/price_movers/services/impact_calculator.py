@@ -203,53 +203,40 @@ class ImpactCalculator:
             return result
     
     def _calculate_volume_ratio(
-        self,
-        wallet_trades: List[Dict[str, Any]],
-        total_volume: float # <-- Dies ist der entscheidende Parameter
+        self, 
+        wallet_trades: List[Dict], 
+        total_volume: float
     ) -> float:
-        """
-        Berechnet Volumen-Anteil des Wallets
-        
-        Args:
-            wallet_trades: Trades des Wallets
-            total_volume: Gesamt-Volume
+        """Berechne Volume Ratio - FIXED: USD/USD statt SOL/USD"""
+        try:
+            if not wallet_trades or total_volume <= 0:
+                return 0.0
             
-        Returns:
-            Volume Ratio (0-1)
-        """
-        # --- NEUES DETAIL-LOGGING ---
-        logger.debug(f"--- _calculate_volume_ratio START ---")
-        logger.debug(f"Anzahl Trades im Wallet: {len(wallet_trades)}")
-        logger.debug(f"Übergebenes total_volume: {total_volume}")
-        # --- ENDE NEUES DETAIL-LOGGING ---
-
-        if total_volume == 0:
-            # --- NEUES DETAIL-LOGGING ---
-            logger.warning(f"total_volume ist 0 -> volume_ratio ist 0.0")
-            logger.debug(f"--- _calculate_volume_ratio END (total_volume=0) ---")
-            # --- ENDE NEUES DETAIL-LOGGING ---
+            # ✅ FIX: Berechne Wallet Volume IN USD (amount * price)
+            wallet_volume_usd = sum(
+                float(t.get('amount', 0)) * float(t.get('price', 0))
+                for t in wallet_trades
+            )
+            
+            # DEBUG
+            logger.debug(
+                f"💰 Volume: Wallet=${wallet_volume_usd:.2f}, "
+                f"Total=${total_volume:.2f}, "
+                f"Ratio={wallet_volume_usd/total_volume:.4f}"
+            )
+            
+            volume_ratio = wallet_volume_usd / total_volume
+            
+            # Sanity check
+            if volume_ratio > 1.0:
+                logger.warning(f"⚠️ Volume ratio > 1.0, capping at 1.0")
+                volume_ratio = 1.0
+            
+            return volume_ratio
+            
+        except Exception as e:
+            logger.error(f"❌ Volume ratio error: {e}")
             return 0.0
-        
-        wallet_volume = sum(
-            trade.get("amount", 0.0) for trade in wallet_trades
-        )
-        
-        # --- NEUES DETAIL-LOGGING ---
-        logger.debug(f"Berechnetes wallet_volume: {wallet_volume}")
-        # --- ENDE NEUES DETAIL-LOGGING ---
-
-        ratio = wallet_volume / total_volume
-        
-        # Normalisiere auf 0-1 (Cap bei 50% Volume)
-        normalized = min(ratio * 2.0, 1.0)
-        
-        # --- NEUES DETAIL-LOGGING ---
-        logger.debug(f"Rohe Ratio (wallet_vol / total_vol): {ratio:.6f}")
-        logger.debug(f"Normalisierte Ratio (mit *2.0 und cap bei 1.0): {normalized:.6f}")
-        logger.debug(f"--- _calculate_volume_ratio END ---")
-        # --- ENDE NEUES DETAIL-LOGGING ---
-        
-        return normalized
     
     def _calculate_timing_score(
         self,
