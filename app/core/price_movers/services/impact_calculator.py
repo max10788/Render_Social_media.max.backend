@@ -364,29 +364,32 @@ class ImpactCalculator:
         candle_data: Dict[str, Any]
     ) -> float:
         """
-        Berechnet Size Impact Score
+        Berechnet Size Impact Score - FIXED
         
         Große Trades haben mehr Impact
-        
-        Args:
-            wallet_trades: Trades des Wallets
-            candle_data: Candle-Daten
-            
-        Returns:
-            Size Impact (0-1)
         """
         if not wallet_trades:
             return 0.0
         
+        # ✅ FIX: Berechne value_usd = amount * price (Feld existiert nicht im Trade!)
+        trade_values = []
+        for trade in wallet_trades:
+            amount = float(trade.get("amount", 0))
+            price = float(trade.get("price", 0))
+            value_usd = amount * price
+            trade_values.append(value_usd)
+        
+        if not trade_values:
+            logger.debug(f"No valid trade values")
+            return 0.0
+        
         # Durchschnittliche Trade-Größe
-        avg_trade_size = sum(
-            trade.get("value_usd", 0.0) for trade in wallet_trades
-        ) / len(wallet_trades)
+        avg_trade_size = sum(trade_values) / len(trade_values)
         
         # Größte Trade
-        max_trade_size = max(
-            trade.get("value_usd", 0.0) for trade in wallet_trades
-        )
+        max_trade_size = max(trade_values)
+        
+        logger.debug(f"💰 Size Impact: avg=${avg_trade_size:.2f}, max=${max_trade_size:.2f}")
         
         # Normalisiere auf bekannte Thresholds
         # $10k = 0.2, $50k = 0.5, $100k = 0.7, $500k+ = 1.0
@@ -405,6 +408,8 @@ class ImpactCalculator:
         avg_score = normalize_size(avg_trade_size)
         max_score = normalize_size(max_trade_size)
         
+        logger.debug(f"📊 Scores: avg_score={avg_score:.3f}, max_score={max_score:.3f}")
+        
         # Gewichtete Kombination
         size_impact = (avg_score * 0.6) + (max_score * 0.4)
         
@@ -416,55 +421,92 @@ class ImpactCalculator:
         candle_data: Dict[str, Any]
     ) -> float:
         """
-        Berechnet Korrelation zwischen Trades und Preisbewegung
+        Berechnet Korrelation zwischen Trades und Preisbewegung - FIXED
         
-        Args:
-            wallet_trades: Trades des Wallets
-            candle_data: Candle-Daten
-            
-        Returns:
-            Price Correlation (0-1)
+        Handles 'swap' type trades properly
         """
         if not wallet_trades:
             return 0.0
         
         price_change_pct = candle_data.get("price_change_pct", 0.0)
         
-        # Zähle Buy vs Sell Trades
-        buy_volume = sum(
-            trade.get("amount", 0.0)
-            for trade in wallet_trades
-            if trade.get("trade_type") == "buy"
+        logger.debug(f"📈 Price Correlation: price_change={price_change_pct:.2f}%")
+        
+        # ✅ FIX: Handle multiple trade types + infer direction for swaps
+        buy_volume = 0.0
+        sell_volume = 0.0
+        swap_volume = 0.0
+        
+        for trade in wallet_trades:
+            amount = float(trade.get("amount", 0))
+            
+            # Check multiple fields for trade type
+            trade_type = (
+                trade.get("trade_type", "").lower() or 
+                trade.get("side", "").lower() or
+                "unknown"
+            )
+            
+            logger.debug(f"  Trade: type={trade_type}, amount={amount:.2f}")
+            
+            if trade_type == "buy":
+                buy_volume += amount
+            elif trade_type == "sell":
+                sell_volume += amount
+            elif trade_type == "swap":
+                # ✅ For swaps, we can't easily determine direction
+                # Count as neutral for now
+                swap_volume += amount
+            else:
+                logger.debug(f"  Unknown trade type: {trade_type}")
+                swap_volume += amount
+        
+        logger.debug(
+            f"  Volumes: buy={buy_volume:.2f}, sell={sell_volume:.2f}, "
+            f"swap={swap_volume:.2f}"
         )
-        sell_volume = sum(
-            trade.get("amount", 0.0)
-            for trade in wallet_trades
-            if trade.get("trade_type") == "sell"
-        )
         
-        total_volume_from_trades = buy_volume + sell_volume
-        if total_volume_from_trades == 0:
-            return 0.0
+        # Total directional volume (excluding neutral swaps)
+        directional_volume = buy_volume + sell_volume
+        total_volume = buy_volume + sell_volume + swap_volume
         
-        # Buy/Sell Ratio
-        buy_ratio = buy_volume / total_volume_from_trades
-        
-        # Korrelation mit Preisbewegung
-        if price_change_pct > 0:
-            # Preis stieg: Mehr Buys = höhere Korrelation
-            correlation = buy_ratio
-        elif price_change_pct < 0:
-            # Preis fiel: Mehr Sells = höhere Korrelation
-            correlation = 1.0 - buy_ratio
+        if directional_volume == 0:
+            # All trades are 'swap' type → Use reduced correlation
+            # Based on volume ratio only
+            if price_change_pct != 0 and total_volume > 0:
+                # Weak correlation based on volume presence
+                correlation = 0.3  # Base correlation for being active
+                logger.debug(f"  All swaps → base correlation: {correlation:.3f}")
+            else:
+                correlation = 0.0
+                logger.debug(f"  All swaps + no price movement → 0 correlation")
         else:
-            # Keine Bewegung
-            correlation = 0.5
+            # Buy/Sell Ratio
+            buy_ratio = buy_volume / directional_volume
+            
+            logger.debug(f"  Buy ratio: {buy_ratio:.3f}")
+            
+            # Korrelation mit Preisbewegung
+            if price_change_pct > 0:
+                # Preis stieg: Mehr Buys = höhere Korrelation
+                correlation = buy_ratio
+            elif price_change_pct < 0:
+                # Preis fiel: Mehr Sells = höhere Korrelation
+                correlation = 1.0 - buy_ratio
+            else:
+                # Keine Bewegung
+                correlation = 0.5
+            
+            # Skaliere mit Größe der Preisbewegung
+            movement_scale = min(abs(price_change_pct) / 2.0, 1.0)
+            correlation = correlation * movement_scale
+            
+            logger.debug(
+                f"  Correlation: {correlation:.3f} "
+                f"(scale={movement_scale:.3f})"
+            )
         
-        # Skaliere mit Größe der Preisbewegung
-        movement_scale = min(abs(price_change_pct) / 2.0, 1.0)
-        scaled_correlation = correlation * movement_scale
-        
-        return min(scaled_correlation, 1.0)
+        return min(correlation, 1.0)
     
     def _calculate_slippage_score(
         self,
