@@ -495,30 +495,26 @@ class HybridPriceMoverAnalyzer:
         top_n: int
     ) -> List[Dict]:
         """
-        Analyze DEX trades (wallet-based)
+        Analyze DEX trades (wallet-based) - COMPLETE WITH DEBUGGING
         
-        ✅ MODULAR: Nutzt ImpactCalculator mit Liquidity Support
-        
-        Args:
-            trades: List of Trade objects or dicts
-            candle: Candle data
-            symbol: Trading symbol
-            exchange: DEX exchange name
-            top_n: Number of top wallets to return
-            
         Returns:
             List of wallet entities with impact scores
         """
         if not trades:
+            logger.warning("⚠️ No trades provided for DEX analysis")
             return []
         
-        # Normalize trades to dicts
+        logger.info(f"\n{'='*80}")
+        logger.info(f"🔍 DEX ANALYSIS START: {len(trades)} trades for {symbol} on {exchange}")
+        logger.info(f"{'='*80}")
+        
+        # ==================== STEP 1: Normalize Trades ====================
+        
         normalized_trades = []
-        for trade in trades:
+        for idx, trade in enumerate(trades):
             if isinstance(trade, dict):
                 normalized_trades.append(trade)
             else:
-                # Convert Trade object to dict
                 trade_dict = {
                     'timestamp': trade.timestamp,
                     'trade_type': trade.trade_type,
@@ -529,7 +525,6 @@ class HybridPriceMoverAnalyzer:
                     'wallet_address': trade.wallet_address,
                     'source': trade.source
                 }
-                # Copy additional fields if they exist
                 if hasattr(trade, 'transaction_type'):
                     trade_dict['transaction_type'] = getattr(trade, 'transaction_type', 'SWAP')
                 if hasattr(trade, 'liquidity_delta'):
@@ -537,19 +532,36 @@ class HybridPriceMoverAnalyzer:
                 
                 normalized_trades.append(trade_dict)
         
-        logger.debug(f"✓ Normalized {len(normalized_trades)} trades for analysis")
+        logger.info(f"✅ Step 1: Normalized {len(normalized_trades)} trades")
         
-        # Group by wallet address
+        # Log sample trade
+        if normalized_trades:
+            sample = normalized_trades[0]
+            logger.info(
+                f"📋 Sample trade: {sample.get('trade_type')} "
+                f"{sample.get('amount')} @ ${sample.get('price')} "
+                f"(wallet: {sample.get('wallet_address', 'N/A')[:16]}...)"
+            )
+        
+        # ==================== STEP 2: Group by Wallet ====================
+        
         wallet_groups = defaultdict(list)
+        trades_without_wallet = 0
         
         for trade in normalized_trades:
             wallet_addr = trade.get('wallet_address')
             if wallet_addr:
                 wallet_groups[wallet_addr].append(trade)
+            else:
+                trades_without_wallet += 1
         
-        logger.info(f"✓ DEX: {len(wallet_groups)} unique wallets found")
-    
-        # Prepare candle data for ImpactCalculator
+        if trades_without_wallet > 0:
+            logger.warning(f"⚠️ {trades_without_wallet} trades without wallet_address")
+        
+        logger.info(f"✅ Step 2: Grouped into {len(wallet_groups)} unique wallets")
+        
+        # ==================== STEP 3: Prepare Candle Data ====================
+        
         candle_data = {
             'timestamp': candle.timestamp,
             'open': candle.open,
@@ -560,111 +572,283 @@ class HybridPriceMoverAnalyzer:
             'price_change_pct': candle.price_change_pct
         }
         
+        logger.info(
+            f"📊 Candle: volume={candle.volume:.4f}, "
+            f"price_change={candle.price_change_pct:.2f}%, "
+            f"open={candle.open:.2f}, close={candle.close:.2f}"
+        )
+        
+        # ==================== CRITICAL CHECK ====================
+        
+        if candle.volume == 0:
+            logger.error(
+                f"❌ CRITICAL: Candle volume is 0! This will cause all impact scores to be 0.\n"
+                f"   This means ImpactCalculator cannot calculate volume_ratio.\n"
+                f"   Check if candle data is being fetched correctly."
+            )
+        
+        # ==================== STEP 4: Analyze Each Wallet ====================
+        
         entities = []
         stats = {
             'total_wallets': len(wallet_groups),
             'liquidity_providers': 0,
             'total_liquidity_events': 0,
-            'high_impact_count': 0
+            'high_impact_count': 0,
+            'zero_impact_count': 0,
+            'impact_calculation_errors': 0
         }
-    
-        for wallet_addr, wallet_trades in wallet_groups.items():
-            # Calculate base stats
-            total_volume = sum(t.get('amount', 0) for t in wallet_trades)
-            total_value = sum(t.get('value_usd', 0) for t in wallet_trades)
-            trade_count = len(wallet_trades)
-    
-            buy_volume = sum(
-                t.get('amount', 0) 
-                for t in wallet_trades 
-                if t.get('trade_type') == 'buy'
-            )
-            sell_volume = sum(
-                t.get('amount', 0) 
-                for t in wallet_trades 
-                if t.get('trade_type') == 'sell'
-            )
-            buy_sell_ratio = buy_volume / sell_volume if sell_volume > 0 else 999.0
-            
-            # ✅ Calculate Impact Score WITH Liquidity Multipliers via ImpactCalculator
-            impact_result = self.impact_calculator.calculate_impact_score(
-                wallet_trades=wallet_trades,
-                candle_data=candle_data,
-                total_volume=candle.volume,
-                apply_liquidity_multipliers=True  # ✅ KRITISCH: Aktiviert Liquidity Weighting
-            )
-    
-            impact_score = impact_result['impact_score']
-            impact_components = impact_result['components']
-            impact_level = impact_result['impact_level']
-            has_liquidity_events = impact_result.get('has_liquidity_events', False)
-            
-            # Track stats
-            if has_liquidity_events:
-                stats['liquidity_providers'] += 1
-                stats['total_liquidity_events'] += sum(
-                    1 for t in wallet_trades 
-                    if t.get('transaction_type') in ['ADD_LIQUIDITY', 'REMOVE_LIQUIDITY']
-                )
-            
-            if impact_score > 0.5:
-                stats['high_impact_count'] += 1
-            
-            # Classify wallet type
-            wallet_type = self.classifier.classify(
-                avg_trade_size=total_value / trade_count if trade_count > 0 else 0,
-                trade_count=trade_count,
-                size_consistency=0.7,
-                timing_pattern='random',
-                buy_sell_ratio=buy_sell_ratio,
-                impact_score=impact_score
-            )
-    
-            # Upgrade to liquidity_provider if significant
-            if has_liquidity_events and impact_score > 0.1:
-                wallet_type = 'liquidity_provider'
-    
-            # Build entity dict
-            entity = {
-                'wallet_id': wallet_addr,
-                'wallet_address': wallet_addr,
-                'wallet_type': wallet_type,
-                'impact_score': sanitize_float(impact_score),
-                'impact_components': impact_components,
-                'impact_level': impact_level,
-                'total_volume': sanitize_float(total_volume),
-                'total_value_usd': sanitize_float(total_value),
-                'trade_count': trade_count,
-                'avg_trade_size': sanitize_float(total_volume / trade_count if trade_count > 0 else 0),
-                'buy_sell_ratio': sanitize_float(buy_sell_ratio),
-                'has_liquidity_events': has_liquidity_events,
-                'blockchain': 'solana',
-                'dex': exchange
-            }
-    
-            entities.append(entity)
         
-        # Sort by impact score
+        # Process first wallet with FULL DEBUG
+        first_wallet = True
+        
+        for wallet_addr, wallet_trades in wallet_groups.items():
+            try:
+                # ==================== Calculate Basic Stats ====================
+                
+                total_volume = sum(t.get('amount', 0) for t in wallet_trades)
+                total_value = sum(t.get('value_usd', 0) for t in wallet_trades)
+                
+                # Calculate value_usd if missing
+                if total_value == 0:
+                    total_value = sum(t.get('amount', 0) * t.get('price', 0) for t in wallet_trades)
+                
+                trade_count = len(wallet_trades)
+                
+                buy_volume = sum(
+                    t.get('amount', 0) 
+                    for t in wallet_trades 
+                    if t.get('trade_type') == 'buy'
+                )
+                sell_volume = sum(
+                    t.get('amount', 0) 
+                    for t in wallet_trades 
+                    if t.get('trade_type') == 'sell'
+                )
+                buy_sell_ratio = buy_volume / sell_volume if sell_volume > 0 else 999.0
+                
+                # Check for liquidity events
+                has_liquidity_events = any(
+                    t.get('transaction_type') in ['ADD_LIQUIDITY', 'REMOVE_LIQUIDITY']
+                    for t in wallet_trades
+                )
+                
+                # ==================== FULL DEBUG FOR FIRST WALLET ====================
+                
+                if first_wallet:
+                    logger.info(f"\n{'='*80}")
+                    logger.info(f"🔍 DETAILED ANALYSIS - First Wallet: {wallet_addr[:16]}...")
+                    logger.info(f"{'='*80}")
+                    logger.info(f"Wallet Stats:")
+                    logger.info(f"   Trade Count: {trade_count}")
+                    logger.info(f"   Total Volume: {total_volume:.4f}")
+                    logger.info(f"   Total Value USD: ${total_value:.2f}")
+                    logger.info(f"   Buy Volume: {buy_volume:.4f}")
+                    logger.info(f"   Sell Volume: {sell_volume:.4f}")
+                    logger.info(f"   Buy/Sell Ratio: {buy_sell_ratio:.2f}")
+                    logger.info(f"   Has Liquidity Events: {has_liquidity_events}")
+                    logger.info(f"\nPassing to ImpactCalculator:")
+                    logger.info(f"   wallet_trades: {len(wallet_trades)} trades")
+                    logger.info(f"   candle_data: {candle_data}")
+                    logger.info(f"   total_volume: {candle.volume:.4f} ← CRITICAL PARAMETER")
+                    logger.info(f"   apply_liquidity_multipliers: True")
+                    
+                    # Show sample trades
+                    logger.info(f"\nSample wallet trades:")
+                    for i, t in enumerate(wallet_trades[:3]):
+                        logger.info(
+                            f"   Trade {i+1}: {t.get('trade_type')} "
+                            f"{t.get('amount'):.4f} @ ${t.get('price'):.2f} "
+                            f"= ${t.get('amount', 0) * t.get('price', 0):.2f}"
+                        )
+                    
+                    first_wallet = False
+                
+                # ==================== IMPACT CALCULATION ====================
+                
+                impact_result = None
+                try:
+                    # Set log level to DEBUG temporarily for first wallet
+                    if wallet_addr == list(wallet_groups.keys())[0]:
+                        old_level = logger.level
+                        logger.setLevel(logging.DEBUG)
+                    
+                    impact_result = self.impact_calculator.calculate_impact_score(
+                        wallet_trades=wallet_trades,
+                        candle_data=candle_data,
+                        total_volume=candle.volume,  # ← CRITICAL: This MUST be > 0
+                        apply_liquidity_multipliers=True
+                    )
+                    
+                    if wallet_addr == list(wallet_groups.keys())[0]:
+                        logger.setLevel(old_level)
+                    
+                    impact_score = impact_result['impact_score']
+                    impact_components = impact_result['components']
+                    impact_level = impact_result['impact_level']
+                    
+                    # DEBUG: Log result
+                    if wallet_addr == list(wallet_groups.keys())[0]:
+                        logger.info(f"\n{'='*80}")
+                        logger.info(f"📊 IMPACT RESULT for {wallet_addr[:16]}...")
+                        logger.info(f"{'='*80}")
+                        logger.info(f"Impact Score: {impact_score:.4f}")
+                        logger.info(f"Impact Level: {impact_level}")
+                        logger.info(f"Components:")
+                        for key, value in impact_components.items():
+                            logger.info(f"   {key}: {value:.4f}")
+                        logger.info(f"{'='*80}\n")
+                    
+                    # Check if zero
+                    if impact_score == 0:
+                        stats['zero_impact_count'] += 1
+                        logger.warning(
+                            f"⚠️ Zero impact for {wallet_addr[:16]}...\n"
+                            f"   Wallet volume: {total_volume:.4f}\n"
+                            f"   Candle volume: {candle.volume:.4f}\n"
+                            f"   Volume ratio: {total_volume / candle.volume if candle.volume > 0 else 0:.6f}\n"
+                            f"   Components: {impact_components}"
+                        )
+                    
+                except Exception as calc_error:
+                    logger.error(
+                        f"❌ Impact calculation error for {wallet_addr[:16]}...: {calc_error}",
+                        exc_info=True
+                    )
+                    stats['impact_calculation_errors'] += 1
+                    impact_result = None
+                
+                # ==================== FALLBACK CALCULATION ====================
+                
+                if not impact_result or impact_result['impact_score'] == 0:
+                    # Simple fallback
+                    if candle.volume > 0:
+                        volume_ratio = total_volume / candle.volume
+                    else:
+                        volume_ratio = 0
+                    
+                    if candle.open > 0:
+                        price_impact = abs(candle.close - candle.open) / candle.open
+                    else:
+                        price_impact = 0
+                    
+                    concentration = 1.0 / trade_count if trade_count > 0 else 0
+                    
+                    fallback_impact_score = (
+                        volume_ratio * 0.5 +
+                        price_impact * 0.3 +
+                        concentration * 0.2
+                    )
+                    
+                    if has_liquidity_events:
+                        fallback_impact_score *= 1.5
+                    
+                    fallback_impact_score = min(1.0, fallback_impact_score)
+                    
+                    impact_score = sanitize_float(fallback_impact_score)
+                    impact_level = (
+                        'extreme' if impact_score > 0.7 else
+                        'high' if impact_score > 0.4 else
+                        'medium' if impact_score > 0.1 else
+                        'low'
+                    )
+                    
+                    impact_components = {
+                        'volume_ratio': sanitize_float(volume_ratio),
+                        'price_impact': sanitize_float(price_impact),
+                        'concentration': sanitize_float(concentration),
+                        'liquidity_multiplier': 1.5 if has_liquidity_events else 1.0,
+                        'calculation_method': 'fallback'
+                    }
+                    
+                    logger.debug(
+                        f"✅ Fallback impact for {wallet_addr[:16]}...: {impact_score:.4f}"
+                    )
+                
+                # Track stats
+                if has_liquidity_events:
+                    stats['liquidity_providers'] += 1
+                    stats['total_liquidity_events'] += sum(
+                        1 for t in wallet_trades 
+                        if t.get('transaction_type') in ['ADD_LIQUIDITY', 'REMOVE_LIQUIDITY']
+                    )
+                
+                if impact_score > 0.5:
+                    stats['high_impact_count'] += 1
+                
+                # Classify wallet type
+                wallet_type = self.classifier.classify(
+                    avg_trade_size=total_value / trade_count if trade_count > 0 else 0,
+                    trade_count=trade_count,
+                    size_consistency=0.7,
+                    timing_pattern='random',
+                    buy_sell_ratio=buy_sell_ratio,
+                    impact_score=impact_score
+                )
+                
+                if has_liquidity_events and impact_score > 0.1:
+                    wallet_type = 'liquidity_provider'
+                
+                # Build entity
+                entity = {
+                    'wallet_id': wallet_addr,
+                    'wallet_address': wallet_addr,
+                    'wallet_type': wallet_type,
+                    'impact_score': sanitize_float(impact_score),
+                    'impact_components': impact_components,
+                    'impact_level': impact_level,
+                    'total_volume': sanitize_float(total_volume),
+                    'total_value_usd': sanitize_float(total_value),
+                    'trade_count': trade_count,
+                    'avg_trade_size': sanitize_float(total_volume / trade_count if trade_count > 0 else 0),
+                    'buy_sell_ratio': sanitize_float(buy_sell_ratio),
+                    'has_liquidity_events': has_liquidity_events,
+                    'blockchain': 'solana',
+                    'dex': exchange
+                }
+                
+                entities.append(entity)
+                
+            except Exception as e:
+                logger.error(f"❌ Error processing wallet {wallet_addr[:16]}...: {e}", exc_info=True)
+                continue
+        
+        # ==================== SORT & FINAL STATS ====================
+        
         entities.sort(key=lambda e: e['impact_score'], reverse=True)
         
-        # ✅ Log comprehensive stats
-        logger.info(
-            f"✅ DEX Analysis complete: {stats['total_wallets']} wallets analyzed"
-        )
-    
-        if stats['liquidity_providers'] > 0:
+        logger.info(f"\n{'='*80}")
+        logger.info(f"✅ DEX ANALYSIS COMPLETE")
+        logger.info(f"{'='*80}")
+        logger.info(f"Total Wallets: {stats['total_wallets']}")
+        logger.info(f"High Impact (>0.5): {stats['high_impact_count']}")
+        logger.info(f"Zero Impact: {stats['zero_impact_count']}")
+        logger.info(f"Calculation Errors: {stats['impact_calculation_errors']}")
+        logger.info(f"Liquidity Providers: {stats['liquidity_providers']} ({stats['total_liquidity_events']} events)")
+        
+        # Log top wallets
+        logger.info(f"\n🏆 TOP {min(3, len(entities))} WALLETS:")
+        for idx, entity in enumerate(entities[:3]):
             logger.info(
-                f"💧 Liquidity Impact: {stats['total_liquidity_events']} events "
-                f"across {stats['liquidity_providers']} liquidity providers"
+                f"{idx+1}. {entity['wallet_address'][:16]}... "
+                f"Impact: {entity['impact_score']:.4f} ({entity['impact_level']}), "
+                f"Volume: {entity['total_volume']:.4f}, "
+                f"Trades: {entity['trade_count']}, "
+                f"Type: {entity['wallet_type']}"
             )
-    
-        if stats['high_impact_count'] > 0:
-            logger.info(
-                f"🎯 High Impact: {stats['high_impact_count']} wallets with score > 0.5"
+        
+        if stats['zero_impact_count'] > 0:
+            logger.warning(
+                f"\n⚠️ WARNING: {stats['zero_impact_count']}/{stats['total_wallets']} wallets have zero impact!\n"
+                f"   Possible causes:\n"
+                f"   1. Candle volume is 0 (check candle data source)\n"
+                f"   2. Wallet volumes are too small relative to candle\n"
+                f"   3. ImpactCalculator weights are too strict"
             )
-    
+        
+        logger.info(f"{'='*80}\n")
+        
         return entities[:top_n]
-
     def _calculate_1to1_pattern_matches(
         self,
         cex_movers: List[Dict],
