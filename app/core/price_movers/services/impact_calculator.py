@@ -76,9 +76,9 @@ class ImpactCalculator:
             self,
             wallet_trades: List[Dict[str, Any]],
             candle_data: Dict[str, Any],
-            total_volume: float, # <-- Dies ist der entscheidende Parameter
+            total_volume: float,
             all_trades: Optional[List[Dict[str, Any]]] = None,
-            apply_liquidity_multipliers: bool = False  # ✅ NEU
+            apply_liquidity_multipliers: bool = False
         ) -> Dict[str, Any]:
             """
             Berechnet vollständigen Impact Score für ein Wallet
@@ -86,20 +86,18 @@ class ImpactCalculator:
             Args:
                 wallet_trades: Trades des Wallets
                 candle_data: Candle-Informationen
-                total_volume: Gesamt-Volume der Candle
+                total_volume: Gesamt-Volume der Candle IN USD
                 all_trades: Alle Trades (für Kontext)
                 apply_liquidity_multipliers: Ob Liquidity Event Multipliers angewendet werden
                 
             Returns:
                 Dictionary mit Impact Score und Komponenten
             """
-            # --- NEUES DETAIL-LOGGING ---
             logger.debug(f"--- calculate_impact_score START ---")
             logger.debug(f"Wallet ID: {wallet_trades[0].get('wallet_address', 'unknown') if wallet_trades else 'no_trades'}")
             logger.debug(f"Anzahl Trades: {len(wallet_trades)}")
             logger.debug(f"Übergebenes total_volume: {total_volume}")
             logger.debug(f"apply_liquidity_multipliers: {apply_liquidity_multipliers}")
-            # --- ENDE NEUES DETAIL-LOGGING ---
 
             if not wallet_trades:
                 logger.debug("Keine Trades für Wallet vorhanden -> Zero Impact")
@@ -107,10 +105,21 @@ class ImpactCalculator:
                 logger.debug(f"--- calculate_impact_score END (Zero Impact) ---")
                 return result
             
+            # ✅ DEBUG: Input Check
+            wallet_volume_usd = sum(
+                float(t.get('amount', 0)) * float(t.get('price', 0)) 
+                for t in wallet_trades
+            )
+            logger.info(
+                f"🔍 Impact Input: Wallet=${wallet_volume_usd:.2f}, "
+                f"Total=${total_volume:.2f}, "
+                f"Expected Ratio={wallet_volume_usd/total_volume:.4f}"
+            )
+            
             # Berechne volume ratio
             volume_ratio = self._calculate_volume_ratio(wallet_trades, total_volume)
             
-            # ✅ NEU: Apply Liquidity Multipliers wenn aktiviert
+            # ✅ Apply Liquidity Multipliers wenn aktiviert
             if apply_liquidity_multipliers:
                 weighted_volume_ratio = 0.0
                 has_liquidity_events = False
@@ -143,7 +152,7 @@ class ImpactCalculator:
                     f"- {liquidity_event_count} liquidity events"
                 )
             
-            # Berechne alle anderen Komponenten (bleibt gleich)
+            # Berechne alle anderen Komponenten
             timing_score = self._calculate_timing_score(wallet_trades, candle_data)
             size_impact = self._calculate_size_impact(wallet_trades, candle_data)
             price_correlation = self._calculate_price_correlation(
@@ -165,7 +174,7 @@ class ImpactCalculator:
             # Gesamt-Score
             total_score = components.total_score
             
-            # ✅ NEU: Check for liquidity events
+            # Check for liquidity events
             has_liquidity_events = any(
                 t.get('transaction_type') in ['ADD_LIQUIDITY', 'REMOVE_LIQUIDITY']
                 for t in wallet_trades
@@ -181,13 +190,11 @@ class ImpactCalculator:
                     "slippage_caused": round(slippage_caused, 3)
                 },
                 "impact_level": self._get_impact_level(total_score),
-                "has_liquidity_events": has_liquidity_events  # ✅ NEU
+                "has_liquidity_events": has_liquidity_events
             }
 
-            # --- NEUES DETAIL-LOGGING ---
             logger.debug(f"Ergebnis für Wallet: {result}")
             logger.debug(f"--- calculate_impact_score END ---")
-            # --- ENDE NEUES DETAIL-LOGGING ---
             
             log_suffix = ""
             if apply_liquidity_multipliers and has_liquidity_events:
@@ -207,7 +214,16 @@ class ImpactCalculator:
         wallet_trades: List[Dict], 
         total_volume: float
     ) -> float:
-        """Berechne Volume Ratio - FIXED: USD/USD statt SOL/USD"""
+        """
+        ✅ FIXED: Berechne Volume Ratio - USD/USD statt SOL/USD
+        
+        Args:
+            wallet_trades: Liste der Wallet-Trades
+            total_volume: Gesamt-Volume der Candle IN USD
+            
+        Returns:
+            Volume Ratio (0-1)
+        """
         try:
             if not wallet_trades or total_volume <= 0:
                 return 0.0
@@ -229,13 +245,17 @@ class ImpactCalculator:
             
             # Sanity check
             if volume_ratio > 1.0:
-                logger.warning(f"⚠️ Volume ratio > 1.0, capping at 1.0")
+                logger.warning(
+                    f"⚠️ Volume ratio > 1.0! "
+                    f"Wallet=${wallet_volume_usd:.2f}, Total=${total_volume:.2f}, "
+                    f"capping at 1.0"
+                )
                 volume_ratio = 1.0
             
             return volume_ratio
             
         except Exception as e:
-            logger.error(f"❌ Volume ratio error: {e}")
+            logger.error(f"❌ Volume ratio error: {e}", exc_info=True)
             return 0.0
     
     def _calculate_timing_score(
@@ -584,7 +604,7 @@ class ImpactCalculator:
         self,
         wallet_activities: Dict[str, List[Dict[str, Any]]],
         candle_data: Dict[str, Any],
-        total_volume: float # <-- Dies ist der entscheidende Parameter
+        total_volume: float
     ) -> Dict[str, Dict[str, Any]]:
         """
         Berechnet Impact Scores für mehrere Wallets gleichzeitig
@@ -592,23 +612,19 @@ class ImpactCalculator:
         Args:
             wallet_activities: Dictionary wallet_id -> trades
             candle_data: Candle-Daten
-            total_volume: Gesamt-Volume
+            total_volume: Gesamt-Volume IN USD
             
         Returns:
             Dictionary wallet_id -> impact_result
         """
-        # --- NEUES DETAIL-LOGGING ---
         logger.info(f"--- calculate_batch_impact START ---")
         logger.info(f"Gesamtanzahl Wallets: {len(wallet_activities)}")
         logger.info(f"Übergebenes total_volume für Batch: {total_volume}")
-        # --- ENDE NEUES DETAIL-LOGGING ---
 
         results = {}
         
         for wallet_id, trades in wallet_activities.items():
-            # --- NEUES DETAIL-LOGGING ---
             logger.debug(f"Verarbeite Wallet: {wallet_id}")
-            # --- ENDE NEUES DETAIL-LOGGING ---
             results[wallet_id] = self.calculate_impact_score(
                 wallet_trades=trades,
                 candle_data=candle_data,
@@ -616,9 +632,6 @@ class ImpactCalculator:
             )
         
         logger.info(f"Batch Impact berechnet für {len(results)} Wallets")
-        
-        # --- NEUES DETAIL-LOGGING ---
         logger.info(f"--- calculate_batch_impact END ---")
-        # --- ENDE NEUES DETAIL-LOGGING ---
         
         return results
