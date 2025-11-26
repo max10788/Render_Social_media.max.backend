@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 import statistics
-from app.core.price_movers.services.impact_calculator import ImpactCalculator
 
 import sys
 import os
