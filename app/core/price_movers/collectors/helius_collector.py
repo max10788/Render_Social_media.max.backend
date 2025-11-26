@@ -19,7 +19,6 @@ Helius Collector - PRODUCTION VERSION
 - Works with Helius indexing
 - Fast and reliable
 """
-
 import logging
 import aiohttp
 import asyncio
