@@ -832,19 +832,59 @@ class HeliusCollector(DEXCollector):
         trade_time: datetime,
         signature: str
     ) -> Optional[Dict[str, Any]]:
-        """
-        Parse Swap aus Raw Token Transfers - IMPROVED VERSION
-        
-        ✅ IMPROVEMENTS:
-        - Besseres Wallet-Detection
-        - Multi-transfer support
-        - Robustere Preis-Berechnung
-        """
+        """Parse Swap - IMPROVED mit Stablecoin Support"""
         try:
+            # ✅ SPECIAL CASE: Stablecoin Swaps (kein SOL)
+            if len(sol_transfers) == 0 and len(other_transfers) == 2:
+                transfer1 = other_transfers[0]
+                transfer2 = other_transfers[1]
+                
+                amount1 = float(transfer1.get('tokenAmount', 0))
+                amount2 = float(transfer2.get('tokenAmount', 0))
+                
+                if amount1 == 0 or amount2 == 0:
+                    logger.debug(f"⚠️ Zero amounts in stablecoin swap")
+                    return None
+                
+                # Wallet Detection
+                from1 = transfer1.get('fromUserAccount')
+                to1 = transfer1.get('toUserAccount')
+                from2 = transfer2.get('fromUserAccount')
+                to2 = transfer2.get('toUserAccount')
+                
+                wallet = None
+                if from1 == to2:
+                    wallet = from1
+                elif to1 == from2:
+                    wallet = to1
+                else:
+                    wallet = from1 or to1
+                
+                if not wallet:
+                    logger.debug(f"⚠️ No wallet in stablecoin swap")
+                    return None
+                
+                # Price für Stablecoins (sollte ~1.0 sein)
+                price = amount2 / amount1 if amount1 > 0 else 1.0
+                
+                logger.debug(f"✅ Stablecoin swap: {amount1:.2f} ↔ {amount2:.2f} (price: {price:.4f})")
+                
+                return {
+                    'timestamp': trade_time,
+                    'price': price,
+                    'amount': amount1,
+                    'trade_type': 'swap',
+                    'wallet_address': wallet,
+                    'transaction_hash': signature,
+                    'dex': dex_name,
+                    'transaction_type': 'SWAP',
+                    'raw_data': tx
+                }
+            
+            # ✅ ORIGINAL: SOL-based swaps
             if not sol_transfers or not other_transfers:
                 return None
             
-            # ✅ IMPROVED: Handle multi-transfers (nehme erste)
             sol_transfer = sol_transfers[0]
             other_transfer = other_transfers[0]
             
@@ -855,43 +895,37 @@ class HeliusCollector(DEXCollector):
                 logger.debug(f"⚠️ Zero amounts: SOL={sol_amount}, Other={other_amount}")
                 return None
             
-            # ✅ IMPROVED: Besseres Wallet-Detection
-            # Wallet ist derjenige, der sowohl bei SOL als auch bei Other Transfer vorkommt
+            # Wallet Detection
             sol_from = sol_transfer.get('fromUserAccount')
             sol_to = sol_transfer.get('toUserAccount')
             other_from = other_transfer.get('fromUserAccount')
             other_to = other_transfer.get('toUserAccount')
             
-            # Finde den User (kommt in beiden vor)
             wallet = None
             trade_type = 'unknown'
+            amount = sol_amount
+            price = other_amount / sol_amount
             
             if sol_from == other_to:
-                # User gibt SOL, bekommt Token = SELL SOL
                 wallet = sol_from
                 trade_type = 'sell'
-                amount = sol_amount
-                price = other_amount / sol_amount
+                logger.debug(f"✅ Strategy 1: SELL")
             elif sol_to == other_from:
-                # User bekommt SOL, gibt Token = BUY SOL
                 wallet = sol_to
                 trade_type = 'buy'
-                amount = sol_amount
-                price = other_amount / sol_amount
+                logger.debug(f"✅ Strategy 2: BUY")
             else:
-                # ✅ FALLBACK: Nehme einfach den ersten Account
                 wallet = sol_from or sol_to or other_from or other_to
                 trade_type = 'swap'
-                amount = sol_amount
-                price = other_amount / sol_amount
+                logger.debug(f"✅ Strategy 3: SWAP (fallback)")
             
             if not wallet:
-                logger.debug(f"⚠️ No wallet found in transfers")
+                logger.debug(f"⚠️ No wallet found")
                 return None
             
             logger.debug(
-                f"✅ Swap: {trade_type} {amount:.4f} SOL @ ${price:.2f} "
-                f"(wallet: {wallet[:8]}...)"
+                f"✅ SOL swap: {trade_type} {amount:.4f} @ ${price:.2f} "
+                f"(wallet: {wallet[:8]}..., dex: {dex_name})"
             )
             
             return {
@@ -901,7 +935,7 @@ class HeliusCollector(DEXCollector):
                 'trade_type': trade_type,
                 'wallet_address': wallet,
                 'transaction_hash': signature,
-                'dex': dex_name,  # Kann 'unknown_dex' sein
+                'dex': dex_name,
                 'transaction_type': 'SWAP',
                 'raw_data': tx
             }
