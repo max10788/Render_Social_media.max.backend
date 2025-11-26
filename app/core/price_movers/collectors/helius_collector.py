@@ -646,12 +646,17 @@ class HeliusCollector(DEXCollector):
         symbol: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        Parse UNKNOWN Transaktionen manuell
+        Parse UNKNOWN Transaktionen manuell - IMPROVED VERSION
+        
+        ✅ IMPROVEMENTS:
+        - Weniger strikt bei DEX-Detection
+        - Fallback-Parsing auch ohne DEX
+        - Bessere Fehler-Behandlung
         
         Strategie:
-        1. Erkenne DEX via Program IDs
+        1. Versuche DEX zu erkennen (optional!)
         2. Analysiere Token Transfers
-        3. Identifiziere Liquidity Events vs Swaps
+        3. Parse auch ohne DEX-Detection
         """
         try:
             signature = tx.get('signature', 'unknown')
@@ -662,17 +667,20 @@ class HeliusCollector(DEXCollector):
             
             trade_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
             
-            # 1. Erkenne DEX
+            # 1. Versuche DEX zu erkennen (OPTIONAL!)
             dex_name = self._detect_dex_from_program_ids(tx)
+            
+            # ✅ IMPROVED: Kein sofortiger Abbruch mehr!
             if not dex_name:
-                logger.debug(f"⚠️ Cannot identify DEX for {signature[:16]}...")
-                return None
+                logger.debug(f"⚠️ No DEX detected for {signature[:16]}... - trying fallback parsing")
+                dex_name = 'unknown_dex'  # Fallback statt None
             
             # 2. Analysiere Token Transfers
             token_transfers = tx.get('tokenTransfers', [])
             native_transfers = tx.get('nativeTransfers', [])
             
             if not token_transfers:
+                logger.debug(f"⚠️ No token transfers in {signature[:16]}...")
                 return None
             
             sol_mint = 'So11111111111111111111111111111111111111112'
@@ -681,6 +689,12 @@ class HeliusCollector(DEXCollector):
             sol_transfers = [t for t in token_transfers if t.get('mint') == sol_mint]
             other_transfers = [t for t in token_transfers if t.get('mint') != sol_mint]
             
+            # ✅ IMPROVED: Mehr Debug-Logging
+            logger.debug(
+                f"📊 {signature[:16]}... has {len(sol_transfers)} SOL + "
+                f"{len(other_transfers)} other transfers"
+            )
+            
             # 3. Klassifiziere Transaction Type
             tx_type = self._classify_transaction_type(
                 tx=tx,
@@ -688,21 +702,29 @@ class HeliusCollector(DEXCollector):
                 other_transfers=other_transfers
             )
             
+            logger.debug(f"🔍 Classified as: {tx_type}")
+            
             if tx_type not in ['swap', 'add_liquidity', 'remove_liquidity']:
+                logger.debug(f"⚠️ Skipping {tx_type} transaction")
                 return None
             
             # 4. Parse je nach Type
             if tx_type == 'swap':
-                return self._parse_manual_swap(
+                result = self._parse_manual_swap(
                     tx=tx,
                     sol_transfers=sol_transfers,
                     other_transfers=other_transfers,
-                    dex_name=dex_name,
+                    dex_name=dex_name,  # Kann jetzt 'unknown_dex' sein!
                     trade_time=trade_time,
                     signature=signature
                 )
+                
+                if result:
+                    logger.debug(f"✅ Parsed UNKNOWN as swap: {result['amount']:.4f} @ ${result['price']:.2f}")
+                return result
+                
             elif tx_type in ['add_liquidity', 'remove_liquidity']:
-                return self._parse_liquidity_event(
+                result = self._parse_liquidity_event(
                     tx=tx,
                     event_type=tx_type,
                     sol_transfers=sol_transfers,
@@ -711,12 +733,17 @@ class HeliusCollector(DEXCollector):
                     trade_time=trade_time,
                     signature=signature
                 )
+                
+                if result:
+                    logger.debug(f"✅ Parsed UNKNOWN as {tx_type}")
+                return result
             
             return None
             
         except Exception as e:
-            logger.debug(f"❌ Error parsing unknown tx: {e}")
+            logger.debug(f"❌ Error parsing unknown tx {signature[:16] if signature else 'N/A'}...: {e}")
             return None
+
 
     def _classify_transaction_type(
         self,
