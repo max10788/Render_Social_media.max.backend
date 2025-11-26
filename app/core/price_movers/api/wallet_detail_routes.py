@@ -243,14 +243,20 @@ async def get_enhanced_wallet_details(
     wallet_identifier: str,
     exchange: str = Query(..., description="Exchange (CEX or DEX)"),
     symbol: str = Query(..., description="Trading pair"),
-    time_range_hours: int = Query(default=24, ge=1, le=720),
+    time_range_hours: int = Query(default=2, ge=1, le=720),  # ✅ Default 2h
+    candle_timestamp: Optional[str] = Query(None, description="Candle timestamp for context"),
+    timeframe_minutes: Optional[int] = Query(None, description="Candle timeframe in minutes"),
     request_id: str = Depends(log_request)
 ) -> EnhancedWalletDetailResponse:
-    """Enhanced Wallet Details mit echten Trade-Daten"""
+    """
+    Enhanced Wallet Details mit WALLET-SPEZIFISCHEM Lookup
+    
+    Neu: Holt ALLE Transaktionen der Wallet, nicht nur Zeit-basiert!
+    """
     try:
         logger.info(
             f"[{request_id}] Enhanced wallet details: "
-            f"{wallet_identifier} on {exchange} {symbol}"
+            f"{wallet_identifier[:16]}... on {exchange} {symbol}"
         )
         
         # Detect if DEX or CEX
@@ -278,58 +284,104 @@ async def get_enhanced_wallet_details(
                         transaction_base_url=explorer_info_obj.transaction_base_url
                     )
         
-        # ==================== FETCH REAL TRADES ====================
+        # ==================== FETCH WALLET-SPECIFIC TRADES ====================
         
-        logger.info(f"🔍 Fetching trades for wallet {wallet_identifier[:16]}...")
+        logger.info(f"🎯 NEW APPROACH: Fetching wallet-specific trades for {wallet_identifier[:16]}...")
+        
+        wallet_trades = []
+        all_trades = []
         
         try:
-            # ✅ IMPROVED: Versuche mehrere Zeiträume
-            time_ranges = [
-                ('2h', timedelta(hours=2)),
-                ('6h', timedelta(hours=6)),
-                ('24h', timedelta(hours=24)),
-            ]
-            
-            wallet_trades = []
-            all_trades = []
-            
-            for range_label, time_delta in time_ranges:
-                end_time = datetime.now(timezone.utc)
-                start_time = end_time - time_delta
+            # ✅ Strategy 1: Wallet-specific lookup (if available)
+            if is_dex and hasattr(unified_collector, 'helius_collector'):
+                helius = unified_collector.helius_collector
                 
-                logger.info(f"🔍 Trying {range_label}: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
+                # Resolve token address from symbol
+                token_address = None
+                if '/' in symbol:
+                    quote_token = symbol.split('/', 1)[1]
+                    token_mapping = {
+                        'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+                        'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+                    }
+                    token_address = token_mapping.get(quote_token.upper())
                 
-                # Fetch all trades
-                trades_result = await unified_collector.fetch_trades(
-                    exchange=exchange.lower(),
-                    symbol=symbol,
-                    start_time=start_time,
-                    end_time=end_time,
-                    limit=10000
+                logger.info(f"🔍 Using wallet-specific lookup (target token: {token_address[:16] if token_address else 'All'}...)")
+                
+                # Call new wallet-specific method
+                wallet_result = await helius.fetch_wallet_trades(
+                    wallet_address=wallet_identifier,
+                    target_token_address=token_address,
+                    limit=1000
                 )
                 
-                all_trades = trades_result.get('trades', [])
-                logger.info(f"📊 Fetched {len(all_trades)} total trades in {range_label}")
+                wallet_trades = wallet_result.get('pair_trades', [])
+                other_activities = wallet_result.get('other_activities', [])
+                token_summary = wallet_result.get('token_summary', {})
                 
-                # Filter for this wallet - CHECK MULTIPLE FIELDS
-                wallet_trades = []
-                for trade in all_trades:
-                    trade_wallet = (
-                        trade.get('wallet_address') or 
-                        trade.get('wallet_id') or
-                        trade.get('fromUserAccount') or
-                        trade.get('toUserAccount')
+                logger.info(
+                    f"✅ Wallet-specific lookup results:\n"
+                    f"   Total Transactions: {wallet_result.get('total_transactions', 0)}\n"
+                    f"   {symbol} Trades: {len(wallet_trades)}\n"
+                    f"   Other Activities: {len(other_activities)}\n"
+                    f"   Unique Tokens: {len(token_summary)}"
+                )
+                
+            else:
+                # ✅ Strategy 2: Fallback to time-based (optimized)
+                logger.info(f"🔄 Fallback: Using time-based lookup with optimized time ranges")
+                
+                time_ranges = [
+                    ('1h', timedelta(hours=1)),
+                    ('2h', timedelta(hours=2)),
+                    ('6h', timedelta(hours=6)),
+                ]
+                
+                for range_label, time_delta in time_ranges:
+                    end_time = datetime.now(timezone.utc)
+                    start_time = end_time - time_delta
+                    
+                    # Use candle timestamp if provided
+                    if candle_timestamp and timeframe_minutes:
+                        try:
+                            candle_time = datetime.fromisoformat(candle_timestamp.replace('Z', '+00:00'))
+                            start_time = candle_time - timedelta(minutes=timeframe_minutes * 2)
+                            end_time = candle_time + timedelta(minutes=timeframe_minutes * 2)
+                            logger.info(f"🎯 Using candle-based time: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
+                        except:
+                            pass
+                    
+                    logger.info(f"🔍 Trying {range_label}: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
+                    
+                    trades_result = await unified_collector.fetch_trades(
+                        exchange=exchange.lower(),
+                        symbol=symbol,
+                        start_time=start_time,
+                        end_time=end_time,
+                        limit=10000
                     )
                     
-                    if trade_wallet == wallet_identifier:
-                        wallet_trades.append(trade)
-                
-                logger.info(f"✅ Found {len(wallet_trades)} trades for wallet {wallet_identifier[:16]}... in {range_label}")
-                
-                # Stop if enough trades found
-                if len(wallet_trades) >= 5:
-                    logger.info(f"✅ Sufficient trades in {range_label}, stopping search")
-                    break
+                    all_trades = trades_result.get('trades', [])
+                    logger.info(f"📊 Fetched {len(all_trades)} total trades in {range_label}")
+                    
+                    # Filter for wallet
+                    wallet_trades = []
+                    for trade in all_trades:
+                        trade_wallet = (
+                            trade.get('wallet_address') or 
+                            trade.get('wallet_id') or
+                            trade.get('fromUserAccount') or
+                            trade.get('toUserAccount')
+                        )
+                        
+                        if trade_wallet == wallet_identifier:
+                            wallet_trades.append(trade)
+                    
+                    logger.info(f"✅ Found {len(wallet_trades)} trades for wallet in {range_label}")
+                    
+                    if len(wallet_trades) >= 5:
+                        logger.info(f"✅ Sufficient trades in {range_label}, stopping search")
+                        break
             
             # ✅ DEBUG: Why no trades?
             if len(wallet_trades) == 0 and len(all_trades) > 0:
@@ -342,7 +394,7 @@ async def get_enhanced_wallet_details(
                     f"{'='*80}"
                 )
                 
-                # Log sample wallets
+                # Sample wallets
                 sample_wallets = set()
                 for trade in all_trades[:10]:
                     w = (
@@ -358,21 +410,24 @@ async def get_enhanced_wallet_details(
                     logger.warning(f"   - {sw}")
                 
                 logger.warning(f"🔍 Looking for: {wallet_identifier[:16]}...")
-                
-                # Check format
-                if len(wallet_identifier) < 30:
-                    logger.warning(f"⚠️ Wallet ID short ({len(wallet_identifier)} chars) - truncated?")
             
         except Exception as e:
             logger.error(f"❌ Failed to fetch trades: {e}", exc_info=True)
             wallet_trades = []
-            all_trades = []
         
         # ==================== CALCULATE STATISTICS ====================
         
         if wallet_trades:
-            buy_trades = [t for t in wallet_trades if t.get('trade_type', '').lower() in ['buy', 'sell']]
-            sell_trades = [t for t in wallet_trades if t.get('trade_type', '').lower() == 'sell']
+            # Detect trade_type field (can be 'side' or 'trade_type')
+            buy_trades = []
+            sell_trades = []
+            
+            for t in wallet_trades:
+                tt = (t.get('trade_type') or t.get('side', '')).lower()
+                if tt == 'buy':
+                    buy_trades.append(t)
+                elif tt == 'sell':
+                    sell_trades.append(t)
             
             total_volume = sum(t.get('amount', 0) for t in wallet_trades)
             total_value_usd = sum(t.get('amount', 0) * t.get('price', 0) for t in wallet_trades)
@@ -381,7 +436,7 @@ async def get_enhanced_wallet_details(
             largest_trade = max(trade_values) if trade_values else 0.0
             smallest_trade = min(trade_values) if trade_values else 0.0
             
-            # Calculate time range
+            # Time range
             timestamps = [t.get('timestamp') for t in wallet_trades if t.get('timestamp')]
             if timestamps:
                 parsed_timestamps = []
@@ -399,12 +454,12 @@ async def get_enhanced_wallet_details(
                     last_seen = max(parsed_timestamps)
                     active_hours = (last_seen - first_seen).total_seconds() / 3600
                 else:
-                    first_seen = start_time
-                    last_seen = end_time
+                    first_seen = datetime.now(timezone.utc) - timedelta(hours=time_range_hours)
+                    last_seen = datetime.now(timezone.utc)
                     active_hours = time_range_hours
             else:
-                first_seen = start_time
-                last_seen = end_time
+                first_seen = datetime.now(timezone.utc) - timedelta(hours=time_range_hours)
+                last_seen = datetime.now(timezone.utc)
                 active_hours = time_range_hours
             
             buy_sell_ratio = len(buy_trades) / max(len(sell_trades), 1)
@@ -425,7 +480,7 @@ async def get_enhanced_wallet_details(
                 active_hours=active_hours
             )
             
-            # Get recent trades (last 10)
+            # Recent trades
             recent_wallet_trades = sorted(
                 wallet_trades,
                 key=lambda t: t.get('timestamp', datetime.min),
@@ -449,9 +504,11 @@ async def get_enhanced_wallet_details(
                 if has_real_address and blockchain and signature:
                     explorer_url = format_transaction_url(signature, blockchain)
                 
+                trade_type = (trade.get('trade_type') or trade.get('side', 'unknown')).lower()
+                
                 recent_trades.append(TradeDetail(
                     timestamp=ts,
-                    trade_type=trade.get('trade_type', 'unknown').lower(),
+                    trade_type=trade_type,
                     amount=float(trade.get('amount', 0)),
                     price=float(trade.get('price', 0)),
                     value_usd=float(trade.get('amount', 0)) * float(trade.get('price', 0)),
@@ -475,8 +532,8 @@ async def get_enhanced_wallet_details(
                 buy_sell_ratio=0.0,
                 largest_trade_usd=0.0,
                 smallest_trade_usd=0.0,
-                first_seen=start_time if 'start_time' in locals() else datetime.now(timezone.utc),
-                last_seen=end_time if 'end_time' in locals() else datetime.now(timezone.utc),
+                first_seen=datetime.now(timezone.utc) - timedelta(hours=time_range_hours),
+                last_seen=datetime.now(timezone.utc),
                 active_hours=0.0
             )
             
