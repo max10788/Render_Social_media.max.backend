@@ -559,11 +559,6 @@ class HybridPriceMoverAnalyzer:
             'volume': candle.volume,
             'price_change_pct': candle.price_change_pct
         }
-    
-        # ✅ Ensure ImpactCalculator is initialized
-        if not hasattr(self, 'impact_calculator'):
-            self.impact_calculator = ImpactCalculator()
-            logger.debug("✓ ImpactCalculator initialized for DEX analysis")
         
         entities = []
         stats = {
@@ -635,7 +630,7 @@ class HybridPriceMoverAnalyzer:
                 'wallet_address': wallet_addr,
                 'wallet_type': wallet_type,
                 'impact_score': sanitize_float(impact_score),
-                'impact_components': impact_components,  # ✅ Full breakdown from ImpactCalculator
+                'impact_components': impact_components,
                 'impact_level': impact_level,
                 'total_volume': sanitize_float(total_volume),
                 'total_value_usd': sanitize_float(total_value),
