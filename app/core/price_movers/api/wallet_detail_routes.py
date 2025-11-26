@@ -246,31 +246,7 @@ async def get_enhanced_wallet_details(
     time_range_hours: int = Query(default=24, ge=1, le=720),
     request_id: str = Depends(log_request)
 ) -> EnhancedWalletDetailResponse:
-    """
-    ## 🔍 Enhanced Wallet Details
-    
-    Liefert vollständige Details zu einem Wallet mit ECHTEN TRADE-DATEN:
-    
-    ### Für DEX Wallets:
-    - ✅ Echte Blockchain-Adresse
-    - ✅ Explorer-URLs (Solscan, Etherscan, etc.)
-    - ✅ Transaction-Links
-    - ✅ On-Chain Verifikation
-    - ✅ Echte Trading-Statistiken
-    
-    ### Für CEX Patterns:
-    - Pattern-basierte Identifikation
-    - Trading-Charakteristiken
-    - Geschätzte Entity-Größe
-    
-    ### Path Parameters:
-    - **wallet_identifier**: Wallet-Adresse oder Entity-Pattern
-    
-    ### Query Parameters:
-    - **exchange**: Exchange Name
-    - **symbol**: Trading Pair
-    - **time_range_hours**: Zeitraum für Statistiken
-    """
+    """Enhanced Wallet Details mit echten Trade-Daten"""
     try:
         logger.info(
             f"[{request_id}] Enhanced wallet details: "
@@ -283,10 +259,6 @@ async def get_enhanced_wallet_details(
         
         # Get unified collector
         unified_collector = await get_unified_collector()
-        
-        # Calculate time range
-        end_time = datetime.now(timezone.utc)
-        start_time = end_time - timedelta(hours=time_range_hours)
         
         # Detect blockchain if DEX
         blockchain = None
@@ -308,39 +280,99 @@ async def get_enhanced_wallet_details(
         
         # ==================== FETCH REAL TRADES ====================
         
-        logger.debug(f"Fetching trades for wallet {wallet_identifier}...")
+        logger.info(f"🔍 Fetching trades for wallet {wallet_identifier[:16]}...")
         
         try:
-            # Fetch all trades for the time range
-            trades_result = await unified_collector.fetch_trades(
-                exchange=exchange.lower(),
-                symbol=symbol,
-                start_time=start_time,
-                end_time=end_time,
-                limit=10000  # Get all available trades
-            )
+            # ✅ IMPROVED: Versuche mehrere Zeiträume
+            time_ranges = [
+                ('2h', timedelta(hours=2)),
+                ('6h', timedelta(hours=6)),
+                ('24h', timedelta(hours=24)),
+            ]
             
-            all_trades = trades_result.get('trades', [])
-            logger.debug(f"Fetched {len(all_trades)} total trades")
-            
-            # Filter trades for this wallet
             wallet_trades = []
-            for trade in all_trades:
-                trade_wallet = trade.get('wallet_address') or trade.get('wallet_id')
-                if trade_wallet == wallet_identifier:
-                    wallet_trades.append(trade)
+            all_trades = []
             
-            logger.info(f"Found {len(wallet_trades)} trades for wallet {wallet_identifier}")
+            for range_label, time_delta in time_ranges:
+                end_time = datetime.now(timezone.utc)
+                start_time = end_time - time_delta
+                
+                logger.info(f"🔍 Trying {range_label}: {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
+                
+                # Fetch all trades
+                trades_result = await unified_collector.fetch_trades(
+                    exchange=exchange.lower(),
+                    symbol=symbol,
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=10000
+                )
+                
+                all_trades = trades_result.get('trades', [])
+                logger.info(f"📊 Fetched {len(all_trades)} total trades in {range_label}")
+                
+                # Filter for this wallet - CHECK MULTIPLE FIELDS
+                wallet_trades = []
+                for trade in all_trades:
+                    trade_wallet = (
+                        trade.get('wallet_address') or 
+                        trade.get('wallet_id') or
+                        trade.get('fromUserAccount') or
+                        trade.get('toUserAccount')
+                    )
+                    
+                    if trade_wallet == wallet_identifier:
+                        wallet_trades.append(trade)
+                
+                logger.info(f"✅ Found {len(wallet_trades)} trades for wallet {wallet_identifier[:16]}... in {range_label}")
+                
+                # Stop if enough trades found
+                if len(wallet_trades) >= 5:
+                    logger.info(f"✅ Sufficient trades in {range_label}, stopping search")
+                    break
+            
+            # ✅ DEBUG: Why no trades?
+            if len(wallet_trades) == 0 and len(all_trades) > 0:
+                logger.warning(
+                    f"\n{'='*80}\n"
+                    f"⚠️ WALLET TRADE FILTERING FAILED\n"
+                    f"   Wallet: {wallet_identifier[:20]}...\n"
+                    f"   Total trades available: {len(all_trades)}\n"
+                    f"   Trades for this wallet: 0\n"
+                    f"{'='*80}"
+                )
+                
+                # Log sample wallets
+                sample_wallets = set()
+                for trade in all_trades[:10]:
+                    w = (
+                        trade.get('wallet_address') or 
+                        trade.get('wallet_id') or 
+                        'unknown'
+                    )
+                    if w != 'unknown':
+                        sample_wallets.add(w[:16] + '...')
+                
+                logger.warning(f"📋 Sample wallets in {len(all_trades)} trades:")
+                for sw in list(sample_wallets)[:5]:
+                    logger.warning(f"   - {sw}")
+                
+                logger.warning(f"🔍 Looking for: {wallet_identifier[:16]}...")
+                
+                # Check format
+                if len(wallet_identifier) < 30:
+                    logger.warning(f"⚠️ Wallet ID short ({len(wallet_identifier)} chars) - truncated?")
             
         except Exception as e:
-            logger.warning(f"Failed to fetch real trades: {e}. Using empty list.")
+            logger.error(f"❌ Failed to fetch trades: {e}", exc_info=True)
             wallet_trades = []
+            all_trades = []
         
         # ==================== CALCULATE STATISTICS ====================
         
         if wallet_trades:
-            buy_trades = [t for t in wallet_trades if t.get('side', '').lower() == 'buy']
-            sell_trades = [t for t in wallet_trades if t.get('side', '').lower() == 'sell']
+            buy_trades = [t for t in wallet_trades if t.get('trade_type', '').lower() in ['buy', 'sell']]
+            sell_trades = [t for t in wallet_trades if t.get('trade_type', '').lower() == 'sell']
             
             total_volume = sum(t.get('amount', 0) for t in wallet_trades)
             total_value_usd = sum(t.get('amount', 0) * t.get('price', 0) for t in wallet_trades)
@@ -352,7 +384,6 @@ async def get_enhanced_wallet_details(
             # Calculate time range
             timestamps = [t.get('timestamp') for t in wallet_trades if t.get('timestamp')]
             if timestamps:
-                # Handle both datetime objects and strings
                 parsed_timestamps = []
                 for ts in timestamps:
                     if isinstance(ts, str):
@@ -403,7 +434,6 @@ async def get_enhanced_wallet_details(
             
             recent_trades = []
             for trade in recent_wallet_trades:
-                # Parse timestamp
                 ts = trade.get('timestamp')
                 if isinstance(ts, str):
                     try:
@@ -413,17 +443,15 @@ async def get_enhanced_wallet_details(
                 elif not isinstance(ts, datetime):
                     ts = datetime.now(timezone.utc)
                 
-                # Get transaction signature/hash
                 signature = trade.get('signature') or trade.get('transaction_hash') or trade.get('id')
                 
-                # Format explorer URL if DEX
                 explorer_url = None
                 if has_real_address and blockchain and signature:
                     explorer_url = format_transaction_url(signature, blockchain)
                 
                 recent_trades.append(TradeDetail(
                     timestamp=ts,
-                    trade_type=trade.get('side', 'unknown').lower(),
+                    trade_type=trade.get('trade_type', 'unknown').lower(),
                     amount=float(trade.get('amount', 0)),
                     price=float(trade.get('price', 0)),
                     value_usd=float(trade.get('amount', 0)) * float(trade.get('price', 0)),
@@ -431,11 +459,9 @@ async def get_enhanced_wallet_details(
                     explorer_url=explorer_url
                 ))
             
-            # Classify wallet type based on behavior
             wallet_type = classify_wallet_type(statistics)
             
         else:
-            # No trades found - return minimal stats
             logger.warning(f"No trades found for wallet {wallet_identifier}")
             
             statistics = WalletStatistics(
@@ -449,8 +475,8 @@ async def get_enhanced_wallet_details(
                 buy_sell_ratio=0.0,
                 largest_trade_usd=0.0,
                 smallest_trade_usd=0.0,
-                first_seen=start_time,
-                last_seen=end_time,
+                first_seen=start_time if 'start_time' in locals() else datetime.now(timezone.utc),
+                last_seen=end_time if 'end_time' in locals() else datetime.now(timezone.utc),
                 active_hours=0.0
             )
             
