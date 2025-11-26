@@ -5,19 +5,8 @@ HYBRID Price Mover Analyzer - CEX + DEX Combined Analysis - FIXED VERSION
 1. ✅ JSON Serialization: float('inf') → 999.0
 2. ✅ Datetime: Added timezone awareness
 3. ✅ NaN/Inf Validation before JSON response
-4. ✅ **KRITISCHER FIX**: Dict/Object compatibility in _analyze_dex_trades() ← NEU!
-
-🆕 NEUE FEATURES:
-- ✅ CEX (Bitget/Binance/Kraken) + DEX (Jupiter/Raydium/Orca) PARALLEL
-- ✅ Cross-Exchange Correlation (finde Bitget Whales auf Solana DEX!)
-- ✅ Pattern-based (CEX) vs. Wallet-based (DEX) Analyse
-- ✅ Unified Response mit beiden Datenquellen
-
-ARCHITECTURE:
-1. Unified Collector routet automatisch zu CEX oder DEX
-2. CEX: Pattern-based Entity Identification (virtuelle Wallets)
-3. DEX: Wallet-based Analysis (echte On-chain Adressen)
-4. Correlation Engine: Matched CEX-Pattern mit DEX-Wallets
+4. ✅ **KRITISCHER FIX**: Dict/Object compatibility in _analyze_dex_trades()
+5. ✅ **NEU**: ImpactCalculator Import und Initialisierung korrigiert
 """
 
 import asyncio
@@ -29,7 +18,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from app.core.price_movers.collectors.unified_collector import UnifiedCollector
-from app.core.price_movers.services.impact_calculator import ImpactCalculator
+from app.core.price_movers.services.impact_calculator import ImpactCalculator  # ✅ HIER!
 from app.core.price_movers.services.lightweight_entity_identifier import (
     LightweightEntityIdentifier,
     TradingEntity
@@ -151,16 +140,20 @@ class HybridPriceMoverAnalyzer:
         self.unified_collector = unified_collector
         self.use_lightweight = use_lightweight
         
+        # ✅ WICHTIG: ImpactCalculator IMMER initialisieren
+        self.impact_calculator = impact_calculator or ImpactCalculator()
+        logger.info("✓ ImpactCalculator initialized")
+        
         if use_lightweight:
             self.entity_identifier = LightweightEntityIdentifier()
             logger.info("✓ Lightweight Entity Identification ENABLED")
         else:
-            self.impact_calculator = impact_calculator or ImpactCalculator()
             logger.info("⚠️ Using legacy pattern-based clustering")
         
         self.classifier = EntityClassifier()
         
         logger.info("HybridPriceMoverAnalyzer initialized")
+
     
     @measure_time
     async def analyze_hybrid_candle(
