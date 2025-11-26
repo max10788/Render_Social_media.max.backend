@@ -740,31 +740,21 @@ class HeliusCollector(DEXCollector):
         sol_transfers: List[Dict],
         other_transfers: List[Dict]
     ) -> str:
-        """
-        Klassifiziere Transaction Type - IMPROVED VERSION
-        
-        ✅ IMPROVEMENTS:
-        - Mehr Swap-Patterns erkannt
-        - Bessere Heuristiken
-        - Weniger false negatives
-        """
+        """Klassifiziere Transaction Type - IMPROVED mit Stablecoin Support"""
         try:
-            # ✅ IMPROVED: Pattern 1a - Simple 2-way swap (most common)
+            # Pattern 1a - Simple 2-way swap
             if len(sol_transfers) == 1 and len(other_transfers) == 1:
                 sol_from = sol_transfers[0].get('fromUserAccount')
                 sol_to = sol_transfers[0].get('toUserAccount')
                 other_from = other_transfers[0].get('fromUserAccount')
                 other_to = other_transfers[0].get('toUserAccount')
                 
-                # User gibt SOL und bekommt Token (BUY)
-                # ODER User gibt Token und bekommt SOL (SELL)
                 if sol_from == other_to or sol_to == other_from:
                     logger.debug(f"✅ Pattern 1a: Simple 2-way swap")
                     return 'swap'
             
-            # ✅ NEW: Pattern 1b - Multi-hop swap (SOL -> Token1 -> Token2)
+            # Pattern 1b - Multi-hop swap
             if len(sol_transfers) >= 1 and len(other_transfers) >= 1:
-                # Prüfe ob es gemeinsame Accounts gibt (Router)
                 sol_accounts = set()
                 for t in sol_transfers:
                     sol_accounts.add(t.get('fromUserAccount'))
@@ -775,37 +765,53 @@ class HeliusCollector(DEXCollector):
                     other_accounts.add(t.get('fromUserAccount'))
                     other_accounts.add(t.get('toUserAccount'))
                 
-                # Wenn es Überschneidungen gibt (Router/User)
                 if sol_accounts & other_accounts:
-                    logger.debug(f"✅ Pattern 1b: Multi-hop swap (overlapping accounts)")
+                    logger.debug(f"✅ Pattern 1b: Multi-hop swap")
                     return 'swap'
             
-            # ✅ NEW: Pattern 1c - Check by amounts (wenn Beträge ähnlich sind)
+            # Pattern 1c - Similar amounts
             if len(sol_transfers) == 1 and len(other_transfers) == 1:
                 sol_amount = float(sol_transfers[0].get('tokenAmount', 0))
                 other_amount = float(other_transfers[0].get('tokenAmount', 0))
                 
-                # Wenn Beträge in ähnlichem Verhältnis (0.1x - 10x)
                 if sol_amount > 0 and other_amount > 0:
                     ratio = max(sol_amount, other_amount) / min(sol_amount, other_amount)
-                    if ratio < 10000:  # Reasonable price range
+                    if ratio < 10000:
                         logger.debug(f"✅ Pattern 1c: Similar amounts (ratio {ratio:.2f})")
                         return 'swap'
             
-            # Pattern 2: ADD_LIQUIDITY (mehrere deposits an Pool)
+            # ✅ NEW: Pattern 1d - Stablecoin Swaps (USDC ↔ USDT)
+            if len(sol_transfers) == 0 and len(other_transfers) == 2:
+                stablecoins = {
+                    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
+                    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 'USDT',
+                }
+                
+                mint1 = other_transfers[0].get('mint', '')
+                mint2 = other_transfers[1].get('mint', '')
+                
+                if mint1 in stablecoins and mint2 in stablecoins:
+                    from1 = other_transfers[0].get('fromUserAccount')
+                    to1 = other_transfers[0].get('toUserAccount')
+                    from2 = other_transfers[1].get('fromUserAccount')
+                    to2 = other_transfers[1].get('toUserAccount')
+                    
+                    if (from1 == to2 or to1 == from2):
+                        logger.debug(f"✅ Pattern 1d: Stablecoin swap ({stablecoins[mint1]} ↔ {stablecoins[mint2]})")
+                        return 'swap'
+            
+            # Pattern 2: ADD_LIQUIDITY
             if len(token_transfers := tx.get('tokenTransfers', [])) >= 2:
                 to_accounts = [t.get('toUserAccount') for t in token_transfers]
                 
-                # Wenn alle zur gleichen Adresse gehen = Pool deposit
                 if len(set(to_accounts)) == 1 and to_accounts[0]:
                     logger.debug(f"✅ Pattern 2: ADD_LIQUIDITY")
                     return 'add_liquidity'
             
-            # Pattern 3: REMOVE_LIQUIDITY (mehrere withdrawals vom Pool)
+            # Pattern 3: REMOVE_LIQUIDITY
             if len(token_transfers := tx.get('tokenTransfers', [])) >= 2:
                 from_accounts = [t.get('fromUserAccount') for t in token_transfers]
                 
-                # Wenn alle von der gleichen Adresse kommen = Pool withdrawal
                 if len(set(from_accounts)) == 1 and from_accounts[0]:
                     logger.debug(f"✅ Pattern 3: REMOVE_LIQUIDITY")
                     return 'remove_liquidity'
