@@ -266,11 +266,9 @@ class HeliusCollector(DEXCollector):
         limit: Optional[int] = 100,
         symbol: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """
-        Fetch trades from Helius API using Solana RPC + Enhanced Transactions
+        """Fetch trades - MIT DEBUG FÜR UNKNOWN"""
+        import json
         
-        ✅ ENHANCED: Parses SWAP, ADD_LIQUIDITY, REMOVE_LIQUIDITY, UNKNOWN
-        """
         logger.info(f"🔍 Fetching trades from token: {token_address[:8]}...")
         if symbol:
             logger.info(f"📊 Symbol: {symbol}")
@@ -278,30 +276,19 @@ class HeliusCollector(DEXCollector):
         logger.info(f"📊 Limit: {limit}")
         
         session = await self._get_session()
-        
-        # Step 1: Get transaction signatures via Solana RPC
         rpc_url = f"https://mainnet.helius-rpc.com/?api-key={self.api_key}"
         
         payload = {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "getSignaturesForAddress",
-            "params": [
-                token_address,
-                {"limit": min(limit, 1000)}
-            ]
+            "params": [token_address, {"limit": min(limit, 1000)}]
         }
         
         logger.info(f"🌐 Step 1: Getting signatures via RPC")
         
         try:
-            async with session.post(
-                rpc_url,
-                json=payload,
-                headers={'Content-Type': 'application/json'},
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                
+            async with session.post(rpc_url, json=payload, headers={'Content-Type': 'application/json'}, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 logger.info(f"📡 RPC Response status: {response.status}")
                 
                 if response.status != 200:
@@ -333,7 +320,7 @@ class HeliusCollector(DEXCollector):
                     last_time = datetime.fromtimestamp(last_sig.get('blockTime', 0), tz=timezone.utc)
                     logger.info(f"🔍 Signature time range: {first_time} to {last_time}")
             
-            # Step 2: Filter signatures by timestamp
+            # Filter signatures by timestamp
             filtered_sigs = []
             start_ts = int(start_time.timestamp())
             end_ts = int(end_time.timestamp())
@@ -349,32 +336,16 @@ class HeliusCollector(DEXCollector):
             
             if not filtered_sigs:
                 logger.warning("⚠️ No signatures in requested time range")
-                if signatures:
-                    first_time = signatures[0].get('blockTime')
-                    last_time = signatures[-1].get('blockTime')
-                    logger.warning(
-                        f"📅 Available: "
-                        f"{datetime.fromtimestamp(first_time, tz=timezone.utc)} to "
-                        f"{datetime.fromtimestamp(last_time, tz=timezone.utc)}"
-                    )
-                    logger.warning(f"📅 Requested: {start_time} to {end_time}")
                 return []
             
             filtered_sigs = filtered_sigs[:min(len(filtered_sigs), 100)]
             
-            # Step 3: Parse transactions via Enhanced Transactions API
+            # Parse transactions
             logger.info(f"🌐 Step 2: Parsing {len(filtered_sigs)} transactions via Enhanced API")
             
             enhanced_url = f"{self.API_BASE}/v0/transactions"
             
-            async with session.post(
-                enhanced_url,
-                json={"transactions": filtered_sigs},
-                params={'api-key': self.api_key},
-                headers={'Content-Type': 'application/json'},
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                
+            async with session.post(enhanced_url, json={"transactions": filtered_sigs}, params={'api-key': self.api_key}, headers={'Content-Type': 'application/json'}, timeout=aiohttp.ClientTimeout(total=30)) as response:
                 logger.info(f"📡 Enhanced API Response status: {response.status}")
                 
                 if response.status != 200:
@@ -383,7 +354,6 @@ class HeliusCollector(DEXCollector):
                     return []
                 
                 transactions = await response.json()
-                
                 logger.info(f"📦 Received {len(transactions)} parsed transactions")
                 
                 if not transactions:
@@ -397,7 +367,7 @@ class HeliusCollector(DEXCollector):
                 
                 logger.info(f"📊 Transaction types found: {tx_types}")
             
-            # Step 4: Parse and filter trades - ENHANCED VERSION
+            # Parse trades
             trades = []
             stats = {
                 'swap_count': 0,
@@ -413,19 +383,16 @@ class HeliusCollector(DEXCollector):
                     tx_type = tx.get('type')
                     trade = None
                     
-                    # ✅ Parse known SWAPs
                     if tx_type == 'SWAP':
                         stats['swap_count'] += 1
                         trade = self._parse_helius_enhanced_swap(tx, symbol)
                     
-                    # ✅ Parse UNKNOWN transactions
                     elif tx_type == 'UNKNOWN':
                         trade = self._parse_unknown_transaction(tx, symbol)
                         
                         if trade:
                             stats['unknown_parsed'] += 1
                             
-                            # Track liquidity events separately
                             tx_type_parsed = trade.get('transaction_type', '')
                             if tx_type_parsed == 'ADD_LIQUIDITY':
                                 stats['add_liquidity'] += 1
@@ -434,15 +401,12 @@ class HeliusCollector(DEXCollector):
                                 stats['remove_liquidity'] += 1
                                 stats['liquidity_events'] += 1
                     
-                    # ✅ Other types (TRANSFER, etc.) - ignore
                     else:
                         continue
                     
-                    # Add valid trades
                     if trade and start_time <= trade['timestamp'] <= end_time:
                         trades.append(trade)
                         
-                        # Log first 5 trades
                         if len(trades) <= 5:
                             tx_type_label = trade.get('transaction_type', 'Trade')
                             logger.info(
@@ -451,11 +415,8 @@ class HeliusCollector(DEXCollector):
                                 f"@ ${trade.get('price', 0):.6f} at {trade['timestamp']}"
                             )
                             
-                            # Extra info for liquidity events
                             if 'liquidity_delta' in trade:
-                                logger.info(
-                                    f"   💧 Liquidity Delta: {trade['liquidity_delta']:.4f}"
-                                )
+                                logger.info(f"   💧 Liquidity Delta: {trade['liquidity_delta']:.4f}")
                     
                 except Exception as e:
                     stats['parse_errors'].append(str(e))
@@ -463,7 +424,40 @@ class HeliusCollector(DEXCollector):
                         logger.error(f"❌ Parse error {len(stats['parse_errors'])}: {e}", exc_info=True)
                     continue
             
-            # ✅ Enhanced Logging
+            # ==================== DEBUG: UNKNOWN ====================
+            unknown_txs = [tx for tx in transactions if tx.get('type') == 'UNKNOWN']
+            failed_count = len(unknown_txs) - stats.get('unknown_parsed', 0)
+            
+            if failed_count > 0:
+                logger.warning(f"\n{'='*80}\n⚠️ Failed UNKNOWN: {failed_count}/{len(unknown_txs)}\n{'='*80}")
+                
+                logged = 0
+                for tx in transactions:
+                    if tx.get('type') != 'UNKNOWN' or logged >= 3:
+                        continue
+                    
+                    sig = tx.get('signature', 'unknown')
+                    if not any(t.get('transaction_hash') == sig for t in trades):
+                        logged += 1
+                        
+                        compact = {
+                            'sig': sig[:12],
+                            'timestamp': tx.get('timestamp'),
+                            'tokenTransfers': [
+                                {
+                                    'mint': t.get('mint', '')[:8],
+                                    'amount': t.get('tokenAmount'),
+                                    'from': t.get('fromUserAccount', '')[:8] if t.get('fromUserAccount') else None,
+                                    'to': t.get('toUserAccount', '')[:8] if t.get('toUserAccount') else None,
+                                }
+                                for t in tx.get('tokenTransfers', [])[:5]
+                            ],
+                            'instructions': [i.get('programId', '')[:12] for i in tx.get('instructions', [])[:5]],
+                        }
+                        
+                        logger.warning(f"\n🔍 FAILED #{logged}:\n{json.dumps(compact, indent=2)}")
+            # ==================== ENDE DEBUG ====================
+            
             logger.info(
                 f"✅ Helius: {len(trades)} trades returned "
                 f"(SWAP: {stats['swap_count']}, "
@@ -472,16 +466,12 @@ class HeliusCollector(DEXCollector):
                 f"Parse errors: {len(stats['parse_errors'])})"
             )
             
-            # Warning if no trades despite having transactions
             if len(trades) == 0 and (stats['swap_count'] > 0 or stats['unknown_parsed'] > 0):
                 logger.warning(
                     f"⚠️ Found {stats['swap_count']} SWAP + {stats['unknown_parsed']} parsed UNKNOWN "
-                    f"but no valid trades in time range! Parse errors: {len(stats['parse_errors'])}"
+                    f"but no valid trades in time range!"
                 )
-                if stats['parse_errors']:
-                    logger.warning(f"Parse error examples: {stats['parse_errors'][:3]}")
             
-            # Info about liquidity events
             if stats['liquidity_events'] > 0:
                 logger.info(
                     f"💧 Liquidity Events: {stats['liquidity_events']} total "
