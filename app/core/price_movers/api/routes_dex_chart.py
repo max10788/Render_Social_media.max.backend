@@ -483,7 +483,6 @@ async def get_dex_candle_movers(
     try:
         validate_dex_params(dex_exchange, symbol, timeframe)
         
-        # Check if timestamp is recent
         now = datetime.now(timezone.utc)
         if candle_timestamp.tzinfo is None:
             candle_timestamp = candle_timestamp.replace(tzinfo=timezone.utc)
@@ -527,7 +526,6 @@ async def get_dex_candle_movers(
 
         logger.debug("Fetching DEX candle and trades...")
 
-        # Get candle
         current_candle, source = await fetch_current_dex_candle(
             unified_collector=unified_collector,
             dex_exchange=dex_exchange,
@@ -542,7 +540,6 @@ async def get_dex_candle_movers(
                 detail="Failed to fetch current candle from DEX"
             )
         
-        # Get trades
         trades_result = await unified_collector.fetch_trades(
             exchange=dex_exchange.lower(),
             symbol=symbol,
@@ -564,6 +561,39 @@ async def get_dex_candle_movers(
             exchange=dex_exchange,
             top_n=top_n_wallets
         )
+
+        # --- Impact Score Calculation ---
+        impact_calculator = ImpactCalculator()
+        total_volume = current_candle.get('volume', 0.0)
+        logger.debug(f"Total candle volume for impact calc: {total_volume}")
+
+        # Group trades by wallet for the calculator
+        wallet_activities = {}
+        for trade in trades_result.get('trades', []):
+            wallet_addr = trade.get('wallet_address')
+            if wallet_addr:
+                if wallet_addr not in wallet_activities:
+                    wallet_activities[wallet_addr] = []
+                wallet_activities[wallet_addr].append(trade)
+
+        # Calculate impact scores
+        impact_results = impact_calculator.calculate_batch_impact(
+            wallet_activities=wallet_activities,
+            candle_data=current_candle,
+            total_volume=total_volume
+        )
+
+        # Update the top_movers list with impact scores
+        for mover in dex_movers:
+            wallet_id = mover.get('wallet_address') # or the key used in the response
+            if wallet_id in impact_results:
+                impact_data = impact_results[wallet_id]
+                # Add impact score to the existing mover data
+                mover['total_impact_score'] = impact_data.get('impact_score', 0.0)
+                mover['impact_components'] = impact_data.get('components', {})
+                mover['impact_level'] = impact_data.get('impact_level', 'none')
+
+        # --- End Impact Score Calculation ---
 
         performance_ms = (time.time() - start_perf) * 1000
 
@@ -603,7 +633,6 @@ async def get_dex_candle_movers(
             status_code=500,
             detail=f"Failed to load wallet movers: {str(e)}"
         )
-
 
 @router.get(
     "/health",
