@@ -516,7 +516,7 @@ class HeliusCollector(DEXCollector):
             # ==================== STEP 1: Get Signatures ====================
             
             # Helius RPC getSignaturesForAddress
-            rpc_url = f"{self.helius_api_url}/?api-key={self.api_key}"
+            rpc_url = f"https://mainnet.helius-rpc.com/?api-key={self.api_key}"
             
             payload = {
                 "jsonrpc": "2.0",
@@ -532,24 +532,26 @@ class HeliusCollector(DEXCollector):
             
             logger.info(f"📡 Calling Helius RPC for wallet signatures...")
             
-            response = requests.post(
+            session = await self._get_session()
+            
+            async with session.post(
                 rpc_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"❌ RPC call failed: {response.status_code}")
-                return {
-                    'total_transactions': 0,
-                    'pair_trades': [],
-                    'other_activities': [],
-                    'token_summary': {}
-                }
-            
-            result = response.json()
-            signatures = result.get('result', [])
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                
+                if response.status != 200:
+                    logger.error(f"❌ RPC call failed: {response.status}")
+                    return {
+                        'total_transactions': 0,
+                        'pair_trades': [],
+                        'other_activities': [],
+                        'token_summary': {}
+                    }
+                
+                result = await response.json()
+                signatures = result.get('result', [])
             
             logger.info(f"📦 Found {len(signatures)} signatures for wallet")
             
@@ -569,26 +571,27 @@ class HeliusCollector(DEXCollector):
             
             logger.info(f"🌐 Parsing {len(sig_list)} transactions via Enhanced API...")
             
-            enhanced_url = f"{self.helius_api_url}/v0/transactions?api-key={self.api_key}"
+            enhanced_url = f"{self.API_BASE}/v0/transactions"
             
-            enhanced_response = requests.post(
+            async with session.post(
                 enhanced_url,
                 json={"transactions": sig_list},
+                params={'api-key': self.api_key},
                 headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-            
-            if enhanced_response.status_code != 200:
-                logger.error(f"❌ Enhanced API failed: {enhanced_response.status_code}")
-                return {
-                    'total_transactions': 0,
-                    'pair_trades': [],
-                    'other_activities': [],
-                    'token_summary': {}
-                }
-            
-            transactions = enhanced_response.json()
-            logger.info(f"📦 Received {len(transactions)} parsed transactions")
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as enhanced_response:
+                
+                if enhanced_response.status != 200:
+                    logger.error(f"❌ Enhanced API failed: {enhanced_response.status}")
+                    return {
+                        'total_transactions': 0,
+                        'pair_trades': [],
+                        'other_activities': [],
+                        'token_summary': {}
+                    }
+                
+                transactions = await enhanced_response.json()
+                logger.info(f"📦 Received {len(transactions)} parsed transactions")
             
             # ==================== STEP 3: Categorize Transactions ====================
             
@@ -670,7 +673,6 @@ class HeliusCollector(DEXCollector):
                 'other_activities': [],
                 'token_summary': {}
             }
-
 
 # ============================================================================
 # HELPER: Resolve Symbol to Token Address
