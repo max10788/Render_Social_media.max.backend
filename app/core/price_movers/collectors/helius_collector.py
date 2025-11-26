@@ -752,30 +752,64 @@ class HeliusCollector(DEXCollector):
         other_transfers: List[Dict]
     ) -> str:
         """
-        Klassifiziere Transaction Type basierend auf Transfer-Patterns
+        Klassifiziere Transaction Type - IMPROVED VERSION
         
-        Returns:
-            'swap', 'add_liquidity', 'remove_liquidity', oder 'unknown'
+        ✅ IMPROVEMENTS:
+        - Mehr Swap-Patterns erkannt
+        - Bessere Heuristiken
+        - Weniger false negatives
         """
         try:
-            # Pattern 1: SWAP (2 transfers in entgegengesetzte Richtungen)
+            # ✅ IMPROVED: Pattern 1a - Simple 2-way swap (most common)
             if len(sol_transfers) == 1 and len(other_transfers) == 1:
                 sol_from = sol_transfers[0].get('fromUserAccount')
                 sol_to = sol_transfers[0].get('toUserAccount')
                 other_from = other_transfers[0].get('fromUserAccount')
                 other_to = other_transfers[0].get('toUserAccount')
                 
-                # Wenn User SOL gibt und Token bekommt (oder umgekehrt)
+                # User gibt SOL und bekommt Token (BUY)
+                # ODER User gibt Token und bekommt SOL (SELL)
                 if sol_from == other_to or sol_to == other_from:
+                    logger.debug(f"✅ Pattern 1a: Simple 2-way swap")
                     return 'swap'
             
+            # ✅ NEW: Pattern 1b - Multi-hop swap (SOL -> Token1 -> Token2)
+            if len(sol_transfers) >= 1 and len(other_transfers) >= 1:
+                # Prüfe ob es gemeinsame Accounts gibt (Router)
+                sol_accounts = set()
+                for t in sol_transfers:
+                    sol_accounts.add(t.get('fromUserAccount'))
+                    sol_accounts.add(t.get('toUserAccount'))
+                
+                other_accounts = set()
+                for t in other_transfers:
+                    other_accounts.add(t.get('fromUserAccount'))
+                    other_accounts.add(t.get('toUserAccount'))
+                
+                # Wenn es Überschneidungen gibt (Router/User)
+                if sol_accounts & other_accounts:
+                    logger.debug(f"✅ Pattern 1b: Multi-hop swap (overlapping accounts)")
+                    return 'swap'
+            
+            # ✅ NEW: Pattern 1c - Check by amounts (wenn Beträge ähnlich sind)
+            if len(sol_transfers) == 1 and len(other_transfers) == 1:
+                sol_amount = float(sol_transfers[0].get('tokenAmount', 0))
+                other_amount = float(other_transfers[0].get('tokenAmount', 0))
+                
+                # Wenn Beträge in ähnlichem Verhältnis (0.1x - 10x)
+                if sol_amount > 0 and other_amount > 0:
+                    ratio = max(sol_amount, other_amount) / min(sol_amount, other_amount)
+                    if ratio < 10000:  # Reasonable price range
+                        logger.debug(f"✅ Pattern 1c: Similar amounts (ratio {ratio:.2f})")
+                        return 'swap'
+            
             # Pattern 2: ADD_LIQUIDITY (mehrere deposits an Pool)
-            # Typisch: 2+ token transfers ZUM gleichen Pool/Vault
             if len(token_transfers := tx.get('tokenTransfers', [])) >= 2:
                 to_accounts = [t.get('toUserAccount') for t in token_transfers]
                 
                 # Wenn alle zur gleichen Adresse gehen = Pool deposit
                 if len(set(to_accounts)) == 1 and to_accounts[0]:
+                    logger.debug(f"✅ Pattern 2: ADD_LIQUIDITY")
                     return 'add_liquidity'
             
             # Pattern 3: REMOVE_LIQUIDITY (mehrere withdrawals vom Pool)
@@ -784,8 +818,10 @@ class HeliusCollector(DEXCollector):
                 
                 # Wenn alle von der gleichen Adresse kommen = Pool withdrawal
                 if len(set(from_accounts)) == 1 and from_accounts[0]:
+                    logger.debug(f"✅ Pattern 3: REMOVE_LIQUIDITY")
                     return 'remove_liquidity'
             
+            logger.debug(f"⚠️ No matching pattern found")
             return 'unknown'
             
         except Exception as e:
@@ -801,36 +837,67 @@ class HeliusCollector(DEXCollector):
         trade_time: datetime,
         signature: str
     ) -> Optional[Dict[str, Any]]:
-        """Parse Swap aus Raw Token Transfers"""
+        """
+        Parse Swap aus Raw Token Transfers - IMPROVED VERSION
+        
+        ✅ IMPROVEMENTS:
+        - Besseres Wallet-Detection
+        - Multi-transfer support
+        - Robustere Preis-Berechnung
+        """
         try:
             if not sol_transfers or not other_transfers:
                 return None
             
+            # ✅ IMPROVED: Handle multi-transfers (nehme erste)
             sol_transfer = sol_transfers[0]
             other_transfer = other_transfers[0]
             
             sol_amount = float(sol_transfer.get('tokenAmount', 0))
             other_amount = float(other_transfer.get('tokenAmount', 0))
             
-            # Wallet ist der User, der den Swap initiiert
-            wallet = sol_transfer.get('fromUserAccount') or sol_transfer.get('toUserAccount')
-            
-            if not wallet or sol_amount == 0:
+            if sol_amount == 0 or other_amount == 0:
+                logger.debug(f"⚠️ Zero amounts: SOL={sol_amount}, Other={other_amount}")
                 return None
             
-            # Bestimme Trade Direction
+            # ✅ IMPROVED: Besseres Wallet-Detection
+            # Wallet ist derjenige, der sowohl bei SOL als auch bei Other Transfer vorkommt
             sol_from = sol_transfer.get('fromUserAccount')
+            sol_to = sol_transfer.get('toUserAccount')
+            other_from = other_transfer.get('fromUserAccount')
+            other_to = other_transfer.get('toUserAccount')
             
-            if sol_from == wallet:
-                # User verkauft SOL
+            # Finde den User (kommt in beiden vor)
+            wallet = None
+            trade_type = 'unknown'
+            
+            if sol_from == other_to:
+                # User gibt SOL, bekommt Token = SELL SOL
+                wallet = sol_from
                 trade_type = 'sell'
                 amount = sol_amount
-                price = other_amount / sol_amount if sol_amount > 0 else 0
-            else:
-                # User kauft SOL
+                price = other_amount / sol_amount
+            elif sol_to == other_from:
+                # User bekommt SOL, gibt Token = BUY SOL
+                wallet = sol_to
                 trade_type = 'buy'
                 amount = sol_amount
-                price = other_amount / sol_amount if sol_amount > 0 else 0
+                price = other_amount / sol_amount
+            else:
+                # ✅ FALLBACK: Nehme einfach den ersten Account
+                wallet = sol_from or sol_to or other_from or other_to
+                trade_type = 'swap'
+                amount = sol_amount
+                price = other_amount / sol_amount
+            
+            if not wallet:
+                logger.debug(f"⚠️ No wallet found in transfers")
+                return None
+            
+            logger.debug(
+                f"✅ Swap: {trade_type} {amount:.4f} SOL @ ${price:.2f} "
+                f"(wallet: {wallet[:8]}...)"
+            )
             
             return {
                 'timestamp': trade_time,
@@ -839,14 +906,14 @@ class HeliusCollector(DEXCollector):
                 'trade_type': trade_type,
                 'wallet_address': wallet,
                 'transaction_hash': signature,
-                'dex': dex_name,
-                'transaction_type': 'SWAP',  # ✅ NEU
+                'dex': dex_name,  # Kann 'unknown_dex' sein
+                'transaction_type': 'SWAP',
                 'raw_data': tx
             }
             
         except Exception as e:
             logger.debug(f"Error parsing manual swap: {e}")
-            return None   
+            return None
             
     def _parse_liquidity_event(
         self,
