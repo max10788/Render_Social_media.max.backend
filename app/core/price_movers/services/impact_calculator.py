@@ -215,33 +215,51 @@ class ImpactCalculator:
         total_volume: float
     ) -> float:
         """
-        ✅ FIXED: Berechne Volume Ratio - USD/USD statt SOL/USD
-        
-        Args:
-            wallet_trades: Liste der Wallet-Trades
-            total_volume: Gesamt-Volume der Candle IN USD
-            
-        Returns:
-            Volume Ratio (0-1)
+        Berechne Volume Ratio - ENHANCED DEBUG VERSION
         """
         try:
-            if not wallet_trades or total_volume <= 0:
+            logger.info(f"\n{'='*80}")
+            logger.info(f"🔍 _calculate_volume_ratio START")
+            logger.info(f"{'='*80}")
+            
+            # Check inputs
+            logger.info(f"Input Check:")
+            logger.info(f"  wallet_trades: {len(wallet_trades) if wallet_trades else 0} trades")
+            logger.info(f"  total_volume: {total_volume}")
+            
+            if not wallet_trades:
+                logger.warning(f"❌ No wallet trades -> return 0.0")
+                return 0.0
+                
+            if total_volume <= 0:
+                logger.warning(f"❌ Total volume <= 0 -> return 0.0")
                 return 0.0
             
-            # ✅ FIX: Berechne Wallet Volume IN USD (amount * price)
-            wallet_volume_usd = sum(
-                float(t.get('amount', 0)) * float(t.get('price', 0))
-                for t in wallet_trades
-            )
+            # Calculate wallet volume USD
+            logger.info(f"\nCalculating Wallet Volume USD:")
+            wallet_volume_usd = 0.0
             
-            # DEBUG
-            logger.debug(
-                f"💰 Volume: Wallet=${wallet_volume_usd:.2f}, "
-                f"Total=${total_volume:.2f}, "
-                f"Ratio={wallet_volume_usd/total_volume:.4f}"
-            )
+            for i, trade in enumerate(wallet_trades):
+                amount = float(trade.get('amount', 0))
+                price = float(trade.get('price', 0))
+                trade_value = amount * price
+                
+                logger.info(f"  Trade {i+1}: amount={amount:.4f}, price={price:.2f}, value=${trade_value:.2f}")
+                
+                wallet_volume_usd += trade_value
+            
+            logger.info(f"\n💰 RESULT:")
+            logger.info(f"  Wallet Volume USD: ${wallet_volume_usd:.2f}")
+            logger.info(f"  Total Volume: ${total_volume:.2f}")
+            
+            # Calculate ratio
+            if total_volume <= 0:
+                logger.warning(f"❌ Total volume is 0, cannot divide -> return 0.0")
+                return 0.0
             
             volume_ratio = wallet_volume_usd / total_volume
+            
+            logger.info(f"  Volume Ratio (RAW): {volume_ratio:.6f} ({volume_ratio*100:.2f}%)")
             
             # Sanity check
             if volume_ratio > 1.0:
@@ -252,10 +270,19 @@ class ImpactCalculator:
                 )
                 volume_ratio = 1.0
             
+            logger.info(f"  Volume Ratio (FINAL): {volume_ratio:.6f} ({volume_ratio*100:.2f}%)")
+            logger.info(f"{'='*80}\n")
+            
             return volume_ratio
             
         except Exception as e:
-            logger.error(f"❌ Volume ratio error: {e}", exc_info=True)
+            logger.error(f"\n{'='*80}")
+            logger.error(f"❌ EXCEPTION in _calculate_volume_ratio!")
+            logger.error(f"{'='*80}")
+            logger.error(f"Error: {e}", exc_info=True)
+            logger.error(f"Wallet trades: {wallet_trades}")
+            logger.error(f"Total volume: {total_volume}")
+            logger.error(f"{'='*80}\n")
             return 0.0
     
     def _calculate_timing_score(
