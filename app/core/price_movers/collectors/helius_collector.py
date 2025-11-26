@@ -599,6 +599,14 @@ class HeliusCollector(DEXCollector):
             other_activities = []
             token_counter = {}
             
+            # Log transaction types for debugging
+            tx_type_counts = {}
+            for tx in transactions:
+                tx_type = tx.get('type', 'UNKNOWN')
+                tx_type_counts[tx_type] = tx_type_counts.get(tx_type, 0) + 1
+            
+            logger.info(f"📊 Transaction type breakdown: {tx_type_counts}")
+            
             for tx in transactions:
                 tx_type = tx.get('type', 'UNKNOWN')
                 token_transfers = tx.get('tokenTransfers', [])
@@ -609,9 +617,15 @@ class HeliusCollector(DEXCollector):
                 involves_target_token = False
                 if target_token_address:
                     for transfer in token_transfers:
-                        if transfer.get('mint', '').startswith(target_token_address[:8]):
+                        mint = transfer.get('mint', '')
+                        # Check full address match, not just prefix
+                        if mint == target_token_address or mint.startswith(target_token_address[:16]):
                             involves_target_token = True
+                            logger.debug(f"✅ TX {signature[:8]}... involves target token {mint[:8]}...")
                             break
+                else:
+                    # If no target token specified, consider all transactions
+                    involves_target_token = True
                 
                 # Count tokens
                 for transfer in token_transfers:
@@ -629,21 +643,25 @@ class HeliusCollector(DEXCollector):
                 
                 if involves_target_token or not target_token_address:
                     # Try to parse as trade
+                    parsed = None
+                    
                     if tx_type == 'SWAP':
-                        parsed = self._parse_helius_enhanced_swap(tx)
+                        parsed = self._parse_helius_enhanced_swap(tx, symbol=None)
                         if parsed:
+                            logger.debug(f"✅ Parsed SWAP: {signature[:8]}...")
                             pair_trades.append(parsed)
                             continue
                     
                     # Try UNKNOWN parsing
                     elif tx_type == 'UNKNOWN':
-                        parsed = self._parse_unknown_transaction(tx)
+                        parsed = self._parse_unknown_transaction(tx, symbol=None)
                         if parsed:
+                            logger.debug(f"✅ Parsed UNKNOWN: {signature[:8]}...")
                             pair_trades.append(parsed)
                             continue
                     
-                    # Add as activity if involves target token
-                    if involves_target_token:
+                    # If we couldn't parse it but it involves the target token
+                    if not parsed and involves_target_token:
                         other_activities.append(tx_summary)
                 else:
                     # Other token activity
