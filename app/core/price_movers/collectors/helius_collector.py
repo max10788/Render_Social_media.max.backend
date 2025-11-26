@@ -486,6 +486,216 @@ class HeliusCollector(DEXCollector):
         except Exception as e:
             logger.error(f"❌ Helius fetch error: {e}", exc_info=True)
             return []
+
+    async def fetch_wallet_trades(
+        self,
+        wallet_address: str,
+        target_token_address: Optional[str] = None,
+        limit: int = 1000
+    ) -> Dict[str, Any]:
+        """
+        🎯 Holt ALLE Transaktionen einer Wallet und filtert nach Token-Pair
+        
+        Args:
+            wallet_address: Die Wallet-Adresse (z.B. Solana Address)
+            target_token_address: Token Address zum Filtern (z.B. USDT)
+            limit: Max Anzahl Transactions (100-1000)
+        
+        Returns:
+            {
+                'total_transactions': int,
+                'pair_trades': [...],        # Trades mit dem Target Token
+                'other_activities': [...],   # Andere Transaktionen
+                'token_summary': {...}       # Zusammenfassung pro Token
+            }
+        """
+        try:
+            logger.info(f"🔍 Fetching transactions for wallet: {wallet_address[:16]}...")
+            logger.info(f"🎯 Target token: {target_token_address[:16] if target_token_address else 'All tokens'}...")
+            
+            # ==================== STEP 1: Get Signatures ====================
+            
+            # Helius RPC getSignaturesForAddress
+            rpc_url = f"{self.helius_api_url}/?api-key={self.api_key}"
+            
+            payload = {
+                "jsonrpc": "2.0",
+                "id": "wallet-sigs",
+                "method": "getSignaturesForAddress",
+                "params": [
+                    wallet_address,
+                    {
+                        "limit": limit,
+                    }
+                ]
+            }
+            
+            logger.info(f"📡 Calling Helius RPC for wallet signatures...")
+            
+            response = requests.post(
+                rpc_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"❌ RPC call failed: {response.status_code}")
+                return {
+                    'total_transactions': 0,
+                    'pair_trades': [],
+                    'other_activities': [],
+                    'token_summary': {}
+                }
+            
+            result = response.json()
+            signatures = result.get('result', [])
+            
+            logger.info(f"📦 Found {len(signatures)} signatures for wallet")
+            
+            if not signatures:
+                logger.warning(f"⚠️ No signatures found for wallet {wallet_address[:16]}...")
+                return {
+                    'total_transactions': 0,
+                    'pair_trades': [],
+                    'other_activities': [],
+                    'token_summary': {}
+                }
+            
+            # Extract nur die Signatures
+            sig_list = [s['signature'] for s in signatures[:100]]  # Max 100 auf einmal
+            
+            # ==================== STEP 2: Parse Transactions ====================
+            
+            logger.info(f"🌐 Parsing {len(sig_list)} transactions via Enhanced API...")
+            
+            enhanced_url = f"{self.helius_api_url}/v0/transactions?api-key={self.api_key}"
+            
+            enhanced_response = requests.post(
+                enhanced_url,
+                json={"transactions": sig_list},
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+            
+            if enhanced_response.status_code != 200:
+                logger.error(f"❌ Enhanced API failed: {enhanced_response.status_code}")
+                return {
+                    'total_transactions': 0,
+                    'pair_trades': [],
+                    'other_activities': [],
+                    'token_summary': {}
+                }
+            
+            transactions = enhanced_response.json()
+            logger.info(f"📦 Received {len(transactions)} parsed transactions")
+            
+            # ==================== STEP 3: Categorize Transactions ====================
+            
+            pair_trades = []
+            other_activities = []
+            token_counter = {}
+            
+            for tx in transactions:
+                tx_type = tx.get('type', 'UNKNOWN')
+                token_transfers = tx.get('tokenTransfers', [])
+                signature = tx.get('signature', 'unknown')
+                timestamp = tx.get('timestamp')
+                
+                # Check if transaction involves target token
+                involves_target_token = False
+                if target_token_address:
+                    for transfer in token_transfers:
+                        if transfer.get('mint', '').startswith(target_token_address[:8]):
+                            involves_target_token = True
+                            break
+                
+                # Count tokens
+                for transfer in token_transfers:
+                    mint = transfer.get('mint', 'unknown')[:16]
+                    token_counter[mint] = token_counter.get(mint, 0) + 1
+                
+                # Categorize
+                tx_summary = {
+                    'signature': signature,
+                    'type': tx_type,
+                    'timestamp': timestamp,
+                    'token_count': len(token_transfers),
+                    'tokens': [t.get('mint', '')[:16] for t in token_transfers],
+                }
+                
+                if involves_target_token or not target_token_address:
+                    # Try to parse as trade
+                    if tx_type == 'SWAP':
+                        parsed = self._parse_helius_enhanced_swap(tx)
+                        if parsed:
+                            pair_trades.append(parsed)
+                            continue
+                    
+                    # Try UNKNOWN parsing
+                    elif tx_type == 'UNKNOWN':
+                        parsed = self._parse_unknown_transaction(tx)
+                        if parsed:
+                            pair_trades.append(parsed)
+                            continue
+                    
+                    # Add as activity if involves target token
+                    if involves_target_token:
+                        other_activities.append(tx_summary)
+                else:
+                    # Other token activity
+                    other_activities.append(tx_summary)
+            
+            logger.info(
+                f"✅ Wallet Analysis:\n"
+                f"   Total Transactions: {len(transactions)}\n"
+                f"   Pair Trades: {len(pair_trades)}\n"
+                f"   Other Activities: {len(other_activities)}\n"
+                f"   Unique Tokens: {len(token_counter)}"
+            )
+            
+            return {
+                'total_transactions': len(transactions),
+                'pair_trades': pair_trades,
+                'other_activities': other_activities,
+                'token_summary': token_counter,
+                'wallet_address': wallet_address,
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Wallet trades fetch error: {e}", exc_info=True)
+            return {
+                'total_transactions': 0,
+                'pair_trades': [],
+                'other_activities': [],
+                'token_summary': {}
+            }
+
+
+# ============================================================================
+# HELPER: Resolve Symbol to Token Address
+# ============================================================================
+
+    def _resolve_token_address(self, symbol: str) -> Optional[str]:
+        """Resolve trading symbol to token address"""
+        # Extrahiere Token aus Symbol (z.B. SOL/USDT → USDT)
+        if '/' in symbol:
+            base, quote = symbol.split('/', 1)
+            # Use quote token (USDT, USDC, etc.)
+            token = quote
+        else:
+            token = symbol
+        
+        # Token Mapping
+        token_addresses = {
+            'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+            'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            'SOL': 'So11111111111111111111111111111111111111112',
+            'BONK': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
+            'WIF': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',
+        }
+        
+        return token_addresses.get(token.upper())
     
     def _parse_helius_enhanced_swap(
         self, 
