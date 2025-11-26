@@ -592,6 +592,28 @@ class HeliusCollector(DEXCollector):
                 
                 transactions = await enhanced_response.json()
                 logger.info(f"📦 Received {len(transactions)} parsed transactions")
+                
+                # Debug: Log sample transaction structure
+                if transactions and len(transactions) > 0:
+                    sample_tx = transactions[0]
+                    logger.info(
+                        f"📋 Sample transaction structure:\n"
+                        f"   Type: {sample_tx.get('type')}\n"
+                        f"   Signature: {sample_tx.get('signature', 'N/A')[:16]}...\n"
+                        f"   Token Transfers: {len(sample_tx.get('tokenTransfers', []))}\n"
+                        f"   Native Transfers: {len(sample_tx.get('nativeTransfers', []))}\n"
+                        f"   Events: {list(sample_tx.get('events', {}).keys())}"
+                    )
+                    
+                    # Log token mints involved
+                    token_mints = set()
+                    for tx in transactions[:10]:
+                        for transfer in tx.get('tokenTransfers', []):
+                            token_mints.add(transfer.get('mint', 'unknown')[:16])
+                    
+                    logger.info(f"📋 Token mints in first 10 transactions: {list(token_mints)[:5]}")
+                    if target_token_address:
+                        logger.info(f"🎯 Looking for token: {target_token_address[:16]}...")
             
             # ==================== STEP 3: Categorize Transactions ====================
             
@@ -674,6 +696,25 @@ class HeliusCollector(DEXCollector):
                 f"   Other Activities: {len(other_activities)}\n"
                 f"   Unique Tokens: {len(token_counter)}"
             )
+            
+            # Debug: If no trades found, log why
+            if len(pair_trades) == 0 and len(transactions) > 0:
+                logger.warning(
+                    f"⚠️ No trades parsed from {len(transactions)} transactions\n"
+                    f"   Target token: {target_token_address[:16] if target_token_address else 'None'}\n"
+                    f"   TX Types: {tx_type_counts}\n"
+                    f"   Token counter: {list(token_counter.items())[:5]}"
+                )
+                
+                # Sample a few transactions that weren't parsed
+                for i, tx in enumerate(transactions[:3]):
+                    logger.warning(
+                        f"\n📋 Unparsed TX #{i+1}:\n"
+                        f"   Signature: {tx.get('signature', 'N/A')[:16]}...\n"
+                        f"   Type: {tx.get('type')}\n"
+                        f"   Token Transfers: {len(tx.get('tokenTransfers', []))}\n"
+                        f"   Tokens: {[t.get('mint', '')[:8] for t in tx.get('tokenTransfers', [])[:3]]}"
+                    )
             
             return {
                 'total_transactions': len(transactions),
