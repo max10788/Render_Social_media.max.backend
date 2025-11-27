@@ -651,7 +651,7 @@ class HybridPriceMoverAnalyzer:
         top_n: int
     ) -> List[Dict]:
         """
-        Analyze DEX trades (wallet-based) - COMPLETE WITH DEBUGGING
+        Analyze DEX trades (wallet-based) - MAXIMUM DEBUG VERSION
         
         Returns:
             List of wallet entities with impact scores
@@ -716,32 +716,109 @@ class HybridPriceMoverAnalyzer:
         
         logger.info(f"✅ Step 2: Grouped into {len(wallet_groups)} unique wallets")
         
-        # ==================== STEP 3: Prepare Candle Data ====================
+        # ==================== STEP 3: CANDLE VALIDATION & DEBUG ====================
+        
+        logger.info(f"\n{'─'*80}")
+        logger.info(f"📊 CANDLE OBJECT VALIDATION")
+        logger.info(f"{'─'*80}")
+        
+        logger.info(f"Candle Type: {type(candle)}")
+        logger.info(f"Candle Dict: {candle.__dict__ if hasattr(candle, '__dict__') else 'N/A'}")
+        
+        # Check each field
+        candle_fields_status = {}
+        for field in ['timestamp', 'open', 'high', 'low', 'close', 'volume']:
+            value = getattr(candle, field, 'MISSING')
+            value_type = type(value).__name__
+            is_none = value is None
+            
+            candle_fields_status[field] = {
+                'value': value,
+                'type': value_type,
+                'is_none': is_none
+            }
+            
+            status = "❌ NONE" if is_none else "✅" if value != 'MISSING' else "❌ MISSING"
+            logger.info(f"  {field}: {value} (type: {value_type}) {status}")
+        
+        # Test price_change_pct property
+        logger.info(f"\n🧪 Testing price_change_pct Property:")
+        try:
+            price_change_test = candle.price_change_pct
+            logger.info(f"  ✅ price_change_pct = {price_change_test:.4f}%")
+        except Exception as e:
+            logger.error(f"  ❌ price_change_pct FAILED: {e}", exc_info=True)
+            price_change_test = 0.0
+            logger.warning(f"  ⚠️ Using fallback value: 0.0")
+        
+        # Create candle_data dict SAFELY
+        logger.info(f"\n🔧 Creating candle_data dict...")
         
         candle_data = {
             'timestamp': candle.timestamp,
-            'open': candle.open,
-            'high': candle.high,
-            'low': candle.low,
-            'close': candle.close,
-            'volume': candle.volume,
-            'price_change_pct': candle.price_change_pct
+            'open': candle.open if candle.open is not None else 0.0,
+            'high': candle.high if candle.high is not None else 0.0,
+            'low': candle.low if candle.low is not None else 0.0,
+            'close': candle.close if candle.close is not None else 0.0,
+            'volume': candle.volume if candle.volume is not None else 0.0,
+            'price_change_pct': price_change_test  # ← Use pre-calculated safe value
         }
         
+        logger.info(f"✅ candle_data dict created:")
+        for key, value in candle_data.items():
+            if key != 'timestamp':
+                logger.info(f"  {key}: {value} (type: {type(value).__name__})")
+        
         logger.info(
-            f"📊 Candle: volume={candle.volume:.4f}, "
-            f"price_change={candle.price_change_pct:.2f}%, "
-            f"open={candle.open:.2f}, close={candle.close:.2f}"
+            f"\n📊 Candle Summary: "
+            f"volume={candle_data['volume']:.4f}, "
+            f"price_change={candle_data['price_change_pct']:.2f}%, "
+            f"open={candle_data['open']:.2f}, "
+            f"close={candle_data['close']:.2f}"
         )
         
-        # ==================== CRITICAL CHECK ====================
+        # ==================== CRITICAL VALIDATION ====================
         
-        if candle.volume == 0:
+        logger.info(f"\n{'─'*80}")
+        logger.info(f"⚠️ CRITICAL VALIDATION")
+        logger.info(f"{'─'*80}")
+        
+        critical_issues = []
+        
+        if candle_data['volume'] == 0:
+            critical_issues.append("Candle volume is 0")
             logger.error(
-                f"❌ CRITICAL: Candle volume is 0! This will cause all impact scores to be 0.\n"
-                f"   This means ImpactCalculator cannot calculate volume_ratio.\n"
+                f"❌ CRITICAL: Candle volume is 0!\n"
+                f"   This will cause all impact scores to be 0.\n"
+                f"   ImpactCalculator cannot calculate volume_ratio.\n"
                 f"   Check if candle data is being fetched correctly."
             )
+        
+        if candle_data['price_change_pct'] == 0:
+            logger.warning(
+                f"⚠️ WARNING: price_change_pct is 0\n"
+                f"   This may reduce price_correlation scores.\n"
+                f"   open={candle_data['open']}, close={candle_data['close']}"
+            )
+            critical_issues.append("price_change_pct is 0")
+        
+        if candle_data['open'] == 0 or candle_data['close'] == 0:
+            logger.error(
+                f"❌ CRITICAL: open or close is 0!\n"
+                f"   open={candle_data['open']}, close={candle_data['close']}\n"
+                f"   This indicates bad candle data."
+            )
+            critical_issues.append("open or close is 0")
+        
+        if critical_issues:
+            logger.error(f"\n🚨 CRITICAL ISSUES DETECTED: {len(critical_issues)}")
+            for issue in critical_issues:
+                logger.error(f"   - {issue}")
+            logger.error(f"🚨 Impact calculation may fail or return zeros!\n")
+        else:
+            logger.info(f"✅ All critical validations passed")
+        
+        logger.info(f"{'─'*80}\n")
         
         # ==================== STEP 4: Analyze Each Wallet ====================
         
@@ -806,7 +883,7 @@ class HybridPriceMoverAnalyzer:
                     logger.info(f"\nPassing to ImpactCalculator:")
                     logger.info(f"   wallet_trades: {len(wallet_trades)} trades")
                     logger.info(f"   candle_data: {candle_data}")
-                    logger.info(f"   total_volume: {candle.volume:.4f} ← CRITICAL PARAMETER")
+                    logger.info(f"   total_volume: {candle_data['volume']:.4f} ← CRITICAL PARAMETER")
                     logger.info(f"   apply_liquidity_multipliers: True")
                     
                     # Show sample trades
@@ -824,26 +901,18 @@ class HybridPriceMoverAnalyzer:
                 
                 impact_result = None
                 try:
-                    # Set log level to DEBUG temporarily for first wallet
-                    if wallet_addr == list(wallet_groups.keys())[0]:
-                        old_level = logger.level
-                        logger.setLevel(logging.DEBUG)
-                    
                     impact_result = self.impact_calculator.calculate_impact_score(
                         wallet_trades=wallet_trades,
                         candle_data=candle_data,
-                        total_volume=candle.volume,  # ← CRITICAL: This MUST be > 0
+                        total_volume=candle_data['volume'],  # ← CRITICAL: This MUST be > 0
                         apply_liquidity_multipliers=True
                     )
-                    
-                    if wallet_addr == list(wallet_groups.keys())[0]:
-                        logger.setLevel(old_level)
                     
                     impact_score = impact_result['impact_score']
                     impact_components = impact_result['components']
                     impact_level = impact_result['impact_level']
                     
-                    # DEBUG: Log result
+                    # DEBUG: Log result for first wallet
                     if wallet_addr == list(wallet_groups.keys())[0]:
                         logger.info(f"\n{'='*80}")
                         logger.info(f"📊 IMPACT RESULT for {wallet_addr[:16]}...")
@@ -861,8 +930,8 @@ class HybridPriceMoverAnalyzer:
                         logger.warning(
                             f"⚠️ Zero impact for {wallet_addr[:16]}...\n"
                             f"   Wallet volume: {total_volume:.4f}\n"
-                            f"   Candle volume: {candle.volume:.4f}\n"
-                            f"   Volume ratio: {total_volume / candle.volume if candle.volume > 0 else 0:.6f}\n"
+                            f"   Candle volume: {candle_data['volume']:.4f}\n"
+                            f"   Volume ratio: {total_volume / candle_data['volume'] if candle_data['volume'] > 0 else 0:.6f}\n"
                             f"   Components: {impact_components}"
                         )
                     
@@ -878,13 +947,13 @@ class HybridPriceMoverAnalyzer:
                 
                 if not impact_result or impact_result['impact_score'] == 0:
                     # Simple fallback
-                    if candle.volume > 0:
-                        volume_ratio = total_volume / candle.volume
+                    if candle_data['volume'] > 0:
+                        volume_ratio = total_volume / candle_data['volume']
                     else:
                         volume_ratio = 0
                     
-                    if candle.open > 0:
-                        price_impact = abs(candle.close - candle.open) / candle.open
+                    if candle_data['open'] > 0:
+                        price_impact = abs(candle_data['close'] - candle_data['open']) / candle_data['open']
                     else:
                         price_impact = 0
                     
