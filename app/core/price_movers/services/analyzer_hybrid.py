@@ -379,12 +379,24 @@ class HybridPriceMoverAnalyzer:
         start_time: datetime,
         end_time: datetime
     ) -> Tuple[Candle, List[Trade]]:
-        """Fetch CEX data (pattern-based)"""
+        """Fetch CEX data (pattern-based) - ENHANCED LOGGING"""
+        
+        logger.info(f"\n{'='*80}")
+        logger.info(f"📥 FETCHING CEX DATA")
+        logger.info(f"{'='*80}")
+        logger.info(f"Exchange: {exchange}")
+        logger.info(f"Symbol: {symbol}")
+        logger.info(f"Timeframe: {timeframe}")
+        logger.info(f"Start: {start_time}")
+        logger.info(f"End: {end_time}")
+        
         if not self.unified_collector:
-            logger.warning("No unified collector, using mock data")
+            logger.warning("⚠️ No unified collector, using mock data")
             return await self._fetch_mock_data(start_time, end_time, "cex")
         
         try:
+            # Fetch trades
+            logger.debug(f"🔄 Calling unified_collector.fetch_trades...")
             result = await self.unified_collector.fetch_trades(
                 exchange=exchange,
                 symbol=symbol,
@@ -393,7 +405,10 @@ class HybridPriceMoverAnalyzer:
                 limit=5000
             )
             
-            # Also fetch candle
+            logger.info(f"✅ Trades fetched: {len(result.get('trades', []))} trades")
+            
+            # Fetch candle
+            logger.debug(f"🔄 Calling unified_collector.fetch_candle_data...")
             candle_data = await self.unified_collector.fetch_candle_data(
                 exchange=exchange,
                 symbol=symbol,
@@ -401,7 +416,44 @@ class HybridPriceMoverAnalyzer:
                 timestamp=start_time
             )
             
+            logger.info(f"✅ Candle data fetched")
+            logger.debug(f"📊 Raw Candle Data: {candle_data}")
+            
+            # Validate candle data
+            if not candle_data:
+                logger.error(f"❌ Empty candle_data returned!")
+                raise ValueError("Empty candle data")
+            
+            required_fields = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            missing_fields = [f for f in required_fields if f not in candle_data]
+            
+            if missing_fields:
+                logger.error(f"❌ Candle data missing fields: {missing_fields}")
+                logger.error(f"   Available fields: {list(candle_data.keys())}")
+                raise ValueError(f"Missing candle fields: {missing_fields}")
+            
+            # Check for None values
+            none_fields = [
+                f for f in required_fields 
+                if candle_data.get(f) is None
+            ]
+            
+            if none_fields:
+                logger.error(f"❌ Candle data has None values in: {none_fields}")
+                logger.error(f"   Candle data: {candle_data}")
+                raise ValueError(f"None values in candle fields: {none_fields}")
+            
+            # Create Candle object
+            logger.debug(f"🔄 Creating Candle object...")
             candle = Candle(**candle_data)
+            
+            logger.info(f"📊 Candle created:")
+            logger.info(f"   open: {candle.open}")
+            logger.info(f"   high: {candle.high}")
+            logger.info(f"   low: {candle.low}")
+            logger.info(f"   close: {candle.close}")
+            logger.info(f"   volume: {candle.volume}")
+            logger.info(f"   price_change_pct: {candle.price_change_pct}%")
             
             # Parse trades
             trades = []
@@ -418,11 +470,13 @@ class HybridPriceMoverAnalyzer:
                 )
                 trades.append(trade)
             
-            logger.info(f"✓ CEX data fetched: {len(trades)} trades")
+            logger.info(f"✅ CEX data complete: {len(trades)} trades")
+            logger.info(f"{'='*80}\n")
+            
             return candle, trades
             
         except Exception as e:
-            logger.error(f"CEX fetch error: {e}")
+            logger.error(f"❌ CEX fetch error: {e}", exc_info=True)
             raise
     
     async def _fetch_dex_data(
@@ -433,12 +487,24 @@ class HybridPriceMoverAnalyzer:
         start_time: datetime,
         end_time: datetime
     ) -> Tuple[Candle, List[Trade]]:
-        """Fetch DEX data (wallet-based)"""
+        """Fetch DEX data (wallet-based) - ENHANCED LOGGING"""
+        
+        logger.info(f"\n{'='*80}")
+        logger.info(f"📥 FETCHING DEX DATA")
+        logger.info(f"{'='*80}")
+        logger.info(f"Exchange: {exchange}")
+        logger.info(f"Symbol: {symbol}")
+        logger.info(f"Timeframe: {timeframe}")
+        logger.info(f"Start: {start_time}")
+        logger.info(f"End: {end_time}")
+        
         if not self.unified_collector:
-            logger.warning("No unified collector, using mock data")
+            logger.warning("⚠️ No unified collector, using mock data")
             return await self._fetch_mock_data(start_time, end_time, "dex")
         
         try:
+            # Fetch trades
+            logger.debug(f"🔄 Calling unified_collector.fetch_trades...")
             result = await self.unified_collector.fetch_trades(
                 exchange=exchange,
                 symbol=symbol,
@@ -447,7 +513,10 @@ class HybridPriceMoverAnalyzer:
                 limit=5000
             )
             
-            # Also fetch candle
+            logger.info(f"✅ Trades fetched: {len(result.get('trades', []))} trades")
+            
+            # Fetch candle
+            logger.debug(f"🔄 Calling unified_collector.fetch_candle_data...")
             candle_data = await self.unified_collector.fetch_candle_data(
                 exchange=exchange,
                 symbol=symbol,
@@ -455,11 +524,54 @@ class HybridPriceMoverAnalyzer:
                 timestamp=start_time
             )
             
+            logger.info(f"✅ Candle data fetched")
+            logger.debug(f"📊 Raw Candle Data: {candle_data}")
+            
+            # Validate candle data
+            if not candle_data:
+                logger.error(f"❌ Empty candle_data returned!")
+                raise ValueError("Empty candle data")
+            
+            required_fields = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            missing_fields = [f for f in required_fields if f not in candle_data]
+            
+            if missing_fields:
+                logger.error(f"❌ Candle data missing fields: {missing_fields}")
+                logger.error(f"   Available fields: {list(candle_data.keys())}")
+                raise ValueError(f"Missing candle fields: {missing_fields}")
+            
+            # Check for None values
+            none_fields = [
+                f for f in required_fields 
+                if candle_data.get(f) is None
+            ]
+            
+            if none_fields:
+                logger.error(f"❌ Candle data has None values in: {none_fields}")
+                logger.error(f"   Candle data: {candle_data}")
+                raise ValueError(f"None values in candle fields: {none_fields}")
+            
+            # Create Candle object
+            logger.debug(f"🔄 Creating Candle object...")
             candle = Candle(**candle_data)
+            
+            logger.info(f"📊 Candle created:")
+            logger.info(f"   open: {candle.open}")
+            logger.info(f"   high: {candle.high}")
+            logger.info(f"   low: {candle.low}")
+            logger.info(f"   close: {candle.close}")
+            logger.info(f"   volume: {candle.volume}")
+            logger.info(f"   price_change_pct: {candle.price_change_pct}%")
             
             # Parse trades WITH wallet addresses
             trades = []
+            wallets_with_address = 0
+            
             for t in result['trades']:
+                wallet_addr = t.get('wallet_address')
+                if wallet_addr:
+                    wallets_with_address += 1
+                
                 trade = Trade(
                     timestamp=t['timestamp'],
                     trade_type=t['trade_type'],
@@ -467,19 +579,21 @@ class HybridPriceMoverAnalyzer:
                     price=t['price'],
                     value_usd=t.get('value_usd', t['amount'] * t['price']),
                     trade_count=t.get('trade_count', 1),
-                    wallet_address=t.get('wallet_address'),  # 🎯 DEX = REAL Wallet!
+                    wallet_address=wallet_addr,  # 🎯 DEX = REAL Wallet!
                     source='dex'
                 )
                 trades.append(trade)
             
             logger.info(
-                f"✓ DEX data fetched: {len(trades)} trades "
-                f"({sum(1 for t in trades if t.wallet_address) if trades else 0} with wallet IDs)"
+                f"✅ DEX data complete: {len(trades)} trades "
+                f"({wallets_with_address} with wallet addresses)"
             )
+            logger.info(f"{'='*80}\n")
+            
             return candle, trades
             
         except Exception as e:
-            logger.error(f"DEX fetch error: {e}")
+            logger.error(f"❌ DEX fetch error: {e}", exc_info=True)
             raise
     
     async def _analyze_cex_trades(
