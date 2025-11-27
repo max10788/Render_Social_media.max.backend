@@ -87,7 +87,7 @@ class Trade:
 
 @dataclass
 class Candle:
-    """OHLCV Candle"""
+    """OHLCV Candle - DEFENSIVE VERSION"""
     timestamp: datetime
     open: float
     high: float
@@ -97,15 +97,57 @@ class Candle:
     
     @property
     def price_change_pct(self) -> float:
-        if self.open == 0:
+        """
+        Calculate price change percentage - DEFENSIVE VERSION
+        
+        Returns:
+            Price change in percent, or 0.0 if calculation fails
+        """
+        try:
+            # Check for None values
+            if self.open is None or self.close is None:
+                logger.warning(
+                    f"⚠️ Candle has None values: "
+                    f"open={self.open}, close={self.close}"
+                )
+                return 0.0
+            
+            # Check for zero
+            if self.open == 0:
+                logger.debug(f"⚠️ Candle open is 0, cannot calculate price_change_pct")
+                return 0.0
+            
+            # Calculate
+            change = ((self.close - self.open) / self.open) * 100
+            
+            return change
+            
+        except Exception as e:
+            logger.error(f"❌ price_change_pct calculation error: {e}", exc_info=True)
             return 0.0
-        return ((self.close - self.open) / self.open) * 100
     
     @property
     def volatility(self) -> float:
-        if self.low == 0:
+        """
+        Calculate volatility - DEFENSIVE VERSION
+        """
+        try:
+            if self.low is None or self.high is None:
+                logger.warning(
+                    f"⚠️ Candle has None values for volatility: "
+                    f"low={self.low}, high={self.high}"
+                )
+                return 0.0
+            
+            if self.low == 0:
+                logger.debug(f"⚠️ Candle low is 0, cannot calculate volatility")
+                return 0.0
+            
+            return ((self.high - self.low) / self.low) * 100
+            
+        except Exception as e:
+            logger.error(f"❌ volatility calculation error: {e}", exc_info=True)
             return 0.0
-        return ((self.high - self.low) / self.low) * 100
 
 
 class HybridPriceMoverAnalyzer:
