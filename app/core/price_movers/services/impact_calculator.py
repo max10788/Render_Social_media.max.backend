@@ -421,18 +421,34 @@ class ImpactCalculator:
         candle_data: Dict[str, Any]
     ) -> float:
         """
-        Berechnet Korrelation zwischen Trades und Preisbewegung - FIXED
+        Berechnet Korrelation zwischen Trades und Preisbewegung - FINAL FIX
         
-        Handles 'swap' type trades properly
+        Fixes:
+        1. Handles 'swap' type trades properly
+        2. Robust None/0 handling for price_change_pct
+        3. Uses threshold instead of exact == 0 comparison
         """
         if not wallet_trades:
             return 0.0
         
-        price_change_pct = candle_data.get("price_change_pct", 0.0)
+        # ✅ FIX 1: Robust extraction with None handling
+        price_change_pct = candle_data.get("price_change_pct")
         
-        logger.debug(f"📈 Price Correlation: price_change={price_change_pct:.2f}%")
+        # Handle None explicitly
+        if price_change_pct is None:
+            logger.warning(f"⚠️ price_change_pct is None in candle_data!")
+            price_change_pct = 0.0
         
-        # ✅ FIX: Handle multiple trade types + infer direction for swaps
+        # Convert to float
+        try:
+            price_change_pct = float(price_change_pct)
+        except (ValueError, TypeError) as e:
+            logger.warning(f"⚠️ Cannot convert price_change_pct to float: {e}")
+            price_change_pct = 0.0
+        
+        logger.debug(f"📈 Price Correlation: price_change={price_change_pct:.4f}%")
+        
+        # ✅ FIX 2: Enhanced trade type detection
         buy_volume = 0.0
         sell_volume = 0.0
         swap_volume = 0.0
@@ -454,11 +470,9 @@ class ImpactCalculator:
             elif trade_type == "sell":
                 sell_volume += amount
             elif trade_type == "swap":
-                # ✅ For swaps, we can't easily determine direction
-                # Count as neutral for now
                 swap_volume += amount
             else:
-                logger.debug(f"  Unknown trade type: {trade_type}")
+                logger.debug(f"  Unknown trade type: {trade_type}, counting as swap")
                 swap_volume += amount
         
         logger.debug(
@@ -466,44 +480,56 @@ class ImpactCalculator:
             f"swap={swap_volume:.2f}"
         )
         
-        # Total directional volume (excluding neutral swaps)
         directional_volume = buy_volume + sell_volume
         total_volume = buy_volume + sell_volume + swap_volume
         
         if directional_volume == 0:
-            # All trades are 'swap' type → Use reduced correlation
-            # Based on volume ratio only
-            if price_change_pct != 0 and total_volume > 0:
-                # Weak correlation based on volume presence
-                correlation = 0.3  # Base correlation for being active
-                logger.debug(f"  All swaps → base correlation: {correlation:.3f}")
+            # ✅ FIX 3: Use threshold instead of exact == 0
+            has_price_movement = abs(price_change_pct) > 0.001  # 0.001% threshold
+            has_volume = total_volume > 0
+            
+            logger.debug(
+                f"  All swaps detected. "
+                f"price_movement={has_price_movement} ({price_change_pct:.4f}%), "
+                f"volume={has_volume} ({total_volume:.2f})"
+            )
+            
+            if has_price_movement and has_volume:
+                # Base correlation for being active during price movement
+                correlation = 0.3
+                logger.debug(f"  → Base correlation: 0.3")
             else:
                 correlation = 0.0
-                logger.debug(f"  All swaps + no price movement → 0 correlation")
+                if not has_price_movement:
+                    logger.debug(f"  → Zero correlation: no significant price movement")
+                if not has_volume:
+                    logger.debug(f"  → Zero correlation: no volume")
         else:
-            # Buy/Sell Ratio
+            # Normal directional calculation
             buy_ratio = buy_volume / directional_volume
             
-            logger.debug(f"  Buy ratio: {buy_ratio:.3f}")
+            logger.debug(f"  Directional trades: buy_ratio={buy_ratio:.3f}")
             
-            # Korrelation mit Preisbewegung
-            if price_change_pct > 0:
-                # Preis stieg: Mehr Buys = höhere Korrelation
+            # ✅ FIX 4: Use threshold for price direction too
+            if price_change_pct > 0.001:
+                # Price up: more buys = higher correlation
                 correlation = buy_ratio
-            elif price_change_pct < 0:
-                # Preis fiel: Mehr Sells = höhere Korrelation
+                logger.debug(f"  Price UP → correlation = buy_ratio = {correlation:.3f}")
+            elif price_change_pct < -0.001:
+                # Price down: more sells = higher correlation
                 correlation = 1.0 - buy_ratio
+                logger.debug(f"  Price DOWN → correlation = (1 - buy_ratio) = {correlation:.3f}")
             else:
-                # Keine Bewegung
+                # No significant movement
                 correlation = 0.5
+                logger.debug(f"  Price FLAT → correlation = 0.5")
             
-            # Skaliere mit Größe der Preisbewegung
+            # Scale with size of price movement
             movement_scale = min(abs(price_change_pct) / 2.0, 1.0)
             correlation = correlation * movement_scale
             
             logger.debug(
-                f"  Correlation: {correlation:.3f} "
-                f"(scale={movement_scale:.3f})"
+                f"  Scaled: {correlation / movement_scale if movement_scale > 0 else 0:.3f} * {movement_scale:.3f} = {correlation:.3f}"
             )
         
         return min(correlation, 1.0)
