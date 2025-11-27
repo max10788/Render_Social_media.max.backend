@@ -514,7 +514,7 @@ async def get_dex_candle_movers(
         impact_calculator = ImpactCalculator()  # ✅ Now imported at top
         total_volume = current_candle.get('volume', 0.0)
         logger.debug(f"Total candle volume for impact calc: {total_volume}")
-
+        
         # Group trades by wallet for the calculator
         wallet_activities = {}
         for trade in trades_result.get('trades', []):
@@ -523,14 +523,37 @@ async def get_dex_candle_movers(
                 if wallet_addr not in wallet_activities:
                     wallet_activities[wallet_addr] = []
                 wallet_activities[wallet_addr].append(trade)
-
-        # Calculate impact scores
+        
+        # ✅ FIX: Create complete candle_data dict with price_change_pct
+        candle_data_with_price_change = {
+            'timestamp': current_candle['timestamp'],
+            'open': float(current_candle.get('open', 0.0)),
+            'high': float(current_candle.get('high', 0.0)),
+            'low': float(current_candle.get('low', 0.0)),
+            'close': float(current_candle.get('close', 0.0)),
+            'volume': float(current_candle.get('volume', 0.0)),
+            'price_change_pct': (
+                ((float(current_candle['close']) - float(current_candle['open'])) / float(current_candle['open']) * 100)
+                if current_candle.get('open') and current_candle['open'] != 0
+                else 0.0
+            )
+        }
+        
+        logger.info(
+            f"📊 Candle data for batch impact calculation:\n"
+            f"   volume: {candle_data_with_price_change['volume']:.2f}\n"
+            f"   price_change_pct: {candle_data_with_price_change['price_change_pct']:.2f}%\n"
+            f"   open: {candle_data_with_price_change['open']:.2f}\n"
+            f"   close: {candle_data_with_price_change['close']:.2f}"
+        )
+        
+        # Calculate impact scores with COMPLETE candle data
         impact_results = impact_calculator.calculate_batch_impact(
             wallet_activities=wallet_activities,
-            candle_data=current_candle,
+            candle_data=candle_data_with_price_change,  # ✅ FIX: Now includes price_change_pct!
             total_volume=total_volume
         )
-
+        
         # Update the top_movers list with impact scores
         for mover in dex_movers:
             wallet_id = mover.get('wallet_address')
@@ -539,7 +562,7 @@ async def get_dex_candle_movers(
                 mover['total_impact_score'] = impact_data.get('impact_score', 0.0)
                 mover['impact_components'] = impact_data.get('components', {})
                 mover['impact_level'] = impact_data.get('impact_level', 'none')
-
+        
         # --- End Impact Score Calculation ---
 
         performance_ms = (time.time() - start_perf) * 1000
