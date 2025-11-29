@@ -850,8 +850,10 @@ class HeliusCollector(DEXCollector):
                     price = quote_amount / sol_amount
                     amount = sol_amount
                     
-                    MIN_REASONABLE_PRICE = 50.0   # SOL minimum ~$50
-                    MAX_REASONABLE_PRICE = 500.0  # SOL maximum ~$500
+                    # ✅ FIX 4: CRITICAL VALIDATION - Price Range Check
+                    # 🔥 CHANGED: Tighter range for SOL/USDT
+                    MIN_REASONABLE_PRICE = 50.0    # SOL minimum ~$50
+                    MAX_REASONABLE_PRICE = 500.0   # SOL maximum ~$500
                     
                     if not (MIN_REASONABLE_PRICE <= price <= MAX_REASONABLE_PRICE):
                         logger.warning(
@@ -900,7 +902,7 @@ class HeliusCollector(DEXCollector):
                                         price = other_amount / amount
                                         
                                         # ✅ Validate fallback price too
-                                        if not (1.0 <= price <= 10000.0):
+                                        if not (50.0 <= price <= 500.0):
                                             logger.warning(f"Invalid fallback price: ${price:.2f}")
                                             return None
                                     break
@@ -1252,8 +1254,9 @@ class HeliusCollector(DEXCollector):
             price = other_amount / sol_amount
             
             # ✅ FIX: SAME VALIDATION AS ENHANCED SWAP
-            MIN_REASONABLE_PRICE = 50.0   # SOL minimum ~$50
-            MAX_REASONABLE_PRICE = 500.0  # SOL maximum ~$500
+            # 🔥 CHANGED: Tighter range for SOL/USDT
+            MIN_REASONABLE_PRICE = 50.0    # SOL minimum ~$50
+            MAX_REASONABLE_PRICE = 500.0   # SOL maximum ~$500
             
             if not (MIN_REASONABLE_PRICE <= price <= MAX_REASONABLE_PRICE):
                 logger.warning(
