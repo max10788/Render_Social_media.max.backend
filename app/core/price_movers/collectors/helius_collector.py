@@ -1174,7 +1174,11 @@ class HeliusCollector(DEXCollector):
         trade_time: datetime,
         signature: str
     ) -> Optional[Dict[str, Any]]:
-        """Parse Swap - IMPROVED mit Stablecoin Support"""
+        """
+        Parse Swap - WITH PRICE VALIDATION
+        
+        ✅ FIXED: Added same validation as enhanced swap
+        """
         try:
             # ✅ SPECIAL CASE: Stablecoin Swaps (kein SOL)
             if len(sol_transfers) == 0 and len(other_transfers) == 2:
@@ -1209,6 +1213,13 @@ class HeliusCollector(DEXCollector):
                 # Price für Stablecoins (sollte ~1.0 sein)
                 price = amount2 / amount1 if amount1 > 0 else 1.0
                 
+                # ✅ Validate stablecoin price (0.95 - 1.05 range)
+                if not (0.95 <= price <= 1.05):
+                    logger.warning(
+                        f"⚠️ Abnormal stablecoin price: {price:.4f}, rejecting"
+                    )
+                    return None
+                
                 logger.debug(f"✅ Stablecoin swap: {amount1:.2f} ↔ {amount2:.2f} (price: {price:.4f})")
                 
                 return {
@@ -1237,6 +1248,34 @@ class HeliusCollector(DEXCollector):
                 logger.debug(f"⚠️ Zero amounts: SOL={sol_amount}, Other={other_amount}")
                 return None
             
+            # Calculate price
+            price = other_amount / sol_amount
+            
+            # ✅ FIX: SAME VALIDATION AS ENHANCED SWAP
+            MIN_REASONABLE_PRICE = 1.0
+            MAX_REASONABLE_PRICE = 10000.0
+            
+            if not (MIN_REASONABLE_PRICE <= price <= MAX_REASONABLE_PRICE):
+                logger.warning(
+                    f"🚨 ABNORMAL PRICE in UNKNOWN tx!\n"
+                    f"   Signature: {signature[:16]}...\n"
+                    f"   Price: ${price:.2f}\n"
+                    f"   SOL: {sol_amount:.4f}, Other: {other_amount:.4f}\n"
+                    f"   → REJECTING"
+                )
+                return None
+            
+            # ✅ FIX: Value check
+            value_usd = sol_amount * price
+            
+            if value_usd > 10_000_000:
+                logger.warning(
+                    f"🚨 ABNORMALLY LARGE UNKNOWN TRADE!\n"
+                    f"   Value: ${value_usd:,.2f}\n"
+                    f"   → REJECTING"
+                )
+                return None
+            
             # Wallet Detection
             sol_from = sol_transfer.get('fromUserAccount')
             sol_to = sol_transfer.get('toUserAccount')
@@ -1246,7 +1285,6 @@ class HeliusCollector(DEXCollector):
             wallet = None
             trade_type = 'unknown'
             amount = sol_amount
-            price = other_amount / sol_amount
             
             if sol_from == other_to:
                 wallet = sol_from
@@ -1266,7 +1304,7 @@ class HeliusCollector(DEXCollector):
                 return None
             
             logger.debug(
-                f"✅ SOL swap: {trade_type} {amount:.4f} @ ${price:.2f} "
+                f"✅ SOL swap: {trade_type} {amount:.4f} @ ${price:.2f} = ${value_usd:.2f} "
                 f"(wallet: {wallet[:8]}..., dex: {dex_name})"
             )
             
