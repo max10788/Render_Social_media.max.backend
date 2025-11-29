@@ -23,6 +23,7 @@ from app.core.price_movers.services.lightweight_entity_identifier import (
     LightweightEntityIdentifier,
     TradingEntity
 )
+from app.core.price_movers.services.liquidity_validator import LiquidityValidator
 from app.core.price_movers.services.entity_classifier import EntityClassifier
 from app.core.price_movers.utils.metrics import (
     validate_trade_data,
