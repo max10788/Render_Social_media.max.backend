@@ -1252,16 +1252,17 @@ class HeliusCollector(DEXCollector):
             price = other_amount / sol_amount
             
             # ✅ FIX: SAME VALIDATION AS ENHANCED SWAP
-            MIN_REASONABLE_PRICE = 1.0
-            MAX_REASONABLE_PRICE = 10000.0
+            MIN_REASONABLE_PRICE = 50.0   # SOL minimum ~$50
+            MAX_REASONABLE_PRICE = 500.0  # SOL maximum ~$500
             
             if not (MIN_REASONABLE_PRICE <= price <= MAX_REASONABLE_PRICE):
                 logger.warning(
-                    f"🚨 ABNORMAL PRICE in UNKNOWN tx!\n"
+                    f"🚨 ABNORMAL SOL/USDT PRICE in UNKNOWN tx!\n"
                     f"   Signature: {signature[:16]}...\n"
                     f"   Price: ${price:.2f}\n"
+                    f"   Expected Range: ${MIN_REASONABLE_PRICE}-${MAX_REASONABLE_PRICE}\n"
                     f"   SOL: {sol_amount:.4f}, Other: {other_amount:.4f}\n"
-                    f"   → REJECTING"
+                    f"   → REJECTING (likely multi-hop or wrong token)"
                 )
                 return None
             
