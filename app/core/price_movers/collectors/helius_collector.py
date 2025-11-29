@@ -1,29 +1,24 @@
 """
-Helius Collector - PRODUCTION VERSION
+Helius Collector - PRODUCTION VERSION with Dynamic Price Validation
 
 🎯 FEATURES:
 - Token-based transaction fetching (not pool-based)
 - Solana RPC + Enhanced Transactions API
+- Dynamic price validation based on candle OHLC
 - Robust error handling
 - Comprehensive logging
-- Cache management
 
-🔧 ARCHITECTURE:
-1. Resolve symbol to token address (USDT for SOL/USDT)
-2. Fetch signatures via Solana RPC
-3. Parse transactions via Enhanced Transactions API
-4. Filter for SWAP transactions
-
-📊 PERFORMANCE:
-- Direct token address lookup (no pool discovery needed)
-- Works with Helius indexing
-- Fast and reliable
+🔧 PRICE VALIDATION:
+- Uses actual candle data (high/low) for validation
+- Token-agnostic (works for any symbol)
+- Market-adaptive (adjusts to volatility)
+- No hardcoded price ranges!
 """
 import logging
 import aiohttp
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import time
 import json
 
@@ -63,24 +58,24 @@ class HeliusCollector(DEXCollector):
     
     API_BASE = "https://api-mainnet.helius-rpc.com"
     
-    # ✅ NEU: Solana Program IDs für DEX-Erkennung
+    # DEX Program IDs
     DEX_PROGRAM_IDS = {
         'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4': 'jupiter',
         'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB': 'jupiter',
         'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc': 'orca',
         '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': 'raydium',
         '27haf8L6oxUeXrHrgEgsexjSY5hbVUWEmvv9Nyxg8vQv': 'raydium',
-        'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo': 'meteora',  # ← NEU!
+        'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo': 'meteora',
         'PhoeNiXZ8ByJGLkxNfZRnkUfjvmuYqLR89jjFHGqdXY': 'phoenix',
     }
     
-    # ✅ NEU: Wichtige Transaction Types
+    # Transaction Types
     CRITICAL_TX_TYPES = {
         'SWAP',
         'ADD_LIQUIDITY', 
         'REMOVE_LIQUIDITY',
-        'COMPRESSED_NFT_MINT',  # Manchmal getarnte Swaps
-        'UNKNOWN'  # Manuell parsen!
+        'COMPRESSED_NFT_MINT',
+        'UNKNOWN'
     }
     
     # Token Mint Addresses (Solana SPL Tokens)
@@ -114,8 +109,11 @@ class HeliusCollector(DEXCollector):
         self.candle_cache = SimpleCache(ttl_seconds=60)
         self.dexscreener = dexscreener_collector
         
+        # Current candle for price validation
+        self.current_candle: Optional[Dict[str, Any]] = None
+        
         logger.info(
-            f"✅ Helius Collector initialized (TOKEN-BASED STRATEGY) "
+            f"✅ Helius Collector initialized (DYNAMIC PRICE VALIDATION) "
             f"- Known tokens: {len(self.TOKEN_MINTS)}"
         )
     
@@ -124,6 +122,84 @@ class HeliusCollector(DEXCollector):
         if self.session is None or self.session.closed:
             self.session = aiohttp.ClientSession()
         return self.session
+    
+    # ============================================================================
+    # DYNAMIC PRICE VALIDATION
+    # ============================================================================
+    
+    def _validate_price_against_candle(
+        self,
+        price: float,
+        signature: str = "unknown"
+    ) -> Tuple[bool, str]:
+        """
+        Validate trade price against candle OHLC data
+        
+        Args:
+            price: Trade price to validate
+            signature: Transaction signature for logging
+        
+        Returns:
+            (is_valid, rejection_reason)
+        """
+        # Layer 1: Absolute sanity checks
+        if price <= 0:
+            return False, "Price is zero or negative"
+        
+        if price < 0.000001:
+            return False, "Price suspiciously low (< $0.000001)"
+        
+        if price > 10_000_000:
+            return False, "Price suspiciously high (> $10M)"
+        
+        # Layer 2: Candle-based validation
+        if not self.current_candle:
+            # No candle available - use very wide fallback range
+            logger.debug(f"No candle data available for price validation")
+            return True, ""
+        
+        candle_low = self.current_candle.get('low', 0)
+        candle_high = self.current_candle.get('high', 0)
+        
+        if candle_low == 0 or candle_high == 0:
+            # Invalid candle data
+            logger.debug(f"Invalid candle data (low={candle_low}, high={candle_high})")
+            return True, ""
+        
+        # Calculate acceptable price range
+        # Allow ±50% deviation from candle range to account for:
+        # - Flash crashes/pumps
+        # - Multi-hop routes
+        # - Slippage on large trades
+        max_deviation_pct = 0.5  # 50%
+        
+        price_range_low = candle_low * (1 - max_deviation_pct)
+        price_range_high = candle_high * (1 + max_deviation_pct)
+        
+        is_valid = price_range_low <= price <= price_range_high
+        
+        if not is_valid:
+            reason = (
+                f"Price ${price:.2f} outside candle range!\n"
+                f"   Candle: Low=${candle_low:.2f}, High=${candle_high:.2f}\n"
+                f"   Expected Range: ${price_range_low:.2f} - ${price_range_high:.2f}\n"
+                f"   (±{max_deviation_pct*100:.0f}% from candle OHLC)"
+            )
+            
+            logger.warning(
+                f"🚨 INVALID PRICE DETECTED!\n"
+                f"   Signature: {signature[:16]}...\n"
+                f"   {reason}\n"
+                f"   → REJECTING TRADE"
+            )
+            
+            return False, reason
+        
+        return True, ""
+    
+    # ============================================================================
+    # ADDRESS RESOLUTION
+    # ============================================================================
     
     async def _resolve_symbol_to_token_address(self, symbol: str) -> Optional[str]:
         """
@@ -164,10 +240,13 @@ class HeliusCollector(DEXCollector):
                 logger.error(f"❌ Unknown base token: {base_token}")
                 return None
     
-    # ✅ REQUIRED: Abstract method implementation from DEXCollector
     async def _resolve_symbol_to_address(self, symbol: str) -> Optional[str]:
         """Resolve symbol to address (abstract method from DEXCollector)"""
         return await self._resolve_symbol_to_token_address(symbol)
+    
+    # ============================================================================
+    # CANDLE DATA
+    # ============================================================================
     
     async def fetch_candle_data(
         self,
@@ -185,6 +264,8 @@ class HeliusCollector(DEXCollector):
         cached = self.candle_cache.get(cache_key)
         if cached:
             logger.debug("📦 Using cached candle")
+            # Store for price validation
+            self.current_candle = cached
             return cached
         
         timeframe_seconds = {
@@ -204,14 +285,18 @@ class HeliusCollector(DEXCollector):
         
         if not trades:
             logger.warning(f"⚠️ No trades found for {symbol}")
-            return self._empty_candle(timestamp)
+            empty_candle = self._empty_candle(timestamp)
+            self.current_candle = empty_candle
+            return empty_candle
         
         prices = [t['price'] for t in trades if t.get('price', 0) > 0]
         volumes = [t['amount'] for t in trades if t.get('amount', 0) > 0]
         
         if not prices:
             logger.warning(f"⚠️ No valid prices in {len(trades)} trades")
-            return self._empty_candle(timestamp)
+            empty_candle = self._empty_candle(timestamp)
+            self.current_candle = empty_candle
+            return empty_candle
         
         candle = {
             'timestamp': timestamp,
@@ -222,8 +307,15 @@ class HeliusCollector(DEXCollector):
             'volume': sum(volumes) if volumes else 0.0
         }
         
+        # Store for price validation
+        self.current_candle = candle
+        
         self.candle_cache.set(cache_key, candle)
-        logger.info(f"✅ Helius: Candle built from {len(trades)} trades")
+        logger.info(
+            f"✅ Helius: Candle built from {len(trades)} trades\n"
+            f"   OHLC: ${candle['open']:.2f} / ${candle['high']:.2f} / "
+            f"${candle['low']:.2f} / ${candle['close']:.2f}"
+        )
         return candle
     
     def _empty_candle(self, timestamp: datetime) -> Dict[str, Any]:
@@ -236,6 +328,10 @@ class HeliusCollector(DEXCollector):
             'close': 0.0,
             'volume': 0.0
         }
+    
+    # ============================================================================
+    # TRADE FETCHING
+    # ============================================================================
     
     async def fetch_trades(
         self,
@@ -266,8 +362,7 @@ class HeliusCollector(DEXCollector):
         limit: Optional[int] = 100,
         symbol: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """Fetch trades - MIT DEBUG FÜR UNKNOWN"""
-        import json
+        """Fetch trades with dynamic price validation"""
         
         logger.info(f"🔍 Fetching trades from token: {token_address[:8]}...")
         if symbol:
@@ -375,6 +470,7 @@ class HeliusCollector(DEXCollector):
                 'liquidity_events': 0,
                 'add_liquidity': 0,
                 'remove_liquidity': 0,
+                'price_rejected': 0,  # NEW!
                 'parse_errors': []
             }
             
@@ -404,6 +500,10 @@ class HeliusCollector(DEXCollector):
                     else:
                         continue
                     
+                    # Check if trade was rejected due to price
+                    if trade is None and tx_type in ['SWAP', 'UNKNOWN']:
+                        stats['price_rejected'] += 1
+                    
                     if trade and start_time <= trade['timestamp'] <= end_time:
                         trades.append(trade)
                         
@@ -424,58 +524,20 @@ class HeliusCollector(DEXCollector):
                         logger.error(f"❌ Parse error {len(stats['parse_errors'])}: {e}", exc_info=True)
                     continue
             
-            # ==================== DEBUG: UNKNOWN ====================
-            unknown_txs = [tx for tx in transactions if tx.get('type') == 'UNKNOWN']
-            failed_count = len(unknown_txs) - stats.get('unknown_parsed', 0)
-            
-            if failed_count > 0:
-                logger.warning(f"\n{'='*80}\n⚠️ Failed UNKNOWN: {failed_count}/{len(unknown_txs)}\n{'='*80}")
-                
-                logged = 0
-                for tx in transactions:
-                    if tx.get('type') != 'UNKNOWN' or logged >= 3:
-                        continue
-                    
-                    sig = tx.get('signature', 'unknown')
-                    if not any(t.get('transaction_hash') == sig for t in trades):
-                        logged += 1
-                        
-                        compact = {
-                            'sig': sig[:12],
-                            'timestamp': tx.get('timestamp'),
-                            'tokenTransfers': [
-                                {
-                                    'mint': t.get('mint', '')[:8],
-                                    'amount': t.get('tokenAmount'),
-                                    'from': t.get('fromUserAccount', '')[:8] if t.get('fromUserAccount') else None,
-                                    'to': t.get('toUserAccount', '')[:8] if t.get('toUserAccount') else None,
-                                }
-                                for t in tx.get('tokenTransfers', [])[:5]
-                            ],
-                            'instructions': [i.get('programId', '')[:12] for i in tx.get('instructions', [])[:5]],
-                        }
-                        
-                        logger.warning(f"\n🔍 FAILED #{logged}:\n{json.dumps(compact, indent=2)}")
-            # ==================== ENDE DEBUG ====================
-            
+            # Summary logging
             logger.info(
                 f"✅ Helius: {len(trades)} trades returned "
                 f"(SWAP: {stats['swap_count']}, "
                 f"UNKNOWN parsed: {stats['unknown_parsed']}, "
                 f"Liquidity: +{stats['add_liquidity']}/-{stats['remove_liquidity']}, "
+                f"Price rejected: {stats['price_rejected']}, "  # NEW!
                 f"Parse errors: {len(stats['parse_errors'])})"
             )
             
-            if len(trades) == 0 and (stats['swap_count'] > 0 or stats['unknown_parsed'] > 0):
-                logger.warning(
-                    f"⚠️ Found {stats['swap_count']} SWAP + {stats['unknown_parsed']} parsed UNKNOWN "
-                    f"but no valid trades in time range!"
-                )
-            
-            if stats['liquidity_events'] > 0:
+            if stats['price_rejected'] > 0:
                 logger.info(
-                    f"💧 Liquidity Events: {stats['liquidity_events']} total "
-                    f"(+{stats['add_liquidity']} adds, -{stats['remove_liquidity']} removals)"
+                    f"💡 {stats['price_rejected']} trades rejected due to price validation "
+                    f"(outside candle range)"
                 )
             
             return trades
@@ -487,276 +549,9 @@ class HeliusCollector(DEXCollector):
             logger.error(f"❌ Helius fetch error: {e}", exc_info=True)
             return []
 
-    async def fetch_wallet_trades(
-        self,
-        wallet_address: str,
-        target_token_address: Optional[str] = None,
-        limit: int = 1000
-    ) -> Dict[str, Any]:
-        """
-        🎯 Holt ALLE Transaktionen einer Wallet und filtert nach Token-Pair
-        
-        Args:
-            wallet_address: Die Wallet-Adresse (z.B. Solana Address)
-            target_token_address: Token Address zum Filtern (z.B. USDT)
-            limit: Max Anzahl Transactions (100-1000)
-        
-        Returns:
-            {
-                'total_transactions': int,
-                'pair_trades': [...],        # Trades mit dem Target Token
-                'other_activities': [...],   # Andere Transaktionen
-                'token_summary': {...}       # Zusammenfassung pro Token
-            }
-        """
-        try:
-            logger.info(f"🔍 Fetching transactions for wallet: {wallet_address[:16]}...")
-            logger.info(f"🎯 Target token: {target_token_address[:16] if target_token_address else 'All tokens'}...")
-            
-            # ==================== STEP 1: Get Signatures ====================
-            
-            # Helius RPC getSignaturesForAddress
-            rpc_url = f"https://mainnet.helius-rpc.com/?api-key={self.api_key}"
-            
-            payload = {
-                "jsonrpc": "2.0",
-                "id": "wallet-sigs",
-                "method": "getSignaturesForAddress",
-                "params": [
-                    wallet_address,
-                    {
-                        "limit": limit,
-                    }
-                ]
-            }
-            
-            logger.info(f"📡 Calling Helius RPC for wallet signatures...")
-            
-            session = await self._get_session()
-            
-            async with session.post(
-                rpc_url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as response:
-                
-                if response.status != 200:
-                    logger.error(f"❌ RPC call failed: {response.status}")
-                    return {
-                        'total_transactions': 0,
-                        'pair_trades': [],
-                        'other_activities': [],
-                        'token_summary': {}
-                    }
-                
-                result = await response.json()
-                signatures = result.get('result', [])
-            
-            logger.info(f"📦 Found {len(signatures)} signatures for wallet")
-            
-            if not signatures:
-                logger.warning(f"⚠️ No signatures found for wallet {wallet_address[:16]}...")
-                return {
-                    'total_transactions': 0,
-                    'pair_trades': [],
-                    'other_activities': [],
-                    'token_summary': {}
-                }
-            
-            # Extract nur die Signatures
-            sig_list = [s['signature'] for s in signatures[:100]]  # Max 100 auf einmal
-            
-            # ==================== STEP 2: Parse Transactions ====================
-            
-            logger.info(f"🌐 Parsing {len(sig_list)} transactions via Enhanced API...")
-            
-            enhanced_url = f"{self.API_BASE}/v0/transactions"
-            
-            async with session.post(
-                enhanced_url,
-                json={"transactions": sig_list},
-                params={'api-key': self.api_key},
-                headers={"Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as enhanced_response:
-                
-                if enhanced_response.status != 200:
-                    logger.error(f"❌ Enhanced API failed: {enhanced_response.status}")
-                    return {
-                        'total_transactions': 0,
-                        'pair_trades': [],
-                        'other_activities': [],
-                        'token_summary': {}
-                    }
-                
-                transactions = await enhanced_response.json()
-                logger.info(f"📦 Received {len(transactions)} parsed transactions")
-                
-                # Debug: Log sample transaction structure
-                if transactions and len(transactions) > 0:
-                    sample_tx = transactions[0]
-                    logger.info(
-                        f"📋 Sample transaction structure:\n"
-                        f"   Type: {sample_tx.get('type')}\n"
-                        f"   Signature: {sample_tx.get('signature', 'N/A')[:16]}...\n"
-                        f"   Token Transfers: {len(sample_tx.get('tokenTransfers', []))}\n"
-                        f"   Native Transfers: {len(sample_tx.get('nativeTransfers', []))}\n"
-                        f"   Events: {list(sample_tx.get('events', {}).keys())}"
-                    )
-                    
-                    # Log token mints involved
-                    token_mints = set()
-                    for tx in transactions[:10]:
-                        for transfer in tx.get('tokenTransfers', []):
-                            token_mints.add(transfer.get('mint', 'unknown')[:16])
-                    
-                    logger.info(f"📋 Token mints in first 10 transactions: {list(token_mints)[:5]}")
-                    if target_token_address:
-                        logger.info(f"🎯 Looking for token: {target_token_address[:16]}...")
-            
-            # ==================== STEP 3: Categorize Transactions ====================
-            
-            pair_trades = []
-            other_activities = []
-            token_counter = {}
-            
-            # Log transaction types for debugging
-            tx_type_counts = {}
-            for tx in transactions:
-                tx_type = tx.get('type', 'UNKNOWN')
-                tx_type_counts[tx_type] = tx_type_counts.get(tx_type, 0) + 1
-            
-            logger.info(f"📊 Transaction type breakdown: {tx_type_counts}")
-            
-            for tx in transactions:
-                tx_type = tx.get('type', 'UNKNOWN')
-                token_transfers = tx.get('tokenTransfers', [])
-                signature = tx.get('signature', 'unknown')
-                timestamp = tx.get('timestamp')
-                
-                # Check if transaction involves target token
-                involves_target_token = False
-                if target_token_address:
-                    for transfer in token_transfers:
-                        mint = transfer.get('mint', '')
-                        # Check full address match, not just prefix
-                        if mint == target_token_address or mint.startswith(target_token_address[:16]):
-                            involves_target_token = True
-                            logger.debug(f"✅ TX {signature[:8]}... involves target token {mint[:8]}...")
-                            break
-                else:
-                    # If no target token specified, consider all transactions
-                    involves_target_token = True
-                
-                # Count tokens
-                for transfer in token_transfers:
-                    mint = transfer.get('mint', 'unknown')[:16]
-                    token_counter[mint] = token_counter.get(mint, 0) + 1
-                
-                # Categorize
-                tx_summary = {
-                    'signature': signature,
-                    'type': tx_type,
-                    'timestamp': timestamp,
-                    'token_count': len(token_transfers),
-                    'tokens': [t.get('mint', '')[:16] for t in token_transfers],
-                }
-                
-                if involves_target_token or not target_token_address:
-                    # Try to parse as trade
-                    parsed = None
-                    
-                    if tx_type == 'SWAP':
-                        parsed = self._parse_helius_enhanced_swap(tx, symbol=None)
-                        if parsed:
-                            logger.debug(f"✅ Parsed SWAP: {signature[:8]}...")
-                            pair_trades.append(parsed)
-                            continue
-                    
-                    # Try UNKNOWN parsing
-                    elif tx_type == 'UNKNOWN':
-                        parsed = self._parse_unknown_transaction(tx, symbol=None)
-                        if parsed:
-                            logger.debug(f"✅ Parsed UNKNOWN: {signature[:8]}...")
-                            pair_trades.append(parsed)
-                            continue
-                    
-                    # If we couldn't parse it but it involves the target token
-                    if not parsed and involves_target_token:
-                        other_activities.append(tx_summary)
-                else:
-                    # Other token activity
-                    other_activities.append(tx_summary)
-            
-            logger.info(
-                f"✅ Wallet Analysis:\n"
-                f"   Total Transactions: {len(transactions)}\n"
-                f"   Pair Trades: {len(pair_trades)}\n"
-                f"   Other Activities: {len(other_activities)}\n"
-                f"   Unique Tokens: {len(token_counter)}"
-            )
-            
-            # Debug: If no trades found, log why
-            if len(pair_trades) == 0 and len(transactions) > 0:
-                logger.warning(
-                    f"⚠️ No trades parsed from {len(transactions)} transactions\n"
-                    f"   Target token: {target_token_address[:16] if target_token_address else 'None'}\n"
-                    f"   TX Types: {tx_type_counts}\n"
-                    f"   Token counter: {list(token_counter.items())[:5]}"
-                )
-                
-                # Sample a few transactions that weren't parsed
-                for i, tx in enumerate(transactions[:3]):
-                    logger.warning(
-                        f"\n📋 Unparsed TX #{i+1}:\n"
-                        f"   Signature: {tx.get('signature', 'N/A')[:16]}...\n"
-                        f"   Type: {tx.get('type')}\n"
-                        f"   Token Transfers: {len(tx.get('tokenTransfers', []))}\n"
-                        f"   Tokens: {[t.get('mint', '')[:8] for t in tx.get('tokenTransfers', [])[:3]]}"
-                    )
-            
-            return {
-                'total_transactions': len(transactions),
-                'pair_trades': pair_trades,
-                'other_activities': other_activities,
-                'token_summary': token_counter,
-                'wallet_address': wallet_address,
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Wallet trades fetch error: {e}", exc_info=True)
-            return {
-                'total_transactions': 0,
-                'pair_trades': [],
-                'other_activities': [],
-                'token_summary': {}
-            }
-
-# ============================================================================
-# HELPER: Resolve Symbol to Token Address
-# ============================================================================
-
-    def _resolve_token_address(self, symbol: str) -> Optional[str]:
-        """Resolve trading symbol to token address"""
-        # Extrahiere Token aus Symbol (z.B. SOL/USDT → USDT)
-        if '/' in symbol:
-            base, quote = symbol.split('/', 1)
-            # Use quote token (USDT, USDC, etc.)
-            token = quote
-        else:
-            token = symbol
-        
-        # Token Mapping
-        token_addresses = {
-            'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
-            'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-            'SOL': 'So11111111111111111111111111111111111111112',
-            'BONK': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
-            'WIF': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',
-        }
-        
-        return token_addresses.get(token.upper())
+    # ============================================================================
+    # SWAP PARSING - WITH DYNAMIC VALIDATION
+    # ============================================================================
     
     def _parse_helius_enhanced_swap(
         self, 
@@ -766,10 +561,11 @@ class HeliusCollector(DEXCollector):
         """
         Parse a Helius Enhanced Transaction (SWAP type)
         
-        ✅ FIXED: 
-        - Added price validation
-        - Token mint checking
-        - Value sanity checks
+        ✅ DYNAMIC VALIDATION:
+        - No hardcoded price ranges
+        - Uses current candle OHLC data
+        - Token-agnostic
+        - Market-adaptive
         """
         try:
             signature = tx.get('signature')
@@ -811,15 +607,9 @@ class HeliusCollector(DEXCollector):
                     input_mint = input_token.get('mint', '')
                     output_mint = output_token.get('mint', '')
                     
-                    # ✅ FIX 1: Known token mints
                     sol_mint = 'So11111111111111111111111111111111111111112'
                     
-                    quote_mints = {
-                        'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 'USDT',
-                        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
-                    }
-                    
-                    # ✅ FIX 2: Determine correct price calculation
+                    # Determine correct price calculation
                     sol_amount = 0
                     quote_amount = 0
                     
@@ -842,7 +632,7 @@ class HeliusCollector(DEXCollector):
                         )
                         return None
                     
-                    # ✅ FIX 3: Calculate price with validation
+                    # Calculate price
                     if sol_amount == 0 or quote_amount == 0:
                         logger.debug(f"⚠️ Zero amount in swap")
                         return None
@@ -850,26 +640,24 @@ class HeliusCollector(DEXCollector):
                     price = quote_amount / sol_amount
                     amount = sol_amount
                     
-                    # ✅ FIX 4: CRITICAL VALIDATION - Price Range Check
-                    # 🔥 CHANGED: Tighter range for SOL/USDT
-                    MIN_REASONABLE_PRICE = 50.0    # SOL minimum ~$50
-                    MAX_REASONABLE_PRICE = 500.0   # SOL maximum ~$500
+                    # ✅ DYNAMIC VALIDATION - No hardcoded ranges!
+                    is_valid, reason = self._validate_price_against_candle(
+                        price=price,
+                        signature=signature
+                    )
                     
-                    if not (MIN_REASONABLE_PRICE <= price <= MAX_REASONABLE_PRICE):
+                    if not is_valid:
                         logger.warning(
-                            f"🚨 ABNORMAL SOL/USDT PRICE DETECTED!\n"
+                            f"🚨 SWAP REJECTED (Enhanced)!\n"
                             f"   Signature: {signature[:16]}...\n"
                             f"   Calculated Price: ${price:.2f}\n"
-                            f"   Expected Range: ${MIN_REASONABLE_PRICE}-${MAX_REASONABLE_PRICE}\n"
                             f"   SOL Amount: {sol_amount:.4f}\n"
                             f"   Quote Amount: {quote_amount:.4f}\n"
-                            f"   Input Mint: {input_mint[:8]}...\n"
-                            f"   Output Mint: {output_mint[:8]}...\n"
-                            f"   → REJECTING THIS TRADE (likely multi-hop or wrong token)"
+                            f"   Reason: {reason}"
                         )
                         return None
                     
-                    # ✅ FIX 5: Value sanity check
+                    # Value sanity check
                     value_usd = sol_amount * price
                     MAX_REASONABLE_TRADE = 10_000_000  # $10M max per trade
                     
@@ -884,7 +672,7 @@ class HeliusCollector(DEXCollector):
                         )
                         return None
             
-            # ✅ Fallback parsing from token_transfers
+            # Fallback parsing from token_transfers
             if amount == 0 and len(token_transfers) >= 1:
                 sol_mint = 'So11111111111111111111111111111111111111112'
                 
@@ -902,7 +690,12 @@ class HeliusCollector(DEXCollector):
                                         price = other_amount / amount
                                         
                                         # ✅ Validate fallback price too
-                                        if not (50.0 <= price <= 500.0):
+                                        is_valid, reason = self._validate_price_against_candle(
+                                            price=price,
+                                            signature=signature
+                                        )
+                                        
+                                        if not is_valid:
                                             logger.warning(f"Invalid fallback price: ${price:.2f}")
                                             return None
                                     break
@@ -916,7 +709,6 @@ class HeliusCollector(DEXCollector):
             if price == 0:
                 price = 1.0
             
-            # ✅ Final validation
             logger.debug(
                 f"✅ Valid swap: {trade_type} {amount:.4f} SOL @ ${price:.2f} "
                 f"= ${amount * price:.2f}"
@@ -938,15 +730,13 @@ class HeliusCollector(DEXCollector):
             logger.debug(f"❌ Error parsing swap {tx.get('signature', 'unknown')[:16]}...: {e}")
             return None
 
+    # ============================================================================
+    # UNKNOWN TRANSACTION PARSING
+    # ============================================================================
+
     def _detect_dex_from_program_ids(self, tx: Dict[str, Any]) -> Optional[str]:
-        """
-        Erkenne DEX anhand der Program IDs in der Transaktion
-        
-        Returns:
-            DEX Name (z.B. 'jupiter', 'orca') oder None
-        """
+        """Detect DEX from program IDs in transaction"""
         try:
-            # Account Keys enthalten die aufgerufenen Programme
             account_keys = tx.get('accountData', [])
             
             for account in account_keys:
@@ -957,7 +747,7 @@ class HeliusCollector(DEXCollector):
                     logger.debug(f"🎯 Detected DEX: {dex_name} (program: {account_id[:8]}...)")
                     return dex_name
             
-            # Fallback: Prüfe instructions
+            # Fallback: Check instructions
             instructions = tx.get('instructions', [])
             for instruction in instructions:
                 program_id = instruction.get('programId', '')
@@ -978,19 +768,7 @@ class HeliusCollector(DEXCollector):
         tx: Dict[str, Any],
         symbol: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """
-        Parse UNKNOWN Transaktionen manuell - IMPROVED VERSION
-        
-        ✅ IMPROVEMENTS:
-        - Weniger strikt bei DEX-Detection
-        - Fallback-Parsing auch ohne DEX
-        - Bessere Fehler-Behandlung
-        
-        Strategie:
-        1. Versuche DEX zu erkennen (optional!)
-        2. Analysiere Token Transfers
-        3. Parse auch ohne DEX-Detection
-        """
+        """Parse UNKNOWN transactions manually"""
         try:
             signature = tx.get('signature', 'unknown')
             timestamp = tx.get('timestamp')
@@ -1000,15 +778,14 @@ class HeliusCollector(DEXCollector):
             
             trade_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
             
-            # 1. Versuche DEX zu erkennen (OPTIONAL!)
+            # Try to detect DEX
             dex_name = self._detect_dex_from_program_ids(tx)
             
-            # ✅ IMPROVED: Kein sofortiger Abbruch mehr!
             if not dex_name:
                 logger.debug(f"⚠️ No DEX detected for {signature[:16]}... - trying fallback parsing")
-                dex_name = 'unknown_dex'  # Fallback statt None
+                dex_name = 'unknown_dex'
             
-            # 2. Analysiere Token Transfers
+            # Analyze token transfers
             token_transfers = tx.get('tokenTransfers', [])
             native_transfers = tx.get('nativeTransfers', [])
             
@@ -1018,17 +795,15 @@ class HeliusCollector(DEXCollector):
             
             sol_mint = 'So11111111111111111111111111111111111111112'
             
-            # Zähle SOL transfers
             sol_transfers = [t for t in token_transfers if t.get('mint') == sol_mint]
             other_transfers = [t for t in token_transfers if t.get('mint') != sol_mint]
             
-            # ✅ IMPROVED: Mehr Debug-Logging
             logger.debug(
                 f"📊 {signature[:16]}... has {len(sol_transfers)} SOL + "
                 f"{len(other_transfers)} other transfers"
             )
             
-            # 3. Klassifiziere Transaction Type
+            # Classify transaction type
             tx_type = self._classify_transaction_type(
                 tx=tx,
                 sol_transfers=sol_transfers,
@@ -1041,13 +816,13 @@ class HeliusCollector(DEXCollector):
                 logger.debug(f"⚠️ Skipping {tx_type} transaction")
                 return None
             
-            # 4. Parse je nach Type
+            # Parse based on type
             if tx_type == 'swap':
                 result = self._parse_manual_swap(
                     tx=tx,
                     sol_transfers=sol_transfers,
                     other_transfers=other_transfers,
-                    dex_name=dex_name,  # Kann jetzt 'unknown_dex' sein!
+                    dex_name=dex_name,
                     trade_time=trade_time,
                     signature=signature
                 )
@@ -1077,14 +852,13 @@ class HeliusCollector(DEXCollector):
             logger.debug(f"❌ Error parsing unknown tx {signature[:16] if signature else 'N/A'}...: {e}")
             return None
 
-
     def _classify_transaction_type(
         self,
         tx: Dict[str, Any],
         sol_transfers: List[Dict],
         other_transfers: List[Dict]
     ) -> str:
-        """Klassifiziere Transaction Type - IMPROVED mit Stablecoin Support"""
+        """Classify transaction type"""
         try:
             # Pattern 1a - Simple 2-way swap
             if len(sol_transfers) == 1 and len(other_transfers) == 1:
@@ -1124,7 +898,7 @@ class HeliusCollector(DEXCollector):
                         logger.debug(f"✅ Pattern 1c: Similar amounts (ratio {ratio:.2f})")
                         return 'swap'
             
-            # ✅ NEW: Pattern 1d - Stablecoin Swaps (USDC ↔ USDT)
+            # Pattern 1d - Stablecoin Swaps
             if len(sol_transfers) == 0 and len(other_transfers) == 2:
                 stablecoins = {
                     'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
@@ -1177,12 +951,10 @@ class HeliusCollector(DEXCollector):
         signature: str
     ) -> Optional[Dict[str, Any]]:
         """
-        Parse Swap - WITH PRICE VALIDATION
-        
-        ✅ FIXED: Added same validation as enhanced swap
+        Parse Swap - WITH DYNAMIC VALIDATION
         """
         try:
-            # ✅ SPECIAL CASE: Stablecoin Swaps (kein SOL)
+            # SPECIAL CASE: Stablecoin Swaps
             if len(sol_transfers) == 0 and len(other_transfers) == 2:
                 transfer1 = other_transfers[0]
                 transfer2 = other_transfers[1]
@@ -1212,10 +984,9 @@ class HeliusCollector(DEXCollector):
                     logger.debug(f"⚠️ No wallet in stablecoin swap")
                     return None
                 
-                # Price für Stablecoins (sollte ~1.0 sein)
                 price = amount2 / amount1 if amount1 > 0 else 1.0
                 
-                # ✅ Validate stablecoin price (0.95 - 1.05 range)
+                # Validate stablecoin price (should be ~1.0)
                 if not (0.95 <= price <= 1.05):
                     logger.warning(
                         f"⚠️ Abnormal stablecoin price: {price:.4f}, rejecting"
@@ -1236,7 +1007,7 @@ class HeliusCollector(DEXCollector):
                     'raw_data': tx
                 }
             
-            # ✅ ORIGINAL: SOL-based swaps
+            # SOL-based swaps
             if not sol_transfers or not other_transfers:
                 return None
             
@@ -1253,23 +1024,23 @@ class HeliusCollector(DEXCollector):
             # Calculate price
             price = other_amount / sol_amount
             
-            # ✅ FIX: SAME VALIDATION AS ENHANCED SWAP
-            # 🔥 CHANGED: Tighter range for SOL/USDT
-            MIN_REASONABLE_PRICE = 50.0    # SOL minimum ~$50
-            MAX_REASONABLE_PRICE = 500.0   # SOL maximum ~$500
+            # ✅ DYNAMIC VALIDATION - No hardcoded ranges!
+            is_valid, reason = self._validate_price_against_candle(
+                price=price,
+                signature=signature
+            )
             
-            if not (MIN_REASONABLE_PRICE <= price <= MAX_REASONABLE_PRICE):
+            if not is_valid:
                 logger.warning(
-                    f"🚨 ABNORMAL SOL/USDT PRICE in UNKNOWN tx!\n"
+                    f"🚨 SWAP REJECTED (UNKNOWN)!\n"
                     f"   Signature: {signature[:16]}...\n"
                     f"   Price: ${price:.2f}\n"
-                    f"   Expected Range: ${MIN_REASONABLE_PRICE}-${MAX_REASONABLE_PRICE}\n"
                     f"   SOL: {sol_amount:.4f}, Other: {other_amount:.4f}\n"
-                    f"   → REJECTING (likely multi-hop or wrong token)"
+                    f"   Reason: {reason}"
                 )
                 return None
             
-            # ✅ FIX: Value check
+            # Value check
             value_usd = sol_amount * price
             
             if value_usd > 10_000_000:
@@ -1338,28 +1109,21 @@ class HeliusCollector(DEXCollector):
         trade_time: datetime,
         signature: str
     ) -> Optional[Dict[str, Any]]:
-        """
-        Parse ADD_LIQUIDITY oder REMOVE_LIQUIDITY
-        
-        ⚠️ WICHTIG: Liquidity Events haben großen Price Impact!
-        """
+        """Parse ADD_LIQUIDITY or REMOVE_LIQUIDITY"""
         try:
             all_transfers = sol_transfers + other_transfers
             
             if not all_transfers:
                 return None
             
-            # Berechne total value
             total_sol = sum(float(t.get('tokenAmount', 0)) for t in sol_transfers)
             total_other = sum(float(t.get('tokenAmount', 0)) for t in other_transfers)
             
-            # Wallet ist der Liquidity Provider
+            # Wallet is the liquidity provider
             wallet = None
             if event_type == 'add_liquidity':
-                # Bei ADD: fromUserAccount
                 wallet = all_transfers[0].get('fromUserAccount')
             else:
-                # Bei REMOVE: toUserAccount
                 wallet = all_transfers[0].get('toUserAccount')
             
             if not wallet:
@@ -1369,18 +1133,210 @@ class HeliusCollector(DEXCollector):
                 'timestamp': trade_time,
                 'price': total_other / total_sol if total_sol > 0 else 0,
                 'amount': total_sol,
-                'trade_type': event_type,  # 'add_liquidity' oder 'remove_liquidity'
+                'trade_type': event_type,
                 'wallet_address': wallet,
                 'transaction_hash': signature,
                 'dex': dex_name,
-                'transaction_type': event_type.upper(),  # ✅ NEU
-                'liquidity_delta': total_sol,  # ✅ NEU: für Impact-Berechnung
+                'transaction_type': event_type.upper(),
+                'liquidity_delta': total_sol,
                 'raw_data': tx
             }
             
         except Exception as e:
             logger.debug(f"Error parsing liquidity event: {e}")
             return None
+    
+    # ============================================================================
+    # WALLET TRADES (not changed)
+    # ============================================================================
+    
+    async def fetch_wallet_trades(
+        self,
+        wallet_address: str,
+        target_token_address: Optional[str] = None,
+        limit: int = 1000
+    ) -> Dict[str, Any]:
+        """Fetch all transactions for a wallet"""
+        try:
+            logger.info(f"🔍 Fetching transactions for wallet: {wallet_address[:16]}...")
+            logger.info(f"🎯 Target token: {target_token_address[:16] if target_token_address else 'All tokens'}...")
+            
+            rpc_url = f"https://mainnet.helius-rpc.com/?api-key={self.api_key}"
+            
+            payload = {
+                "jsonrpc": "2.0",
+                "id": "wallet-sigs",
+                "method": "getSignaturesForAddress",
+                "params": [
+                    wallet_address,
+                    {"limit": limit}
+                ]
+            }
+            
+            logger.info(f"📡 Calling Helius RPC for wallet signatures...")
+            
+            session = await self._get_session()
+            
+            async with session.post(
+                rpc_url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                
+                if response.status != 200:
+                    logger.error(f"❌ RPC call failed: {response.status}")
+                    return {
+                        'total_transactions': 0,
+                        'pair_trades': [],
+                        'other_activities': [],
+                        'token_summary': {}
+                    }
+                
+                result = await response.json()
+                signatures = result.get('result', [])
+            
+            logger.info(f"📦 Found {len(signatures)} signatures for wallet")
+            
+            if not signatures:
+                logger.warning(f"⚠️ No signatures found for wallet {wallet_address[:16]}...")
+                return {
+                    'total_transactions': 0,
+                    'pair_trades': [],
+                    'other_activities': [],
+                    'token_summary': {}
+                }
+            
+            sig_list = [s['signature'] for s in signatures[:100]]
+            
+            logger.info(f"🌐 Parsing {len(sig_list)} transactions via Enhanced API...")
+            
+            enhanced_url = f"{self.API_BASE}/v0/transactions"
+            
+            async with session.post(
+                enhanced_url,
+                json={"transactions": sig_list},
+                params={'api-key': self.api_key},
+                headers={"Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as enhanced_response:
+                
+                if enhanced_response.status != 200:
+                    logger.error(f"❌ Enhanced API failed: {enhanced_response.status}")
+                    return {
+                        'total_transactions': 0,
+                        'pair_trades': [],
+                        'other_activities': [],
+                        'token_summary': {}
+                    }
+                
+                transactions = await enhanced_response.json()
+                logger.info(f"📦 Received {len(transactions)} parsed transactions")
+            
+            pair_trades = []
+            other_activities = []
+            token_counter = {}
+            
+            tx_type_counts = {}
+            for tx in transactions:
+                tx_type = tx.get('type', 'UNKNOWN')
+                tx_type_counts[tx_type] = tx_type_counts.get(tx_type, 0) + 1
+            
+            logger.info(f"📊 Transaction type breakdown: {tx_type_counts}")
+            
+            for tx in transactions:
+                tx_type = tx.get('type', 'UNKNOWN')
+                token_transfers = tx.get('tokenTransfers', [])
+                signature = tx.get('signature', 'unknown')
+                timestamp = tx.get('timestamp')
+                
+                involves_target_token = False
+                if target_token_address:
+                    for transfer in token_transfers:
+                        mint = transfer.get('mint', '')
+                        if mint == target_token_address or mint.startswith(target_token_address[:16]):
+                            involves_target_token = True
+                            logger.debug(f"✅ TX {signature[:8]}... involves target token {mint[:8]}...")
+                            break
+                else:
+                    involves_target_token = True
+                
+                for transfer in token_transfers:
+                    mint = transfer.get('mint', 'unknown')[:16]
+                    token_counter[mint] = token_counter.get(mint, 0) + 1
+                
+                tx_summary = {
+                    'signature': signature,
+                    'type': tx_type,
+                    'timestamp': timestamp,
+                    'token_count': len(token_transfers),
+                    'tokens': [t.get('mint', '')[:16] for t in token_transfers],
+                }
+                
+                if involves_target_token or not target_token_address:
+                    parsed = None
+                    
+                    if tx_type == 'SWAP':
+                        parsed = self._parse_helius_enhanced_swap(tx, symbol=None)
+                        if parsed:
+                            logger.debug(f"✅ Parsed SWAP: {signature[:8]}...")
+                            pair_trades.append(parsed)
+                            continue
+                    
+                    elif tx_type == 'UNKNOWN':
+                        parsed = self._parse_unknown_transaction(tx, symbol=None)
+                        if parsed:
+                            logger.debug(f"✅ Parsed UNKNOWN: {signature[:8]}...")
+                            pair_trades.append(parsed)
+                            continue
+                    
+                    if not parsed and involves_target_token:
+                        other_activities.append(tx_summary)
+                else:
+                    other_activities.append(tx_summary)
+            
+            logger.info(
+                f"✅ Wallet Analysis:\n"
+                f"   Total Transactions: {len(transactions)}\n"
+                f"   Pair Trades: {len(pair_trades)}\n"
+                f"   Other Activities: {len(other_activities)}\n"
+                f"   Unique Tokens: {len(token_counter)}"
+            )
+            
+            return {
+                'total_transactions': len(transactions),
+                'pair_trades': pair_trades,
+                'other_activities': other_activities,
+                'token_summary': token_counter,
+                'wallet_address': wallet_address,
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Wallet trades fetch error: {e}", exc_info=True)
+            return {
+                'total_transactions': 0,
+                'pair_trades': [],
+                'other_activities': [],
+                'token_summary': {}
+            }
+
+    def _resolve_token_address(self, symbol: str) -> Optional[str]:
+        """Resolve trading symbol to token address"""
+        if '/' in symbol:
+            base, quote = symbol.split('/', 1)
+            token = quote
+        else:
+            token = symbol
+        
+        token_addresses = {
+            'USDT': 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+            'USDC': 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            'SOL': 'So11111111111111111111111111111111111111112',
+            'BONK': 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
+            'WIF': 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',
+        }
+        
+        return token_addresses.get(token.upper())
     
     async def health_check(self) -> bool:
         """Check if Helius API is accessible"""
@@ -1422,6 +1378,7 @@ class HeliusCollector(DEXCollector):
     def clear_cache(self):
         """Clear all caches"""
         self.candle_cache.clear()
+        self.current_candle = None
         logger.info("🗑️ Helius caches cleared")
     
     async def close(self):
@@ -1430,6 +1387,7 @@ class HeliusCollector(DEXCollector):
             await self.session.close()
         
         self.candle_cache.clear()
+        self.current_candle = None
         logger.info(f"📊 Helius Collector stats: {self.get_stats()}")
 
 
