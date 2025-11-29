@@ -651,12 +651,8 @@ class HybridPriceMoverAnalyzer:
         exchange: str,
         top_n: int
     ) -> List[Dict]:
-        """
-        Analyze DEX trades (wallet-based) - MAXIMUM DEBUG VERSION
+        """Analyze DEX trades (wallet-based) - WITH VALIDATION"""
         
-        Returns:
-            List of wallet entities with impact scores
-        """
         if not trades:
             logger.warning("⚠️ No trades provided for DEX analysis")
             return []
@@ -691,27 +687,66 @@ class HybridPriceMoverAnalyzer:
         
         logger.info(f"✅ Step 1: Normalized {len(normalized_trades)} trades")
         
-        # Log sample trade
-        if normalized_trades:
-            sample = normalized_trades[0]
-            logger.info(
-                f"📋 Sample trade: {sample.get('trade_type')} "
-                f"{sample.get('amount')} @ ${sample.get('price')} "
-                f"(wallet: {sample.get('wallet_address', 'N/A')[:16]}...)"
+        # ✅ NEW STEP 1.5: Validate and Filter Trades
+        logger.info(f"\n{'─'*80}")
+        logger.info(f"🔍 STEP 1.5: TRADE VALIDATION")
+        logger.info(f"{'─'*80}")
+        
+        validator = LiquidityValidator()
+        filtered = validator.filter_trades(
+            normalized_trades,
+            include_liquidity=True
+        )
+        
+        # Log invalid trades
+        if filtered['invalid_trades']:
+            logger.warning(
+                f"\n⚠️ {len(filtered['invalid_trades'])} INVALID TRADES REJECTED:"
             )
+            for idx, invalid in enumerate(filtered['invalid_trades'][:5]):
+                trade_data = invalid['trade']
+                logger.warning(
+                    f"   {idx+1}. {invalid['reason']}\n"
+                    f"      Price: ${trade_data.get('price', 0):.2f}\n"
+                    f"      Amount: {trade_data.get('amount', 0):.4f}\n"
+                    f"      Value: ${trade_data.get('amount', 0) * trade_data.get('price', 0):,.2f}\n"
+                    f"      Wallet: {trade_data.get('wallet_address', 'N/A')[:16]}..."
+                )
+            
+            if len(filtered['invalid_trades']) > 5:
+                logger.warning(f"   ... and {len(filtered['invalid_trades']) - 5} more")
+        
+        # Use validated trades
+        valid_swaps = filtered['valid_swaps']
+        liquidity_events = filtered['liquidity_events']
+        
+        logger.info(
+            f"\n✅ Validation Complete:\n"
+            f"   Valid Swaps: {len(valid_swaps)}\n"
+            f"   Liquidity Events: {len(liquidity_events)}\n"
+            f"   Rejected: {len(filtered['invalid_trades'])}"
+        )
+        logger.info(f"{'─'*80}\n")
+        
+        # Combine valid trades for analysis
+        all_valid_trades = valid_swaps + liquidity_events
+        
+        if not all_valid_trades:
+            logger.warning("⚠️ No valid trades after filtering")
+            return []
         
         # ==================== STEP 2: Group by Wallet ====================
         
         wallet_groups = defaultdict(list)
         trades_without_wallet = 0
         
-        for trade in normalized_trades:
+        for trade in all_valid_trades:  # ✅ CHANGED: Use all_valid_trades instead of normalized_trades
             wallet_addr = trade.get('wallet_address')
             if wallet_addr:
                 wallet_groups[wallet_addr].append(trade)
             else:
                 trades_without_wallet += 1
-        
+                
         if trades_without_wallet > 0:
             logger.warning(f"⚠️ {trades_without_wallet} trades without wallet_address")
         
