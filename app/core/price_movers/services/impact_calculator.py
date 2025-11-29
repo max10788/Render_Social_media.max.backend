@@ -210,6 +210,9 @@ class ImpactCalculator:
     ) -> float:
         """
         Berechne Volume Ratio - ENHANCED DEBUG VERSION
+        
+        Returns:
+            Normalized value (0.0 - 1.0)
         """
         try:
             logger.info(f"\n{'='*80}")
@@ -246,28 +249,65 @@ class ImpactCalculator:
             logger.info(f"  Wallet Volume USD: ${wallet_volume_usd:.2f}")
             logger.info(f"  Total Volume: ${total_volume:.2f}")
             
-            # Calculate ratio
+            # Calculate ratio (as FACTOR, not percent!)
             if total_volume <= 0:
                 logger.warning(f"❌ Total volume is 0, cannot divide -> return 0.0")
                 return 0.0
             
-            volume_ratio = wallet_volume_usd / total_volume
+            volume_factor = wallet_volume_usd / total_volume
             
-            logger.info(f"  Volume Ratio (RAW): {volume_ratio:.6f} ({volume_ratio*100:.2f}%)")
+            # ✅ NEW: Better logging with BOTH representations
+            logger.info(
+                f"\n📊 Volume Analysis:\n"
+                f"   Wallet: ${wallet_volume_usd:.2f}\n"
+                f"   Total:  ${total_volume:.2f}\n"
+                f"   Factor: {volume_factor:.4f}x\n"
+                f"   Percent: {volume_factor * 100:.2f}%"
+            )
             
-            # Sanity check
-            if volume_ratio > 1.0:
+            # ✅ Detect anomalies
+            if volume_factor > 1.0:
                 logger.warning(
-                    f"⚠️ Volume ratio > 1.0! "
-                    f"Wallet=${wallet_volume_usd:.2f}, Total=${total_volume:.2f}, "
-                    f"capping at 1.0"
+                    f"\n🚨 ANOMALY DETECTED!\n"
+                    f"   → Wallet volume EXCEEDS candle volume!\n"
+                    f"   → This indicates data quality issues!"
                 )
-                volume_ratio = 1.0
+                
+                # Check if it's a liquidity event
+                has_liquidity = any(
+                    t.get('transaction_type') in ['ADD_LIQUIDITY', 'REMOVE_LIQUIDITY']
+                    for t in wallet_trades
+                )
+                
+                if has_liquidity:
+                    logger.info(
+                        f"   ℹ️ This is a LIQUIDITY EVENT\n"
+                        f"   → Using special handling (capped at 1.0)"
+                    )
+                else:
+                    logger.error(
+                        f"   ❌ No liquidity event - LIKELY BAD DATA!\n"
+                        f"   → Check price validation in Helius parser"
+                    )
+                    
+                    # Show sample trades
+                    logger.error(f"\n   Sample trades:")
+                    for i, t in enumerate(wallet_trades[:3]):
+                        logger.error(
+                            f"      Trade {i+1}: "
+                            f"amount={t.get('amount'):.4f}, "
+                            f"price=${t.get('price'):.2f}, "
+                            f"value=${t.get('amount', 0) * t.get('price', 0):.2f}"
+                        )
+                
+                # Cap at 1.0
+                volume_factor = 1.0
+                logger.info(f"   → Capped at 1.0")
             
-            logger.info(f"  Volume Ratio (FINAL): {volume_ratio:.6f} ({volume_ratio*100:.2f}%)")
+            logger.info(f"\n✅ Final Volume Factor: {volume_factor:.4f}")
             logger.info(f"{'='*80}\n")
             
-            return volume_ratio
+            return volume_factor
             
         except Exception as e:
             logger.error(f"\n{'='*80}")
