@@ -766,7 +766,10 @@ class HeliusCollector(DEXCollector):
         """
         Parse a Helius Enhanced Transaction (SWAP type)
         
-        ✅ ENHANCED: Adds transaction_type field
+        ✅ FIXED: 
+        - Added price validation
+        - Token mint checking
+        - Value sanity checks
         """
         try:
             signature = tx.get('signature')
@@ -808,21 +811,78 @@ class HeliusCollector(DEXCollector):
                     input_mint = input_token.get('mint', '')
                     output_mint = output_token.get('mint', '')
                     
+                    # ✅ FIX 1: Known token mints
                     sol_mint = 'So11111111111111111111111111111111111111112'
                     
+                    quote_mints = {
+                        'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 'USDT',
+                        'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
+                    }
+                    
+                    # ✅ FIX 2: Determine correct price calculation
+                    sol_amount = 0
+                    quote_amount = 0
+                    
+                    # Case 1: Output is SOL (buying SOL)
                     if output_mint == sol_mint:
+                        sol_amount = output_amount
+                        quote_amount = input_amount
                         trade_type = 'buy'
-                        amount = output_amount
-                        if amount > 0:
-                            price = input_amount / amount
+                        
+                    # Case 2: Input is SOL (selling SOL)
                     elif input_mint == sol_mint:
+                        sol_amount = input_amount
+                        quote_amount = output_amount
                         trade_type = 'sell'
-                        amount = input_amount
-                        if amount > 0:
-                            price = output_amount / amount
+                        
                     else:
+                        # Not a SOL trade - skip
+                        logger.debug(
+                            f"⚠️ Swap without SOL: {input_mint[:8]}... → {output_mint[:8]}..."
+                        )
+                        return None
+                    
+                    # ✅ FIX 3: Calculate price with validation
+                    if sol_amount == 0 or quote_amount == 0:
+                        logger.debug(f"⚠️ Zero amount in swap")
+                        return None
+                    
+                    price = quote_amount / sol_amount
+                    amount = sol_amount
+                    
+                    # ✅ FIX 4: CRITICAL VALIDATION - Price Range Check
+                    MIN_REASONABLE_PRICE = 1.0     # SOL won't be < $1
+                    MAX_REASONABLE_PRICE = 10000.0 # SOL won't be > $10k
+                    
+                    if not (MIN_REASONABLE_PRICE <= price <= MAX_REASONABLE_PRICE):
+                        logger.warning(
+                            f"🚨 ABNORMAL PRICE DETECTED!\n"
+                            f"   Signature: {signature[:16]}...\n"
+                            f"   Calculated Price: ${price:.2f}\n"
+                            f"   SOL Amount: {sol_amount:.4f}\n"
+                            f"   Quote Amount: {quote_amount:.4f}\n"
+                            f"   Input Mint: {input_mint[:8]}...\n"
+                            f"   Output Mint: {output_mint[:8]}...\n"
+                            f"   → REJECTING THIS TRADE"
+                        )
+                        return None
+                    
+                    # ✅ FIX 5: Value sanity check
+                    value_usd = sol_amount * price
+                    MAX_REASONABLE_TRADE = 10_000_000  # $10M max per trade
+                    
+                    if value_usd > MAX_REASONABLE_TRADE:
+                        logger.warning(
+                            f"🚨 ABNORMALLY LARGE TRADE!\n"
+                            f"   Signature: {signature[:16]}...\n"
+                            f"   Value: ${value_usd:,.2f}\n"
+                            f"   Price: ${price:.2f}\n"
+                            f"   Amount: {sol_amount:.4f} SOL\n"
+                            f"   → REJECTING THIS TRADE"
+                        )
                         return None
             
+            # ✅ Fallback parsing from token_transfers
             if amount == 0 and len(token_transfers) >= 1:
                 sol_mint = 'So11111111111111111111111111111111111111112'
                 
@@ -838,6 +898,11 @@ class HeliusCollector(DEXCollector):
                                     other_amount = float(other_transfer.get('tokenAmount', 0))
                                     if amount > 0 and other_amount > 0:
                                         price = other_amount / amount
+                                        
+                                        # ✅ Validate fallback price too
+                                        if not (1.0 <= price <= 10000.0):
+                                            logger.warning(f"Invalid fallback price: ${price:.2f}")
+                                            return None
                                     break
                         
                         trade_type = 'swap'
@@ -849,6 +914,12 @@ class HeliusCollector(DEXCollector):
             if price == 0:
                 price = 1.0
             
+            # ✅ Final validation
+            logger.debug(
+                f"✅ Valid swap: {trade_type} {amount:.4f} SOL @ ${price:.2f} "
+                f"= ${amount * price:.2f}"
+            )
+            
             return {
                 'timestamp': trade_time,
                 'price': price,
@@ -857,7 +928,7 @@ class HeliusCollector(DEXCollector):
                 'wallet_address': wallet_address,
                 'transaction_hash': signature,
                 'dex': 'jupiter',
-                'transaction_type': 'SWAP',  # ✅ NEU
+                'transaction_type': 'SWAP',
                 'raw_data': tx
             }
             
