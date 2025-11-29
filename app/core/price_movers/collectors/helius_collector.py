@@ -850,20 +850,20 @@ class HeliusCollector(DEXCollector):
                     price = quote_amount / sol_amount
                     amount = sol_amount
                     
-                    # ✅ FIX 4: CRITICAL VALIDATION - Price Range Check
-                    MIN_REASONABLE_PRICE = 1.0     # SOL won't be < $1
-                    MAX_REASONABLE_PRICE = 10000.0 # SOL won't be > $10k
+                    MIN_REASONABLE_PRICE = 50.0   # SOL minimum ~$50
+                    MAX_REASONABLE_PRICE = 500.0  # SOL maximum ~$500
                     
                     if not (MIN_REASONABLE_PRICE <= price <= MAX_REASONABLE_PRICE):
                         logger.warning(
-                            f"🚨 ABNORMAL PRICE DETECTED!\n"
+                            f"🚨 ABNORMAL SOL/USDT PRICE DETECTED!\n"
                             f"   Signature: {signature[:16]}...\n"
                             f"   Calculated Price: ${price:.2f}\n"
+                            f"   Expected Range: ${MIN_REASONABLE_PRICE}-${MAX_REASONABLE_PRICE}\n"
                             f"   SOL Amount: {sol_amount:.4f}\n"
                             f"   Quote Amount: {quote_amount:.4f}\n"
                             f"   Input Mint: {input_mint[:8]}...\n"
                             f"   Output Mint: {output_mint[:8]}...\n"
-                            f"   → REJECTING THIS TRADE"
+                            f"   → REJECTING THIS TRADE (likely multi-hop or wrong token)"
                         )
                         return None
                     
