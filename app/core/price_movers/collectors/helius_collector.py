@@ -1,5 +1,5 @@
 """
-Helius Collector - PRODUCTION VERSION with Dynamic Price Validation
+Helius Collector - PRODUCTION VERSION with Dynamic Price Validation + DEBUG LOGGING
 
 🎯 FEATURES:
 - Token-based transaction fetching (not pool-based)
@@ -7,6 +7,7 @@ Helius Collector - PRODUCTION VERSION with Dynamic Price Validation
 - Dynamic price validation based on candle OHLC
 - Robust error handling
 - Comprehensive logging
+- 🔍 ENHANCED DEBUG LOGGING for troubleshooting
 
 🔧 PRICE VALIDATION:
 - Uses actual candle data (high/low) for validation
@@ -113,7 +114,7 @@ class HeliusCollector(DEXCollector):
         self.current_candle: Optional[Dict[str, Any]] = None
         
         logger.info(
-            f"✅ Helius Collector initialized (DYNAMIC PRICE VALIDATION) "
+            f"✅ Helius Collector initialized (DYNAMIC PRICE VALIDATION + DEBUG MODE) "
             f"- Known tokens: {len(self.TOKEN_MINTS)}"
         )
     
@@ -455,6 +456,10 @@ class HeliusCollector(DEXCollector):
                     logger.warning("⚠️ No transactions returned from Enhanced API")
                     return []
                 
+                # 🔍 DEBUG: Log first transaction structure
+                if transactions and len(transactions) > 0:
+                    logger.info(f"📝 SAMPLE TRANSACTION (first one):\n{json.dumps(transactions[0], indent=2)}")
+                
                 tx_types = {}
                 for tx in transactions:
                     tx_type = tx.get('type', 'UNKNOWN')
@@ -470,7 +475,7 @@ class HeliusCollector(DEXCollector):
                 'liquidity_events': 0,
                 'add_liquidity': 0,
                 'remove_liquidity': 0,
-                'price_rejected': 0,  # NEW!
+                'price_rejected': 0,
                 'parse_errors': []
             }
             
@@ -530,7 +535,7 @@ class HeliusCollector(DEXCollector):
                 f"(SWAP: {stats['swap_count']}, "
                 f"UNKNOWN parsed: {stats['unknown_parsed']}, "
                 f"Liquidity: +{stats['add_liquidity']}/-{stats['remove_liquidity']}, "
-                f"Price rejected: {stats['price_rejected']}, "  # NEW!
+                f"Price rejected: {stats['price_rejected']}, "
                 f"Parse errors: {len(stats['parse_errors'])})"
             )
             
@@ -731,7 +736,7 @@ class HeliusCollector(DEXCollector):
             return None
 
     # ============================================================================
-    # UNKNOWN TRANSACTION PARSING
+    # UNKNOWN TRANSACTION PARSING - WITH DEBUG LOGGING
     # ============================================================================
 
     def _detect_dex_from_program_ids(self, tx: Dict[str, Any]) -> Optional[str]:
@@ -768,7 +773,7 @@ class HeliusCollector(DEXCollector):
         tx: Dict[str, Any],
         symbol: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """Parse UNKNOWN transactions manually"""
+        """Parse UNKNOWN transactions manually - WITH ENHANCED DEBUG LOGGING"""
         try:
             signature = tx.get('signature', 'unknown')
             timestamp = tx.get('timestamp')
@@ -778,16 +783,31 @@ class HeliusCollector(DEXCollector):
             
             trade_time = datetime.fromtimestamp(timestamp, tz=timezone.utc)
             
+            # 🔍 DEBUG: Enhanced logging for UNKNOWN transactions
+            token_transfers = tx.get('tokenTransfers', [])
+            native_transfers = tx.get('nativeTransfers', [])
+            
+            logger.info(
+                f"🔍 UNKNOWN TX DEBUG:\n"
+                f"   Signature: {signature[:16]}...\n"
+                f"   Token Transfers: {len(token_transfers)}\n"
+                f"   Native Transfers: {len(native_transfers)}\n"
+                f"   Has 'events'?: {'events' in tx}\n"
+                f"   Has 'swap' in events?: {'swap' in tx.get('events', {})}\n"
+                f"   Token Details: {json.dumps([{
+                    'mint': t.get('mint', '')[:16] + '...',
+                    'amount': t.get('tokenAmount'),
+                    'from': t.get('fromUserAccount', '')[:16] + '...',
+                    'to': t.get('toUserAccount', '')[:16] + '...'
+                } for t in token_transfers[:3]], indent=2)}"
+            )
+            
             # Try to detect DEX
             dex_name = self._detect_dex_from_program_ids(tx)
             
             if not dex_name:
                 logger.debug(f"⚠️ No DEX detected for {signature[:16]}... - trying fallback parsing")
                 dex_name = 'unknown_dex'
-            
-            # Analyze token transfers
-            token_transfers = tx.get('tokenTransfers', [])
-            native_transfers = tx.get('nativeTransfers', [])
             
             if not token_transfers:
                 logger.debug(f"⚠️ No token transfers in {signature[:16]}...")
@@ -1147,7 +1167,7 @@ class HeliusCollector(DEXCollector):
             return None
     
     # ============================================================================
-    # WALLET TRADES (not changed)
+    # WALLET TRADES - WITH DEBUG LOGGING
     # ============================================================================
     
     async def fetch_wallet_trades(
@@ -1156,7 +1176,7 @@ class HeliusCollector(DEXCollector):
         target_token_address: Optional[str] = None,
         limit: int = 1000
     ) -> Dict[str, Any]:
-        """Fetch all transactions for a wallet"""
+        """Fetch all transactions for a wallet - WITH ENHANCED DEBUG LOGGING"""
         try:
             logger.info(f"🔍 Fetching transactions for wallet: {wallet_address[:16]}...")
             logger.info(f"🎯 Target token: {target_token_address[:16] if target_token_address else 'All tokens'}...")
@@ -1232,6 +1252,18 @@ class HeliusCollector(DEXCollector):
                 
                 transactions = await enhanced_response.json()
                 logger.info(f"📦 Received {len(transactions)} parsed transactions")
+            
+            # 🔍 DEBUG: Sample first 5 transactions
+            for i, tx in enumerate(transactions[:5]):
+                logger.info(
+                    f"🔍 TX Sample #{i+1}:\n"
+                    f"   Type: {tx.get('type')}\n"
+                    f"   Signature: {tx.get('signature', '')[:16]}...\n"
+                    f"   Token Transfers: {len(tx.get('tokenTransfers', []))}\n"
+                    f"   Has 'events'?: {'events' in tx}\n"
+                    f"   Has 'swap' in events?: {'swap' in tx.get('events', {})}\n"
+                    f"   First token: {tx.get('tokenTransfers', [{}])[0].get('mint', 'N/A')[:16] if tx.get('tokenTransfers') else 'None'}..."
+                )
             
             pair_trades = []
             other_activities = []
