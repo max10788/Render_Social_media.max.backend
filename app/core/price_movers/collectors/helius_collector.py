@@ -1287,16 +1287,52 @@ class HeliusCollector(DEXCollector):
                 signature = tx.get('signature', 'unknown')
                 timestamp = tx.get('timestamp')
                 
+                # 🔧 IMPROVED TOKEN FILTERING
+                # For SOL pairs: Accept ALL stablecoin pairs (USDT, USDC, etc.)
+                # For wallet analysis: We want to see ALL trades, not just specific pair
+                
                 involves_target_token = False
-                if target_token_address:
-                    for transfer in token_transfers:
-                        mint = transfer.get('mint', '')
-                        if mint == target_token_address or mint.startswith(target_token_address[:16]):
-                            involves_target_token = True
-                            logger.debug(f"✅ TX {signature[:8]}... involves target token {mint[:8]}...")
-                            break
-                else:
-                    involves_target_token = True
+                involves_sol = False
+                involves_stablecoin = False
+                
+                # Known stablecoins on Solana
+                stablecoins = {
+                    'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',  # USDT
+                    'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',  # USDC
+                }
+                sol_mint = 'So11111111111111111111111111111111111111112'
+                
+                for transfer in token_transfers:
+                    mint = transfer.get('mint', '')
+                    
+                    # Check for SOL
+                    if mint == sol_mint:
+                        involves_sol = True
+                    
+                    # Check for stablecoins
+                    if mint in stablecoins:
+                        involves_stablecoin = True
+                    
+                    # Check for specific target token
+                    if target_token_address and (mint == target_token_address or mint.startswith(target_token_address[:16])):
+                        involves_target_token = True
+                        logger.debug(f"✅ TX {signature[:8]}... involves target token {mint[:8]}...")
+                
+                # 🎯 FLEXIBLE FILTERING STRATEGY:
+                # 1. If no target specified: Parse all
+                # 2. If target specified but TX has SOL + any stablecoin: Parse (likely a SOL pair trade)
+                # 3. If target specified and TX has exact target: Parse
+                should_parse = (
+                    not target_token_address or  # No filter
+                    involves_target_token or      # Has exact target
+                    (involves_sol and involves_stablecoin)  # SOL + Stablecoin = likely SOL/USD pair
+                )
+                
+                if not should_parse:
+                    logger.debug(
+                        f"⏭️ Skipping TX {signature[:8]}... "
+                        f"(SOL:{involves_sol}, Stable:{involves_stablecoin}, Target:{involves_target_token})"
+                    )
                 
                 for transfer in token_transfers:
                     mint = transfer.get('mint', 'unknown')[:16]
@@ -1310,7 +1346,7 @@ class HeliusCollector(DEXCollector):
                     'tokens': [t.get('mint', '')[:16] for t in token_transfers],
                 }
                 
-                if involves_target_token or not target_token_address:
+                if should_parse:
                     parsed = None
                     
                     if tx_type == 'SWAP':
@@ -1327,7 +1363,7 @@ class HeliusCollector(DEXCollector):
                             pair_trades.append(parsed)
                             continue
                     
-                    if not parsed and involves_target_token:
+                    if not parsed:
                         other_activities.append(tx_summary)
                 else:
                     other_activities.append(tx_summary)
