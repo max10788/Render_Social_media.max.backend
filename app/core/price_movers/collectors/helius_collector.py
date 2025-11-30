@@ -1199,15 +1199,38 @@ class HeliusCollector(DEXCollector):
             }
             sol_mint = 'So11111111111111111111111111111111111111112'
             
-            # Find wallet by looking at first and last transfers
-            first_transfer = all_transfers[0]
-            last_transfer = all_transfers[-1]
+            # Find wallet using multiple strategies
+            # Strategy 1: Find account that appears in BOTH SOL and stablecoin transfers
+            sol_accounts = set()
+            for t in sol_transfers:
+                sol_accounts.add(t.get('fromUserAccount'))
+                sol_accounts.add(t.get('toUserAccount'))
             
-            wallet = (
-                first_transfer.get('fromUserAccount') or 
-                last_transfer.get('toUserAccount') or
-                first_transfer.get('toUserAccount')
-            )
+            stablecoin_accounts = set()
+            for t in other_transfers:
+                mint = t.get('mint', '')
+                if mint in stablecoins:
+                    stablecoin_accounts.add(t.get('fromUserAccount'))
+                    stablecoin_accounts.add(t.get('toUserAccount'))
+            
+            # Wallet is likely the account that appears in both
+            potential_wallets = sol_accounts & stablecoin_accounts
+            
+            if potential_wallets:
+                wallet = list(potential_wallets)[0]
+                logger.debug(f"   Wallet found (overlap): {wallet[:16]}...")
+            else:
+                # Fallback: Use first transfer's from account
+                first_transfer = all_transfers[0]
+                wallet = (
+                    first_transfer.get('fromUserAccount') or 
+                    first_transfer.get('toUserAccount')
+                )
+                logger.debug(f"   Wallet found (fallback): {wallet[:16] if wallet else 'None'}...")
+            
+            if not wallet:
+                logger.debug(f"⚠️ Multi-hop: No wallet found")
+                return None
             
             # Calculate net SOL flow
             sol_in = 0.0
@@ -1236,7 +1259,8 @@ class HeliusCollector(DEXCollector):
             logger.debug(f"   Net SOL: {net_sol:.4f} (in: {sol_in:.4f}, out: {sol_out:.4f})")
             
             # Try to find stablecoin involvement for price calculation
-            stablecoin_amount = 0.0
+            stablecoin_in = 0.0   # Stablecoin TO wallet
+            stablecoin_out = 0.0  # Stablecoin FROM wallet
             has_stablecoin = False
             
             for transfer in other_transfers:
@@ -1246,12 +1270,18 @@ class HeliusCollector(DEXCollector):
                     from_acc = transfer.get('fromUserAccount')
                     to_acc = transfer.get('toUserAccount')
                     
-                    # If wallet receives/sends stablecoin
-                    if to_acc == wallet or from_acc == wallet:
-                        stablecoin_amount = amount
+                    # Track stablecoin direction
+                    if to_acc == wallet:
+                        stablecoin_in += amount
                         has_stablecoin = True
-                        logger.debug(f"   Found {stablecoins[mint]}: {stablecoin_amount:.2f}")
-                        break
+                        logger.debug(f"   {stablecoins[mint]} IN: {amount:.2f}")
+                    elif from_acc == wallet:
+                        stablecoin_out += amount
+                        has_stablecoin = True
+                        logger.debug(f"   {stablecoins[mint]} OUT: {amount:.2f}")
+            
+            # Use whichever is larger for price calculation
+            stablecoin_amount = max(stablecoin_in, stablecoin_out)
             
             # Calculate price if possible
             price = 0.0
@@ -1268,12 +1298,33 @@ class HeliusCollector(DEXCollector):
                     logger.warning(f"⚠️ Multi-hop: Invalid price ${price:.2f}, using 0")
                     price = 0.0
             
-            # Determine trade type
-            trade_type = 'multi_hop_swap'
-            if sol_in > sol_out:
-                trade_type = 'buy'
-            elif sol_out > sol_in:
-                trade_type = 'sell'
+            # Determine trade type based on STABLECOIN DIRECTION (not just SOL flow!)
+            # BUY: Wallet sends stablecoin OUT, receives SOL IN
+            # SELL: Wallet sends SOL OUT, receives stablecoin IN
+            
+            trade_type = 'multi_hop_swap'  # Default
+            
+            if has_stablecoin:
+                # If wallet RECEIVES stablecoin → SELL (sold SOL for stablecoin)
+                if stablecoin_in > stablecoin_out:
+                    trade_type = 'sell'
+                    logger.debug(f"   → SELL (stablecoin IN: {stablecoin_in:.2f} > OUT: {stablecoin_out:.2f})")
+                # If wallet SENDS stablecoin → BUY (bought SOL with stablecoin)
+                elif stablecoin_out > stablecoin_in:
+                    trade_type = 'buy'
+                    logger.debug(f"   → BUY (stablecoin OUT: {stablecoin_out:.2f} > IN: {stablecoin_in:.2f})")
+                else:
+                    # Equal or ambiguous - fallback to SOL flow
+                    if sol_in > sol_out:
+                        trade_type = 'buy'
+                    elif sol_out > sol_in:
+                        trade_type = 'sell'
+            else:
+                # No stablecoin - use SOL flow only
+                if sol_in > sol_out:
+                    trade_type = 'buy'
+                elif sol_out > sol_in:
+                    trade_type = 'sell'
             
             if not wallet or net_sol == 0:
                 logger.debug(f"⚠️ Multi-hop: No wallet or zero SOL")
