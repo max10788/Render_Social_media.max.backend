@@ -316,7 +316,9 @@ async def get_enhanced_wallet_details(
                     f"   Symbol: {symbol}\n"
                     f"   Quote Token: {quote_token if '/' in symbol else 'N/A'}\n"
                     f"   Resolved Token Address: {token_address if token_address else 'NOT FOUND'}\n"
-                    f"   Expected USDT: Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+                    f"   Note: For SOL pairs, we parse ALL stablecoin pairs (USDT, USDC, etc.)\n"
+                    f"   Expected USDT: Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB\n"
+                    f"   Expected USDC: EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
                 )
                 
                 # Call new wallet-specific method
