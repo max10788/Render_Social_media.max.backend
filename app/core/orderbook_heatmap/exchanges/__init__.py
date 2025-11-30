@@ -1,10 +1,19 @@
 """
-DEX Exchange Integrations
+Exchange Integrations
 """
-from .base import BaseDEX
-from .uniswap_v3 import UniswapV3Exchange
+from .base import BaseExchange, CEXExchange, DEXExchange
+from .binance import BinanceExchange
+from .bitget import BitgetExchange
+from .kraken import KrakenExchange
+from .dex import UniswapV3Exchange
 
 __all__ = [
-    "BaseDEX",
+    "BaseExchange",
+    "CEXExchange",
+    "DEXExchange",
+    "BinanceExchange",
+    "BitgetExchange",
+    "KrakenExchange",
     "UniswapV3Exchange",
 ]
+
