@@ -1,5 +1,5 @@
 """
-Enhanced Wallet Detail Routes - DEX Wallet Support
+Enhanced Wallet Detail Routes - DEX Wallet Support + DEBUG LOGGING
 
 Neue Features:
 - ✅ Echte DEX Wallet-Adressen mit Explorer-URLs
@@ -7,6 +7,7 @@ Neue Features:
 - ✅ Cross-Exchange Wallet Lookup
 - ✅ On-Chain Verification Links
 - ✅ ECHTE TRADE-DATEN (keine Mocks mehr!)
+- 🔍 ENHANCED DEBUG LOGGING for troubleshooting
 """
 
 import logging
@@ -14,6 +15,7 @@ from typing import Optional, Dict, List
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 from pydantic import BaseModel, Field
+import json
 
 from app.core.price_movers.api.test_schemas import (
     ExchangeEnum,
@@ -237,7 +239,7 @@ def classify_wallet_type(statistics: WalletStatistics) -> str:
     response_model=EnhancedWalletDetailResponse,
     status_code=status.HTTP_200_OK,
     summary="Get Enhanced Wallet Details",
-    description="Vollständige Wallet-Details mit DEX-Support und Explorer-Links"
+    description="Vollständige Wallet-Details mit DEX-Support und Explorer-Links + DEBUG LOGGING"
 )
 async def get_enhanced_wallet_details(
     wallet_identifier: str,
@@ -249,7 +251,7 @@ async def get_enhanced_wallet_details(
     request_id: str = Depends(log_request)
 ) -> EnhancedWalletDetailResponse:
     """
-    Enhanced Wallet Details mit WALLET-SPEZIFISCHEM Lookup
+    Enhanced Wallet Details mit WALLET-SPEZIFISCHEM Lookup + DEBUG LOGGING
     
     Neu: Holt ALLE Transaktionen der Wallet, nicht nur Zeit-basiert!
     """
@@ -308,6 +310,15 @@ async def get_enhanced_wallet_details(
                 
                 logger.info(f"🔍 Using wallet-specific lookup (target token: {token_address[:16] if token_address else 'All'}...)")
                 
+                # 🔍 DEBUG: Log token resolution
+                logger.info(
+                    f"🔍 TOKEN RESOLUTION DEBUG:\n"
+                    f"   Symbol: {symbol}\n"
+                    f"   Quote Token: {quote_token if '/' in symbol else 'N/A'}\n"
+                    f"   Resolved Token Address: {token_address if token_address else 'NOT FOUND'}\n"
+                    f"   Expected USDT: Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+                )
+                
                 # Call new wallet-specific method
                 wallet_result = await helius.fetch_wallet_trades(
                     wallet_address=wallet_identifier,
@@ -326,6 +337,33 @@ async def get_enhanced_wallet_details(
                     f"   Other Activities: {len(other_activities)}\n"
                     f"   Unique Tokens: {len(token_summary)}"
                 )
+                
+                # 🔍 DEBUG: Show token summary
+                if token_summary:
+                    logger.info(f"🔍 Token Summary (top 10):")
+                    sorted_tokens = sorted(token_summary.items(), key=lambda x: x[1], reverse=True)[:10]
+                    for token, count in sorted_tokens:
+                        logger.info(f"   - {token}... : {count} transfers")
+                
+                # 🔍 DEBUG: Sample trades found
+                if wallet_trades:
+                    logger.info(f"🔍 SAMPLE TRADES FOUND (first 3):")
+                    for i, trade in enumerate(wallet_trades[:3]):
+                        logger.info(
+                            f"   Trade #{i+1}:\n"
+                            f"      Type: {trade.get('trade_type')}\n"
+                            f"      Amount: {trade.get('amount')}\n"
+                            f"      Price: {trade.get('price')}\n"
+                            f"      Wallet: {trade.get('wallet_address', '')[:16]}...\n"
+                            f"      Timestamp: {trade.get('timestamp')}"
+                        )
+                else:
+                    logger.warning(
+                        f"⚠️ NO TRADES FOUND!\n"
+                        f"   Wallet: {wallet_identifier[:16]}...\n"
+                        f"   Target Token: {token_address[:16] if token_address else 'None'}...\n"
+                        f"   Other Activities: {len(other_activities)}"
+                    )
                 
             else:
                 # ✅ Strategy 2: Fallback to time-based (optimized)
@@ -364,6 +402,26 @@ async def get_enhanced_wallet_details(
                     all_trades = trades_result.get('trades', [])
                     logger.info(f"📊 Fetched {len(all_trades)} total trades in {range_label}")
                     
+                    # 🔍 DEBUG: Sample wallets in all_trades
+                    if all_trades:
+                        sample_wallets = set()
+                        for trade in all_trades[:20]:
+                            w = (
+                                trade.get('wallet_address') or 
+                                trade.get('wallet_id') or
+                                trade.get('fromUserAccount') or
+                                trade.get('toUserAccount') or
+                                'unknown'
+                            )
+                            if w != 'unknown':
+                                sample_wallets.add(w[:16] + '...')
+                        
+                        logger.info(f"🔍 Sample wallets in {len(all_trades)} trades (first 10):")
+                        for sw in list(sample_wallets)[:10]:
+                            logger.info(f"   - {sw}")
+                        
+                        logger.info(f"🔍 Looking for: {wallet_identifier[:16]}...")
+                    
                     # Filter for wallet
                     wallet_trades = []
                     for trade in all_trades:
@@ -374,8 +432,13 @@ async def get_enhanced_wallet_details(
                             trade.get('toUserAccount')
                         )
                         
+                        # 🔍 DEBUG: Log matching attempts
+                        if trade_wallet:
+                            logger.debug(f"Comparing: {trade_wallet[:16]}... == {wallet_identifier[:16]}...")
+                        
                         if trade_wallet == wallet_identifier:
                             wallet_trades.append(trade)
+                            logger.info(f"✅ MATCH FOUND! Trade wallet: {trade_wallet[:16]}...")
                     
                     logger.info(f"✅ Found {len(wallet_trades)} trades for wallet in {range_label}")
                     
