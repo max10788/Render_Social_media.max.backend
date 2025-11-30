@@ -837,7 +837,7 @@ class HeliusCollector(DEXCollector):
             
             logger.debug(f"🔍 Classified as: {tx_type}")
             
-            if tx_type not in ['swap', 'add_liquidity', 'remove_liquidity']:
+            if tx_type not in ['swap', 'multi_hop_swap', 'add_liquidity', 'remove_liquidity']:
                 logger.debug(f"⚠️ Skipping {tx_type} transaction")
                 return None
             
@@ -854,6 +854,20 @@ class HeliusCollector(DEXCollector):
                 
                 if result:
                     logger.debug(f"✅ Parsed UNKNOWN as swap: {result['amount']:.4f} @ ${result['price']:.2f}")
+                return result
+            
+            elif tx_type == 'multi_hop_swap':
+                result = self._parse_multi_hop_swap(
+                    tx=tx,
+                    sol_transfers=sol_transfers,
+                    other_transfers=other_transfers,
+                    dex_name=dex_name,
+                    trade_time=trade_time,
+                    signature=signature
+                )
+                
+                if result:
+                    logger.debug(f"✅ Parsed UNKNOWN as multi-hop swap: {result['amount']:.4f}")
                 return result
                 
             elif tx_type in ['add_liquidity', 'remove_liquidity']:
@@ -883,8 +897,31 @@ class HeliusCollector(DEXCollector):
         sol_transfers: List[Dict],
         other_transfers: List[Dict]
     ) -> str:
-        """Classify transaction type"""
+        """Classify transaction type - WITH MULTI-HOP DETECTION"""
         try:
+            all_transfers = tx.get('tokenTransfers', [])
+            
+            # Pattern 0: Multi-hop swap (3+ token transfers with routing)
+            if len(all_transfers) >= 3:
+                # Check if this looks like a routing pattern (A->B->C)
+                # Typically: Input token → SOL → Output token
+                # Or: Multiple SOL transfers (routing through SOL)
+                
+                # Count unique mints
+                mints = set(t.get('mint', '') for t in all_transfers)
+                
+                # If we have 2+ different mints and multiple transfers, likely multi-hop
+                if len(mints) >= 2:
+                    # Check for routing pattern: same account appears in multiple transfers
+                    from_accounts = [t.get('fromUserAccount') for t in all_transfers]
+                    to_accounts = [t.get('toUserAccount') for t in all_transfers]
+                    
+                    # If accounts overlap between transfers = routing
+                    overlaps = set(from_accounts) & set(to_accounts)
+                    if len(overlaps) > 0:
+                        logger.debug(f"✅ Pattern 0: Multi-hop swap (routing through {len(overlaps)} accounts)")
+                        return 'multi_hop_swap'
+            
             # Pattern 1a - Simple 2-way swap
             if len(sol_transfers) == 1 and len(other_transfers) == 1:
                 sol_from = sol_transfers[0].get('fromUserAccount')
@@ -896,7 +933,7 @@ class HeliusCollector(DEXCollector):
                     logger.debug(f"✅ Pattern 1a: Simple 2-way swap")
                     return 'swap'
             
-            # Pattern 1b - Multi-hop swap
+            # Pattern 1b - Multi-hop swap (account overlap)
             if len(sol_transfers) >= 1 and len(other_transfers) >= 1:
                 sol_accounts = set()
                 for t in sol_transfers:
@@ -909,8 +946,13 @@ class HeliusCollector(DEXCollector):
                     other_accounts.add(t.get('toUserAccount'))
                 
                 if sol_accounts & other_accounts:
-                    logger.debug(f"✅ Pattern 1b: Multi-hop swap")
-                    return 'swap'
+                    # Check if it's simple or multi-hop
+                    if len(all_transfers) > 3:
+                        logger.debug(f"✅ Pattern 1b: Multi-hop swap")
+                        return 'multi_hop_swap'
+                    else:
+                        logger.debug(f"✅ Pattern 1b: Simple swap")
+                        return 'swap'
             
             # Pattern 1c - Similar amounts
             if len(sol_transfers) == 1 and len(other_transfers) == 1:
@@ -1122,6 +1164,141 @@ class HeliusCollector(DEXCollector):
             
         except Exception as e:
             logger.debug(f"Error parsing manual swap: {e}")
+            return None
+    
+    def _parse_multi_hop_swap(
+        self,
+        tx: Dict[str, Any],
+        sol_transfers: List[Dict],
+        other_transfers: List[Dict],
+        dex_name: str,
+        trade_time: datetime,
+        signature: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Parse Multi-Hop Swap (e.g., Token A → SOL → Token B)
+        
+        Strategy:
+        1. Find all SOL-involved hops
+        2. Calculate net SOL flow
+        3. If stablecoin involved: Calculate price
+        4. Otherwise: Mark as multi_hop without exact price
+        """
+        try:
+            all_transfers = tx.get('tokenTransfers', [])
+            
+            if not all_transfers or len(all_transfers) < 3:
+                return None
+            
+            logger.debug(f"🔄 Parsing multi-hop swap with {len(all_transfers)} transfers")
+            
+            # Known stablecoins
+            stablecoins = {
+                'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v': 'USDC',
+                'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB': 'USDT',
+            }
+            sol_mint = 'So11111111111111111111111111111111111111112'
+            
+            # Find wallet by looking at first and last transfers
+            first_transfer = all_transfers[0]
+            last_transfer = all_transfers[-1]
+            
+            wallet = (
+                first_transfer.get('fromUserAccount') or 
+                last_transfer.get('toUserAccount') or
+                first_transfer.get('toUserAccount')
+            )
+            
+            # Calculate net SOL flow
+            sol_in = 0.0
+            sol_out = 0.0
+            
+            for transfer in sol_transfers:
+                amount = float(transfer.get('tokenAmount', 0))
+                from_acc = transfer.get('fromUserAccount')
+                to_acc = transfer.get('toUserAccount')
+                
+                # If wallet receives SOL
+                if to_acc == wallet:
+                    sol_in += amount
+                # If wallet sends SOL
+                elif from_acc == wallet:
+                    sol_out += amount
+            
+            net_sol = abs(sol_in - sol_out)
+            
+            if net_sol == 0:
+                # No net SOL flow - might be routing through SOL
+                # Use largest SOL transfer as proxy
+                sol_amounts = [float(t.get('tokenAmount', 0)) for t in sol_transfers]
+                net_sol = max(sol_amounts) if sol_amounts else 0
+            
+            logger.debug(f"   Net SOL: {net_sol:.4f} (in: {sol_in:.4f}, out: {sol_out:.4f})")
+            
+            # Try to find stablecoin involvement for price calculation
+            stablecoin_amount = 0.0
+            has_stablecoin = False
+            
+            for transfer in other_transfers:
+                mint = transfer.get('mint', '')
+                if mint in stablecoins:
+                    amount = float(transfer.get('tokenAmount', 0))
+                    from_acc = transfer.get('fromUserAccount')
+                    to_acc = transfer.get('toUserAccount')
+                    
+                    # If wallet receives/sends stablecoin
+                    if to_acc == wallet or from_acc == wallet:
+                        stablecoin_amount = amount
+                        has_stablecoin = True
+                        logger.debug(f"   Found {stablecoins[mint]}: {stablecoin_amount:.2f}")
+                        break
+            
+            # Calculate price if possible
+            price = 0.0
+            if has_stablecoin and net_sol > 0:
+                price = stablecoin_amount / net_sol
+                
+                # Validate price
+                is_valid, reason = self._validate_price_against_candle(
+                    price=price,
+                    signature=signature
+                )
+                
+                if not is_valid:
+                    logger.warning(f"⚠️ Multi-hop: Invalid price ${price:.2f}, using 0")
+                    price = 0.0
+            
+            # Determine trade type
+            trade_type = 'multi_hop_swap'
+            if sol_in > sol_out:
+                trade_type = 'buy'
+            elif sol_out > sol_in:
+                trade_type = 'sell'
+            
+            if not wallet or net_sol == 0:
+                logger.debug(f"⚠️ Multi-hop: No wallet or zero SOL")
+                return None
+            
+            logger.debug(
+                f"✅ Multi-hop swap: {trade_type} {net_sol:.4f} SOL "
+                f"@ ${price:.2f if price > 0 else 'unknown'} "
+                f"(wallet: {wallet[:8]}..., dex: {dex_name})"
+            )
+            
+            return {
+                'timestamp': trade_time,
+                'price': price if price > 0 else 1.0,  # Fallback to 1.0 if no price
+                'amount': net_sol,
+                'trade_type': trade_type,
+                'wallet_address': wallet,
+                'transaction_hash': signature,
+                'dex': dex_name,
+                'transaction_type': 'MULTI_HOP_SWAP',
+                'raw_data': tx
+            }
+            
+        except Exception as e:
+            logger.debug(f"Error parsing multi-hop swap: {e}")
             return None
             
     def _parse_liquidity_event(
