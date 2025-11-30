@@ -787,6 +787,16 @@ class HeliusCollector(DEXCollector):
             token_transfers = tx.get('tokenTransfers', [])
             native_transfers = tx.get('nativeTransfers', [])
             
+            # Build token details for logging
+            token_details = [
+                {
+                    'mint': t.get('mint', '')[:16] + '...',
+                    'amount': t.get('tokenAmount'),
+                    'from': t.get('fromUserAccount', '')[:16] + '...',
+                    'to': t.get('toUserAccount', '')[:16] + '...'
+                } for t in token_transfers[:3]
+            ]
+            
             logger.info(
                 f"🔍 UNKNOWN TX DEBUG:\n"
                 f"   Signature: {signature[:16]}...\n"
@@ -794,12 +804,7 @@ class HeliusCollector(DEXCollector):
                 f"   Native Transfers: {len(native_transfers)}\n"
                 f"   Has 'events'?: {'events' in tx}\n"
                 f"   Has 'swap' in events?: {'swap' in tx.get('events', {})}\n"
-                f"   Token Details: {json.dumps([{
-                    'mint': t.get('mint', '')[:16] + '...',
-                    'amount': t.get('tokenAmount'),
-                    'from': t.get('fromUserAccount', '')[:16] + '...',
-                    'to': t.get('toUserAccount', '')[:16] + '...'
-                } for t in token_transfers[:3]], indent=2)}"
+                f"   Token Details: {json.dumps(token_details, indent=2)}"
             )
             
             # Try to detect DEX
