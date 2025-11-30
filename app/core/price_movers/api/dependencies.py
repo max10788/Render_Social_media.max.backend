@@ -1,9 +1,10 @@
 """
-FastAPI Dependencies - COMPLETE WITH DEX SUPPORT
+FastAPI Dependencies - COMPLETE WITH DEX SUPPORT - FIXED HELIUS INIT
 
 ✅ CEX: Binance US (no geo-restrictions)
 ✅ DEX: Dexscreener (free) + Helius (Solana) + Moralis (multi-chain)
 ✅ Proper initialization with error handling
+🔧 FIXED: Helius Collector initialization
 """
 
 import logging
@@ -64,7 +65,9 @@ async def get_unified_collector() -> UnifiedCollector:
     if birdeye_key:
         logger.info("✅ Birdeye API Key loaded")
     if helius_key:
-        logger.info(f"✅ Helius API Key: {helius_key[:8]}...")
+        logger.info(f"✅ Helius API Key: {helius_key[:8]}... (length: {len(helius_key)})")
+    else:
+        logger.error("❌ HELIUS_API_KEY NOT FOUND!")
     if bitquery_key:
         logger.info("✅ Bitquery API Key loaded")
     logger.info("✅ Binance US: Using public API (no geo-restrictions)")
@@ -94,15 +97,37 @@ async def get_unified_collector() -> UnifiedCollector:
         except Exception as e:
             logger.warning(f"⚠️ Dexscreener init failed: {e}")
         
-        # Helius
+        # 🔧 HELIUS - CRITICAL FIX!
         if helius_key:
             try:
+                logger.info(f"🔧 Initializing Helius with API key: {helius_key[:8]}...")
+                
+                # Import MUST work
                 from app.core.price_movers.collectors.helius_collector import HeliusCollector
+                logger.info("✅ HeliusCollector class imported successfully")
+                
+                # Create instance
                 helius_instance = HeliusCollector(api_key=helius_key)
+                logger.info("✅ HeliusCollector instance created")
+                
+                # Test health check
+                is_healthy = await helius_instance.health_check()
+                logger.info(f"✅ Helius health check: {is_healthy}")
+                
+                # Add to dict
                 dex_collectors_dict['helius'] = helius_instance
-                logger.info(f"✅ Helius initialized (Solana)")
+                logger.info("✅ Helius added to collectors dict")
+                
+                # 🔍 VERIFY IT'S THERE
+                logger.info(f"🔍 Helius in dict? {'helius' in dex_collectors_dict}")
+                logger.info(f"🔍 Helius instance type: {type(dex_collectors_dict.get('helius'))}")
+                
+            except ImportError as e:
+                logger.error(f"❌ CRITICAL: Cannot import HeliusCollector: {e}", exc_info=True)
             except Exception as e:
-                logger.error(f"⚠️ Helius init failed: {e}", exc_info=True)
+                logger.error(f"❌ CRITICAL: Helius init failed: {e}", exc_info=True)
+        else:
+            logger.error("❌ HELIUS_API_KEY is None or empty!")
         
         # Moralis
         if moralis_key:
@@ -127,7 +152,12 @@ async def get_unified_collector() -> UnifiedCollector:
         
         logger.info(f"📊 DEX Collectors initialized: {list(dex_collectors_dict.keys())}")
         
+        # 🔍 DEBUG: Verify all collectors
+        for name, collector in dex_collectors_dict.items():
+            logger.info(f"   - {name}: {type(collector).__name__}")
+        
         # Create UnifiedCollector
+        logger.info("🔧 Creating UnifiedCollector with collectors...")
         collector = UnifiedCollector(
             helius_collector=dex_collectors_dict.get('helius'),
             dexscreener_collector=dex_collectors_dict.get('dexscreener'),
@@ -145,10 +175,17 @@ async def get_unified_collector() -> UnifiedCollector:
             f"DEX={available['dex']} ({len(available['dex'])} exchanges)"
         )
         
+        # 🔍 FINAL VERIFICATION
+        logger.info(f"🔍 FINAL CHECK: helius_collector in UnifiedCollector? {collector.helius_collector is not None}")
+        logger.info(f"🔍 FINAL CHECK: helius_collector type: {type(collector.helius_collector)}")
+        
         return collector
         
     except Exception as e:
         logger.error(f"❌ Failed to create UnifiedCollector: {e}", exc_info=True)
+        
+        # Fallback: Create minimal UnifiedCollector
+        logger.warning("⚠️ Creating FALLBACK UnifiedCollector (CEX only)")
         collector = UnifiedCollector(cex_credentials={'binance': {'api_key': '', 'api_secret': ''}})
         _unified_collector_instance = collector
         return collector
@@ -293,6 +330,10 @@ async def startup_event():
     
     try:
         collector = await get_unified_collector()
+        
+        # 🔍 VERIFY HELIUS
+        logger.info(f"🔍 STARTUP CHECK: Helius available? {collector.helius_collector is not None}")
+        
         health = await collector.health_check()
         logger.info(f"📊 Health Check: {health}")
         
