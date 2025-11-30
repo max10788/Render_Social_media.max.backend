@@ -113,6 +113,9 @@ class HeliusCollector(DEXCollector):
         # Current candle for price validation
         self.current_candle: Optional[Dict[str, Any]] = None
         
+        # Flag to disable validation during candle building
+        self._building_candle = False
+        
         logger.info(
             f"✅ Helius Collector initialized (DYNAMIC PRICE VALIDATION + DEBUG MODE) "
             f"- Known tokens: {len(self.TOKEN_MINTS)}"
@@ -434,7 +437,27 @@ class HeliusCollector(DEXCollector):
                 logger.warning("⚠️ No signatures in requested time range")
                 return []
             
-            filtered_sigs = filtered_sigs[:min(len(filtered_sigs), 100)]
+            # 🎯 ADAPTIVE LIMIT based on timeframe
+            # Longer timeframes need more signatures to ensure good coverage
+            timeframe_seconds = int((end_time - start_time).total_seconds())
+            
+            if timeframe_seconds <= 900:  # 15min or less
+                max_sigs = 100
+            elif timeframe_seconds <= 1800:  # 30min
+                max_sigs = 200
+            elif timeframe_seconds <= 3600:  # 1h
+                max_sigs = 500
+            else:  # > 1h
+                max_sigs = 1000
+            
+            logger.info(
+                f"📏 Timeframe: {timeframe_seconds}s ({timeframe_seconds//60}min) "
+                f"→ Max signatures: {max_sigs}"
+            )
+            
+            filtered_sigs = filtered_sigs[:min(len(filtered_sigs), max_sigs)]
+            
+            logger.info(f"✂️ Limited to {len(filtered_sigs)} signatures for parsing")
             
             # Parse transactions
             logger.info(f"🌐 Step 2: Parsing {len(filtered_sigs)} transactions via Enhanced API")
