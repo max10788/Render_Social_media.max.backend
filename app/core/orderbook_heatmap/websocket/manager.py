@@ -4,7 +4,7 @@ WebSocket Manager für Live-Updates
 import asyncio
 import json
 import logging
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Set  # ← FIXED: Set import hinzugefügt
 from fastapi import WebSocket
 
 
@@ -44,7 +44,7 @@ class WebSocketManager:
         Args:
             websocket: WebSocket connection
         """
-        for symbol, connections in self.active_connections.items():
+        for symbol, connections in list(self.active_connections.items()):  # ← FIXED: list() hinzugefügt für safe iteration
             if websocket in connections:
                 connections.remove(websocket)
                 logger.info(f"WebSocket disconnected from {symbol}. Remaining: {len(connections)}")
@@ -87,7 +87,7 @@ class WebSocketManager:
                     
                     # Sende an alle Clients
                     disconnected = []
-                    for websocket in connections:
+                    for websocket in list(connections):  # ← FIXED: list() für safe iteration
                         try:
                             await websocket.send_json(message)
                         except Exception as e:
