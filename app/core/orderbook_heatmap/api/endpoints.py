@@ -180,11 +180,24 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
             await aggregator.connect_all(data.symbol, data.dex_pools)
             logger.info("  ✅ Connected to all exchanges")
             
-            # Setze Callback für WebSocket Broadcasts
+            # ========================================================
+            # 🔧 FIXED: Async Callback statt Lambda
+            # ========================================================
             if ws_manager is None:
                 ws_manager = WebSocketManager()
-            aggregator.add_update_callback(lambda: ws_manager.broadcast_update(aggregator))
-            logger.info("  ✅ WebSocket callback set")
+                logger.info("  ✅ WebSocketManager initialized")
+            
+            # FIXED: Definiere async function statt Lambda
+            async def async_broadcast_callback():
+                """Async wrapper für broadcast_update"""
+                try:
+                    await ws_manager.broadcast_update(aggregator)
+                except Exception as e:
+                    logger.error(f"Broadcast callback error: {e}")
+            
+            aggregator.add_update_callback(async_broadcast_callback)
+            logger.info("  ✅ WebSocket callback set (async)")
+            # ========================================================
             
         except ImportError as e:
             logger.warning(f"⚠️ Could not initialize full aggregator (missing modules): {e}")
