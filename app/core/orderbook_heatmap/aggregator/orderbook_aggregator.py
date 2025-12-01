@@ -7,8 +7,8 @@ from typing import Dict, List, Optional, Callable
 from datetime import datetime
 from collections import defaultdict
 
-from ..models.orderbook import Orderbook, AggregatedOrderbook, Exchange
-from ..models.heatmap import HeatmapSnapshot, PriceLevel, HeatmapTimeSeries, HeatmapConfig
+from app.core.orderbook_heatmap.models.orderbook import Orderbook, AggregatedOrderbook, Exchange
+from app.core.orderbook_heatmap.models.heatmap import HeatmapSnapshot, PriceLevel, HeatmapTimeSeries, HeatmapConfig
 from ..exchanges import (
     BaseExchange, BinanceExchange, BitgetExchange, 
     KrakenExchange, UniswapV3Exchange
