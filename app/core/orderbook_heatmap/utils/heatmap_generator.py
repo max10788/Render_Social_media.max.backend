@@ -5,7 +5,7 @@ from typing import List, Dict, Tuple, Optional
 import numpy as np
 from datetime import datetime
 
-from ..models.heatmap import HeatmapSnapshot, HeatmapTimeSeries, HeatmapConfig
+from app.core.orderbook_heatmap.models.heatmap import HeatmapSnapshot, HeatmapTimeSeries, HeatmapConfig
 
 
 class HeatmapGenerator:
