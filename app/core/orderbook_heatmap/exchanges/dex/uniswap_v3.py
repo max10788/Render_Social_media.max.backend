@@ -8,7 +8,7 @@ import aiohttp
 from decimal import Decimal
 import math
 
-from app.core.orderbook_heatmap.exchanges.dex.base import DEXExchange
+from app.core.orderbook_heatmap.exchanges.dex.base import DEXExchange, BaseDEX
 from app.core.orderbook_heatmap.models.orderbook import (
     Orderbook, OrderbookLevel, OrderbookSide, Exchange, DEXLiquidityTick
 )
