@@ -5,13 +5,13 @@ gunicorn==21.2.0
 
 # Web & HTTP
 aiohttp==3.9.1
-httpx==0.23.3  # Fix: Kompatibel mit solana 0.30.0 (benötigt <0.24.0)
+httpx==0.23.3  # Fix: Kompatibel mit solana 0.30.0
 python-multipart==0.0.6
 email-validator==2.1.0
 jinja2==3.1.2
 requests==2.31.0
 urllib3==2.0.4
-websockets==10.4  # Fix: Kompatibel mit solana 0.30.0 (<11.0) und web3 6.17.1 (>=10.0.0)
+websockets==10.4  # Fix: Kompatibel mit solana + web3
 
 # Core Dependencies
 aiofiles==23.1.0
@@ -34,8 +34,7 @@ scipy==1.10.1
 scikit-learn>=1.0.0,<1.4.0
 
 # JSON RPC + Validierung
-pydantic==2.5.3
-pydantic-settings==2.1.0
+pydantic==1.10.13  # ← DOWNGRADE zu v1 (keine Code-Änderungen nötig!)
 jsonschema==4.19.0
 
 # Scheduling & Automation
