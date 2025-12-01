@@ -9,11 +9,11 @@ from collections import defaultdict
 
 from app.core.orderbook_heatmap.models.orderbook import Orderbook, AggregatedOrderbook, Exchange
 from app.core.orderbook_heatmap.models.heatmap import HeatmapSnapshot, PriceLevel, HeatmapTimeSeries, HeatmapConfig
-from ..exchanges import (
-    BaseExchange, BinanceExchange, BitgetExchange, 
-    KrakenExchange, UniswapV3Exchange
-)
-
+from app.core.orderbook_heatmap.exchanges.base import BaseExchange 
+from app.core.orderbook_heatmap.exchanges.binance import BinanceExchange
+from app.core.orderbook_heatmap.exchanges.bitget import BitgetExchange
+from app.core.orderbook_heatmap.exchanges.kraken import KrakenExchange
+from app.core.orderbook_heatmap.exchanges.dex.uniswap_v3 import UniswapV3Exchange
 
 logger = logging.getLogger(__name__)
 
