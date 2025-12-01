@@ -1,5 +1,4 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import AnyUrl, field_validator
+from pydantic import BaseSettings, AnyUrl, validator
 from typing import Optional, Dict, Any
 from functools import lru_cache
 import os
@@ -19,7 +18,7 @@ class SolanaConfig:
         self.primary_rpc_url = os.getenv("SOLANA_RPC_URL")
         self.fallback_rpc_urls = self._get_fallback_rpc_urls()
         self.rate_limit_rate = int(os.getenv("SOLANA_RATE_LIMIT_RATE", "50"))
-        self.rate_limit_capacity = os.getenv("SOLANA_RATE_LIMIT_CAPACITY", "100")
+        self.rate_limit_capacity = int(os.getenv("SOLANA_RATE_LIMIT_CAPACITY", "100"))
         self.health_check_interval = int(os.getenv("SOLANA_HEALTH_CHECK_INTERVAL", "60"))
 
     def _get_fallback_rpc_urls(self) -> list[str]:
@@ -31,7 +30,7 @@ class Settings(BaseSettings):
     # Existing Settings
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./crypto_tracker.db")
     REDIS_URL: Optional[str] = os.getenv("REDIS_URL")
-    
+
     # Twitter API Settings
     TWITTER_BEARER_TOKEN: Optional[str] = os.getenv("TWITTER_BEARER_TOKEN")
     TWITTER_API_KEY: Optional[str] = os.getenv("TWITTER_API_KEY")
@@ -40,7 +39,7 @@ class Settings(BaseSettings):
     TWITTER_ACCESS_SECRET: Optional[str] = os.getenv("TWITTER_ACCESS_SECRET")
     
     # Blockchain RPC URLs
-    SOLANA_RPC_URL: str = os.getenv("SOLANA_RPC_URL", "https://api.devnet.solana.com")
+    SOLANA_RPC_URL: str = os.getenv("SOLANA_RPC_URL", "https://api.devnet.solana.com  ")
     ETHEREUM_RPC_URL: Optional[str] = os.getenv("ETHEREUM_RPC_URL")
     BINANCE_RPC_URL: Optional[str] = os.getenv("BINANCE_RPC_URL")
     POLYGON_RPC_URL: Optional[str] = os.getenv("POLYGON_RPC_URL")
@@ -62,7 +61,7 @@ class Settings(BaseSettings):
     
     # Cache Settings
     CACHE_TTL: int = 3600
-    
+
     # New Settings for Solana Tracking
     MAX_CHAIN_DEPTH: int = 20
     TRANSACTION_BATCH_SIZE: int = 100
@@ -70,17 +69,15 @@ class Settings(BaseSettings):
     ENABLE_CACHING: bool = True
     ENABLE_RATE_LIMITING: bool = True
 
-    @field_validator("SOLANA_RPC_URL")
-    @classmethod
+    @validator("SOLANA_RPC_URL")
     def validate_rpc_url(cls, v: str) -> str:
         if not v:
             raise ValueError("SOLANA_RPC_URL must be set")
         return v
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        case_sensitive=True
-    )
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
 
 
 @lru_cache()
@@ -99,7 +96,6 @@ def validate_settings() -> None:
         "TWITTER_BEARER_TOKEN": settings.TWITTER_BEARER_TOKEN,
         "SECRET_KEY": settings.SECRET_KEY
     }
-    
     missing = [k for k, v in required.items() if not v]
     if missing:
         raise ValueError(f"Missing required settings: {', '.join(missing)}")
