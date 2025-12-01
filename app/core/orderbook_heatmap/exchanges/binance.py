@@ -9,7 +9,7 @@ import aiohttp
 import websockets
 
 from .base import CEXExchange
-from ..models.orderbook import (
+from app.core.orderbook_heatmap.models.orderbook import (
     Orderbook, OrderbookLevel, OrderbookSide, Exchange
 )
 
