@@ -7,7 +7,7 @@ import asyncio
 import logging
 from datetime import datetime
 
-from ..models.orderbook import Orderbook, Exchange, ExchangeType
+from app.core.orderbook_heatmap.models.orderbook import Orderbook, Exchange, ExchangeType
 
 
 logger = logging.getLogger(__name__)
