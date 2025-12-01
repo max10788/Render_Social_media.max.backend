@@ -14,7 +14,7 @@ from app.core.orderbook_heatmap.exchanges.binance import BinanceExchange
 from app.core.orderbook_heatmap.exchanges.bitget import BitgetExchange
 from app.core.orderbook_heatmap.exchanges.kraken import KrakenExchange
 from app.core.orderbook_heatmap.exchanges.dex.uniswap_v3 import UniswapV3Exchange
-from app.core.orderbook_heatmap.aggregator import OrderbookAggregator
+from app.core.orderbook_heatmap.aggregator.orderbook_aggregator import OrderbookAggregator
 from app.core.orderbook_heatmap.websocket import WebSocketManager
 
 
