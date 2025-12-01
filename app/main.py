@@ -32,7 +32,7 @@ from app.core.price_movers.api.analyze_routes import router as analyze_router  #
 from app.core.price_movers.api.wallet_detail_routes import router as wallet_detail_router
 from app.core.price_movers.api.hybrid_routes import router as hybrid_router
 from app.core.price_movers.api.routes_dex_chart import router as dex_chart_router
-from app.core.orderbook_heatmap.api import router as orderbook_heatmap_router
+from app.core.orderbook_heatmap.api.endpoints import router as orderbook_heatmap_router
 
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
