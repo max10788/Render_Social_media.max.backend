@@ -1,5 +1,5 @@
 """
-Bitget Exchange Integration
+Bitget Exchange Integration - FIXED VERSION
 """
 import asyncio
 import json
@@ -23,11 +23,16 @@ class BitgetExchange(CEXExchange):
     REST_API = "https://api.bitget.com"
     WS_API = "wss://ws.bitget.com/spot/v1/stream"
     
+    # ← FIXED: Reconnect-Limits hinzugefügt
+    MAX_RECONNECT_ATTEMPTS = 5
+    RECONNECT_DELAY = 5  # Sekunden
+    
     def __init__(self):
         super().__init__(Exchange.BITGET)
         self.session: Optional[aiohttp.ClientSession] = None
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self._current_symbol: Optional[str] = None
+        self._reconnect_count = 0  # ← FIXED: Reconnect-Counter
         
     async def connect(self, symbol: str) -> bool:
         """Verbindet zu Bitget WebSocket"""
@@ -102,11 +107,24 @@ class BitgetExchange(CEXExchange):
             return None
     
     async def _ws_loop(self, symbol: str):
-        """WebSocket Loop"""
-        while self.is_connected:
+        """
+        WebSocket Loop mit Reconnect-Limit
+        FIXED: Verhindert endlose Reconnect-Schleife
+        """
+        self._reconnect_count = 0  # Reset counter
+        
+        while self.is_connected and self._reconnect_count < self.MAX_RECONNECT_ATTEMPTS:
             try:
-                async with websockets.connect(self.WS_API) as ws:
+                logger.info(f"Bitget WebSocket connecting... (attempt {self._reconnect_count + 1}/{self.MAX_RECONNECT_ATTEMPTS})")
+                
+                async with websockets.connect(
+                    self.WS_API,
+                    ping_interval=20,  # ← FIXED: Ping alle 20 Sekunden
+                    ping_timeout=10,    # ← FIXED: Timeout nach 10 Sekunden
+                    close_timeout=5     # ← FIXED: Close Timeout
+                ) as ws:
                     self.ws = ws
+                    self._reconnect_count = 0  # Reset bei erfolgreicher Verbindung
                     
                     # Subscribe zu Orderbook
                     subscribe_msg = {
@@ -121,25 +139,70 @@ class BitgetExchange(CEXExchange):
                     
                     logger.info(f"Bitget WebSocket subscribed: {symbol}")
                     
-                    async for message in ws:
-                        if not self.is_connected:
-                            break
-                        
-                        data = json.loads(message)
-                        
-                        # Ping/Pong handling
-                        if data.get("event") == "ping":
-                            await ws.send(json.dumps({"event": "pong"}))
+                    # ← FIXED: Explizite Message-Loop mit Timeout
+                    while self.is_connected:
+                        try:
+                            # Warte auf Nachricht mit Timeout
+                            message = await asyncio.wait_for(
+                                ws.recv(),
+                                timeout=30.0  # 30 Sekunden Timeout
+                            )
+                            
+                            data = json.loads(message)
+                            
+                            # Ping/Pong handling
+                            if data.get("event") == "ping":
+                                await ws.send(json.dumps({"event": "pong"}))
+                                continue
+                            
+                            await self._handle_orderbook_update(data)
+                            
+                        except asyncio.TimeoutError:
+                            logger.warning("Bitget WebSocket: No message received for 30s, checking connection...")
+                            # Prüfe ob WebSocket noch offen ist
+                            if ws.closed:
+                                logger.warning("Bitget WebSocket is closed, reconnecting...")
+                                break
+                            # Sonst: Warte weiter auf Nachrichten
                             continue
                         
-                        await self._handle_orderbook_update(data)
-                        
-            except websockets.ConnectionClosed:
-                logger.warning("Bitget WebSocket closed, reconnecting...")
-                await asyncio.sleep(2)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Bitget WebSocket: Invalid JSON: {e}")
+                            continue
+                    
+            except websockets.ConnectionClosed as e:
+                self._reconnect_count += 1
+                logger.warning(
+                    f"Bitget WebSocket closed (code: {e.code}, reason: {e.reason}). "
+                    f"Reconnect attempt {self._reconnect_count}/{self.MAX_RECONNECT_ATTEMPTS}"
+                )
+                
+                if self._reconnect_count >= self.MAX_RECONNECT_ATTEMPTS:
+                    logger.error(f"Bitget WebSocket: Max reconnect attempts reached. Giving up.")
+                    self.is_connected = False
+                    break
+                
+                # ← FIXED: Exponentielles Backoff
+                delay = min(self.RECONNECT_DELAY * (2 ** (self._reconnect_count - 1)), 60)
+                logger.info(f"Waiting {delay}s before reconnecting...")
+                await asyncio.sleep(delay)
+                
             except Exception as e:
-                logger.error(f"Bitget WebSocket error: {e}")
-                await asyncio.sleep(2)
+                self._reconnect_count += 1
+                logger.error(
+                    f"Bitget WebSocket error: {e}. "
+                    f"Reconnect attempt {self._reconnect_count}/{self.MAX_RECONNECT_ATTEMPTS}"
+                )
+                
+                if self._reconnect_count >= self.MAX_RECONNECT_ATTEMPTS:
+                    logger.error(f"Bitget WebSocket: Max reconnect attempts reached. Giving up.")
+                    self.is_connected = False
+                    break
+                
+                delay = min(self.RECONNECT_DELAY * (2 ** (self._reconnect_count - 1)), 60)
+                await asyncio.sleep(delay)
+        
+        logger.info("Bitget WebSocket loop ended")
     
     async def _handle_orderbook_update(self, data: Dict[str, Any]):
         """Verarbeitet Orderbuch-Updates"""
