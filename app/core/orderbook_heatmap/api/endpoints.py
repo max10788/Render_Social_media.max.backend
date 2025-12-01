@@ -8,13 +8,14 @@ import asyncio
 import json
 import logging
 
-from ..models.orderbook import Exchange, AggregatedOrderbook
-from ..models.heatmap import HeatmapConfig, HeatmapSnapshot, HeatmapTimeSeries
-from ..exchanges import (
-    BinanceExchange, BitgetExchange, KrakenExchange, UniswapV3Exchange
-)
-from ..aggregator import OrderbookAggregator
-from ..websocket import WebSocketManager
+from app.core.orderbook_heatmap.models.orderbook import Exchange, AggregatedOrderbook
+from app.core.orderbook_heatmap.models.heatmap import HeatmapConfig, HeatmapSnapshot, HeatmapTimeSeries
+from app.core.orderbook_heatmap.exchanges.binance import BinanceExchange
+from app.core.orderbook_heatmap.exchanges.bitget import BitgetExchange
+from app.core.orderbook_heatmap.exchanges.kraken import KrakenExchange
+from app.core.orderbook_heatmap.exchanges.dex.uniswap_v3 import UniswapV3Exchange
+from app.core.orderbook_heatmap.aggregator import OrderbookAggregator
+from app.core.orderbook_heatmap.websocket import WebSocketManager
 
 
 logger = logging.getLogger(__name__)
