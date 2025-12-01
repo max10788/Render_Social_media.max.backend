@@ -8,8 +8,8 @@ from typing import Optional, Dict, Any
 import aiohttp
 import websockets
 
-from .base import CEXExchange
-from ..models.orderbook import (
+from app.core.orderbook_heatmap.exchanges.base import CEXExchange
+from app.core.orderbook_heatmap.models.orderbook import (
     Orderbook, OrderbookLevel, OrderbookSide, Exchange
 )
 
