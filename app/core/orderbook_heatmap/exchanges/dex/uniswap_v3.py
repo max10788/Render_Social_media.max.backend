@@ -7,7 +7,7 @@ import logging
 
 from app.core.orderbook_heatmap.exchanges.dex.base import DEXExchange
 from app.core.orderbook_heatmap.models.orderbook import (
-    Orderbook, OrderbookLevel, OrderbookSide, Exchange
+    Orderbook, OrderbookLevel, OrderbookSide, Exchange, DEXLiquidityTick
 )
 
 
