@@ -5,7 +5,7 @@ from abc import abstractmethod
 from typing import Dict, Any, List, Optional
 import logging
 
-from app.core.orderbook_heatmap.exchanges.base import BaseExchange
+from app.core.orderbook_heatmap.exchanges.base import DEXExchange
 from app.core.orderbook_heatmap.models.orderbook import (
     Orderbook, OrderbookLevel, OrderbookSide, DEXLiquidityTick
 )
