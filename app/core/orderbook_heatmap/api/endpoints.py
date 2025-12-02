@@ -10,7 +10,6 @@ import json
 import logging
 from datetime import datetime
 import aiohttp
-from datetime import datetime
 
 from app.core.orderbook_heatmap.models.orderbook import Exchange, AggregatedOrderbook
 from app.core.orderbook_heatmap.models.heatmap import HeatmapConfig, HeatmapSnapshot, HeatmapTimeSeries
@@ -21,28 +20,18 @@ from app.core.orderbook_heatmap.exchanges.dex.uniswap_v3 import UniswapV3Exchang
 from app.core.orderbook_heatmap.aggregator.orderbook_aggregator import OrderbookAggregator
 from app.core.orderbook_heatmap.websocket.manager import WebSocketManager
 
-
-# Logging konfigurieren
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Router
 router = APIRouter(prefix="/api/v1/orderbook-heatmap", tags=["Orderbook Heatmap"])
 
-# Global Aggregator & WebSocket Manager
 aggregator: Optional[any] = None
 ws_manager: Optional[any] = None
 
-
-# ================================================================
-# REQUEST MODELS (mit Request Body statt Query-Parameter!)
-# ================================================================
-
 class StartHeatmapRequest(BaseModel):
-    """Request Model für /start Endpoint"""
     symbol: str = Field(..., description="Trading Pair (z.B. BTC/USDT)")
     exchanges: List[str] = Field(
         default=["binance", "bitget", "kraken"],
@@ -73,22 +62,8 @@ class StartHeatmapRequest(BaseModel):
             }
         }
 
-
-# ================================================================
-# ENDPOINTS
-# ================================================================
-
 @router.post("/start")
 async def start_heatmap(request: Request, data: StartHeatmapRequest):
-    """
-    Startet Live-Heatmap-Streaming
-    
-    Args:
-        data: StartHeatmapRequest mit allen Parametern
-    
-    Returns:
-        Status-Dict
-    """
     global aggregator, ws_manager
     
     logger.info("=" * 80)
@@ -96,11 +71,9 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
     logger.info("=" * 80)
     
     try:
-        # Log raw request
         body = await request.body()
         logger.info(f"📥 Raw request body: {body.decode('utf-8')}")
         
-        # Log parsed data
         logger.info(f"📊 Parsed request data:")
         logger.info(f"  ✓ symbol: {data.symbol}")
         logger.info(f"  ✓ exchanges: {data.exchanges}")
@@ -108,7 +81,6 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
         logger.info(f"  ✓ price_bucket_size: {data.price_bucket_size}")
         logger.info(f"  ✓ time_window_seconds: {data.time_window_seconds}")
         
-        # Validiere Symbol-Format
         logger.info("🔍 Validating symbol format...")
         if "/" not in data.symbol:
             error_msg = f"Invalid symbol format: '{data.symbol}'. Expected format: BASE/QUOTE (e.g., BTC/USDT)"
@@ -116,7 +88,6 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
             raise HTTPException(status_code=422, detail=error_msg)
         logger.info(f"  ✅ Symbol format valid: {data.symbol}")
         
-        # Validiere Exchanges
         logger.info("🔍 Validating exchanges...")
         valid_exchanges = ["binance", "bitget", "kraken", "uniswap_v3", "raydium"]
         logger.info(f"  Valid options: {valid_exchanges}")
@@ -128,7 +99,6 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
             raise HTTPException(status_code=422, detail=error_msg)
         logger.info(f"  ✅ All exchanges valid: {data.exchanges}")
         
-        # Erstelle Config
         logger.info("⚙️ Creating HeatmapConfig...")
         config = HeatmapConfig(
             price_bucket_size=data.price_bucket_size,
@@ -137,7 +107,6 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
         )
         logger.info(f"  ✅ Config created: {config}")
         
-        # OPTIONAL: Erstelle Aggregator (nur wenn Module verfügbar)
         try:
             logger.info("🔧 Attempting to initialize OrderbookAggregator...")
             from app.core.orderbook_heatmap.aggregator.orderbook_aggregator import OrderbookAggregator
@@ -146,11 +115,9 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
             aggregator = OrderbookAggregator(config)
             logger.info("  ✅ OrderbookAggregator initialized")
             
-            # Füge Börsen hinzu
             logger.info("📡 Initializing exchanges...")
             exchange_map = {}
             
-            # Importiere nur verfügbare Exchanges
             for exchange_name in data.exchanges:
                 try:
                     if exchange_name == "binance":
@@ -172,26 +139,19 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
                 except ImportError as ie:
                     logger.warning(f"  ⚠️ Could not import {exchange_name}: {ie}")
             
-            # Füge Börsen zum Aggregator hinzu
             for exchange_name, exchange_instance in exchange_map.items():
                 aggregator.add_exchange(exchange_instance)
                 logger.info(f"  ✅ Added {exchange_name} to aggregator")
             
-            # Verbinde zu allen Börsen
             logger.info("🔌 Connecting to exchanges...")
             await aggregator.connect_all(data.symbol, data.dex_pools)
             logger.info("  ✅ Connected to all exchanges")
             
-            # ========================================================
-            # 🔧 FIXED: Async Callback statt Lambda
-            # ========================================================
             if ws_manager is None:
                 ws_manager = WebSocketManager()
                 logger.info("  ✅ WebSocketManager initialized")
             
-            # FIXED: Definiere async function statt Lambda
             async def async_broadcast_callback():
-                """Async wrapper für broadcast_update"""
                 try:
                     await ws_manager.broadcast_update(aggregator)
                 except Exception as e:
@@ -199,13 +159,11 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
             
             aggregator.add_update_callback(async_broadcast_callback)
             logger.info("  ✅ WebSocket callback set (async)")
-            # ========================================================
             
         except ImportError as e:
             logger.warning(f"⚠️ Could not initialize full aggregator (missing modules): {e}")
             logger.info("  ℹ️ Running in mock mode")
         
-        # Erfolgs-Response
         response = {
             "status": "started",
             "symbol": data.symbol,
@@ -226,9 +184,7 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
         return response
         
     except HTTPException:
-        # Re-raise HTTP exceptions
         raise
-        
     except ValidationError as e:
         logger.error("=" * 80)
         logger.error("❌ VALIDATION ERROR")
@@ -243,7 +199,6 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
                 "details": e.errors()
             }
         )
-        
     except Exception as e:
         logger.error("=" * 80)
         logger.error("❌ UNEXPECTED ERROR")
@@ -254,10 +209,8 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
         
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-
 @router.post("/stop")
 async def stop_heatmap():
-    """Stoppt Live-Heatmap-Streaming"""
     global aggregator
     
     logger.info("🛑 STOP HEATMAP REQUEST")
@@ -284,10 +237,8 @@ async def stop_heatmap():
         logger.error(f"❌ Failed to stop heatmap: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/status")
 async def get_status():
-    """Holt aktuellen Status"""
     global aggregator
     
     logger.info("📊 STATUS REQUEST")
@@ -317,21 +268,10 @@ async def get_status():
             "timestamp": datetime.utcnow().isoformat()
         }
 
-
 @router.get("/snapshot/{symbol}")
 async def get_snapshot(symbol: str):
-    """
-    Holt aktuellen Heatmap-Snapshot
-    
-    Args:
-        symbol: Trading Pair (format: BTC/USDT or BTC.USDT)
-        
-    Returns:
-        HeatmapSnapshot
-    """
     global aggregator
     
-    # Normalisiere Symbol (erlaube . oder /)
     normalized_symbol = symbol.replace(".", "/")
     logger.info(f"📸 SNAPSHOT REQUEST for {symbol} (normalized: {normalized_symbol})")
     
@@ -346,7 +286,6 @@ async def get_snapshot(symbol: str):
             logger.warning(f"  ⚠️ No snapshot available for {normalized_symbol}")
             raise HTTPException(status_code=404, detail=f"No snapshot available for {normalized_symbol}")
         
-        # Konvertiere zu Matrix-Format
         exchanges = list(aggregator.exchanges.keys())
         matrix_data = snapshot.to_matrix(exchanges)
         
@@ -359,18 +298,8 @@ async def get_snapshot(symbol: str):
         logger.error(f"❌ Error getting snapshot: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/timeseries/{symbol}")
 async def get_timeseries(symbol: str):
-    """
-    Holt Heatmap-TimeSeries
-    
-    Args:
-        symbol: Trading Pair
-        
-    Returns:
-        HeatmapTimeSeries als 3D-Matrix
-    """
     global aggregator
     
     normalized_symbol = symbol.replace(".", "/")
@@ -387,7 +316,6 @@ async def get_timeseries(symbol: str):
             logger.warning(f"  ⚠️ No timeseries available for {normalized_symbol}")
             raise HTTPException(status_code=404, detail="No timeseries available")
         
-        # Konvertiere zu 3D-Matrix
         exchanges = list(aggregator.exchanges.keys())
         matrix_data = timeseries.to_3d_matrix(exchanges)
         
@@ -400,18 +328,8 @@ async def get_timeseries(symbol: str):
         logger.error(f"❌ Error getting timeseries: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/orderbook/{symbol}")
 async def get_orderbook(symbol: str):
-    """
-    Holt aggregiertes Orderbuch
-    
-    Args:
-        symbol: Trading Pair
-        
-    Returns:
-        AggregatedOrderbook
-    """
     global aggregator
     
     normalized_symbol = symbol.replace(".", "/")
@@ -431,16 +349,8 @@ async def get_orderbook(symbol: str):
         logger.error(f"❌ Error getting orderbook: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.websocket("/ws/{symbol}")
 async def websocket_endpoint(websocket: WebSocket, symbol: str):
-    """
-    WebSocket Endpoint für Live-Updates
-    
-    Args:
-        websocket: WebSocket connection
-        symbol: Trading Pair
-    """
     global ws_manager
     
     if ws_manager is None:
@@ -459,26 +369,15 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
     
     try:
         while True:
-            # Warte auf Nachrichten vom Client
             data = await websocket.receive_text()
             logger.debug(f"  📥 WebSocket message: {data}")
-            
-            # Hier könnten Client-Commands verarbeitet werden
-            # z.B. Subscribe/Unsubscribe zu bestimmten Exchanges
             
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
         logger.info(f"  🔌 WebSocket disconnected for {symbol}")
 
-
 @router.get("/exchanges")
 async def get_available_exchanges():
-    """
-    Holt Liste verfügbarer Börsen
-    
-    Returns:
-        Liste von Exchange-Informationen
-    """
     logger.info("📋 EXCHANGES LIST REQUEST")
     
     exchanges_list = {
@@ -509,6 +408,145 @@ async def get_available_exchanges():
     
     logger.info(f"  ✅ Returned {len(exchanges_list['exchanges'])} exchanges")
     return exchanges_list
+
+@router.get("/health")
+async def health_check():
+    logger.debug("💚 HEALTH CHECK")
+    
+    response = {
+        "status": "healthy",
+        "service": "orderbook-heatmap",
+        "version": "1.0.0",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    logger.debug(f"  ✅ {response}")
+    return response
+
+# ============================================================================
+# PRICE HELPER FUNCTIONS
+# ============================================================================
+
+async def get_current_price_from_aggregator(symbol: str) -> float:
+    global aggregator
+    
+    if not aggregator:
+        return 0.0
+    
+    try:
+        orderbook = await aggregator.get_aggregated_orderbook(symbol)
+        
+        if not orderbook or not orderbook.bids.levels or not orderbook.asks.levels:
+            return 0.0
+        
+        best_bid = orderbook.bids.levels[0].price
+        best_ask = orderbook.asks.levels[0].price
+        mid_price = (best_bid + best_ask) / 2
+        
+        logger.debug(f"Mid-Price for {symbol}: ${mid_price:.2f}")
+        return mid_price
+            
+    except Exception as e:
+        logger.error(f"Error getting price from aggregator: {e}")
+        return 0.0
+
+async def get_current_price_from_binance(symbol: str) -> float:
+    try:
+        binance_symbol = symbol.replace("/", "").upper()
+        url = "https://api.binance.com/api/v3/ticker/price"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params={"symbol": binance_symbol}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    price = float(data["price"])
+                    logger.debug(f"Binance price for {symbol}: ${price:.2f}")
+                    return price
+                return 0.0
+                    
+    except Exception as e:
+        logger.error(f"Error getting price from Binance: {e}")
+        return 0.0
+
+async def get_current_price(symbol: str) -> float:
+    price = await get_current_price_from_aggregator(symbol)
+    if price > 0:
+        return price
+    
+    logger.info(f"Aggregator unavailable, using Binance API for {symbol}")
+    price = await get_current_price_from_binance(symbol)
+    if price > 0:
+        return price
+    
+    logger.error(f"Could not get price for {symbol} from any source")
+    return 0.0
+
+# ============================================================================
+# PRICE WEBSOCKET
+# ============================================================================
+
+@router.websocket("/ws/price/{symbol}")
+async def price_websocket_endpoint(websocket: WebSocket, symbol: str):
+    normalized_symbol = symbol.replace(".", "/")
+    logger.info(f"🔌 Price WS connection request for {normalized_symbol}")
+    
+    await websocket.accept()
+    logger.info(f"✅ Price WS connected for {normalized_symbol}")
+    
+    try:
+        while True:
+            try:
+                price = await get_current_price(normalized_symbol)
+                source = "aggregator" if aggregator else "binance"
+                
+                message = {
+                    "type": "price_update",
+                    "symbol": normalized_symbol,
+                    "price": price,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "source": source
+                }
+                
+                await websocket.send_json(message)
+                logger.debug(f"💰 Price update sent: ${price:.2f} ({source})")
+                
+                await asyncio.sleep(1)
+                
+            except asyncio.CancelledError:
+                logger.info("Price WS task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in price update loop: {e}")
+                await asyncio.sleep(2)
+                
+    except WebSocketDisconnect:
+        logger.info(f"🔌 Price WS disconnected for {normalized_symbol}")
+    except Exception as e:
+        logger.error(f"❌ Price WS error for {normalized_symbol}: {e}")
+        await websocket.close(code=1011, reason=str(e))
+
+# ============================================================================
+# PRICE REST ENDPOINT (Testing)
+# ============================================================================
+
+@router.get("/price/{symbol}")
+async def get_price_endpoint(symbol: str):
+    normalized_symbol = symbol.replace(".", "/")
+    logger.info(f"💰 Price request for {normalized_symbol}")
+    
+    try:
+        price = await get_current_price(normalized_symbol)
+        
+        return {
+            "success": True,
+            "symbol": normalized_symbol,
+            "price": price,
+            "timestamp": datetime.utcnow().isoformat(),
+            "source": "aggregator" if aggregator else "binance"
+        }
+    except Exception as e:
+        logger.error(f"Error getting price: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/health")
