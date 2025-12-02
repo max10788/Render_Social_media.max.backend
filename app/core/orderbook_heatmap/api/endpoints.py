@@ -434,20 +434,33 @@ async def get_current_price_from_aggregator(symbol: str) -> float:
         return 0.0
     
     try:
-        orderbook = await aggregator.get_aggregated_orderbook(symbol)
+        agg_orderbook = await aggregator.get_aggregated_orderbook(symbol)
         
-        if not orderbook or not orderbook.bids.levels or not orderbook.asks.levels:
+        if not agg_orderbook or not agg_orderbook.orderbooks:
             return 0.0
         
-        best_bid = orderbook.bids.levels[0].price
-        best_ask = orderbook.asks.levels[0].price
-        mid_price = (best_bid + best_ask) / 2
+        # Get best bid/ask across all exchanges
+        best_bid = 0.0
+        best_ask = float('inf')
         
-        logger.debug(f"Mid-Price for {symbol}: ${mid_price:.2f}")
-        return mid_price
+        for exchange_name, orderbook in agg_orderbook.orderbooks.items():
+            if orderbook.bids.levels:
+                exchange_best_bid = max(level.price for level in orderbook.bids.levels)
+                best_bid = max(best_bid, exchange_best_bid)
+            
+            if orderbook.asks.levels:
+                exchange_best_ask = min(level.price for level in orderbook.asks.levels)
+                best_ask = min(best_ask, exchange_best_ask)
+        
+        if best_bid > 0 and best_ask < float('inf'):
+            mid_price = (best_bid + best_ask) / 2
+            logger.debug(f"Mid-Price for {symbol}: ${mid_price:.2f} (bid: ${best_bid:.2f}, ask: ${best_ask:.2f})")
+            return mid_price
+        
+        return 0.0
             
     except Exception as e:
-        logger.error(f"Error getting price from aggregator: {e}")
+        logger.debug(f"Aggregator price not available: {e}")
         return 0.0
 
 async def get_current_price_from_binance(symbol: str) -> float:
@@ -547,19 +560,3 @@ async def get_price_endpoint(symbol: str):
     except Exception as e:
         logger.error(f"Error getting price: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/health")
-async def health_check():
-    """Health Check Endpoint"""
-    logger.debug("💚 HEALTH CHECK")
-    
-    response = {
-        "status": "healthy",
-        "service": "orderbook-heatmap",
-        "version": "1.0.0",
-        "timestamp": datetime.utcnow().isoformat()
-    }
-    
-    logger.debug(f"  ✅ {response}")
-    return response
