@@ -1,5 +1,5 @@
 """
-Bitget Exchange Integration - FULLY FIXED VERSION
+Bitget Exchange Integration - FULLY FIXED VERSION with incremental updates
 """
 import asyncio
 import json
@@ -33,7 +33,10 @@ class BitgetExchange(CEXExchange):
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self._current_symbol: Optional[str] = None
         self._reconnect_count = 0
-        self._successful_messages = 0  # ← NEU: Zählt erfolgreiche Messages
+        self._successful_messages = 0
+        
+        # FIXED: Lokales Orderbook für inkrementelle Updates
+        self._local_orderbook: Optional[Dict[str, Any]] = None
         
     async def connect(self, symbol: str) -> bool:
         """Verbindet zu Bitget WebSocket"""
@@ -104,6 +107,10 @@ class BitgetExchange(CEXExchange):
                     return None
                 
                 data = result.get("data", {})
+                
+                # FIXED: Store local orderbook
+                self._local_orderbook = data
+                
                 return self._parse_orderbook(data, symbol)
                 
         except Exception as e:
@@ -111,9 +118,7 @@ class BitgetExchange(CEXExchange):
             return None
     
     async def _ws_loop(self, symbol: str):
-        """
-        WebSocket Loop mit korrektem Reconnect-Counter
-        """
+        """WebSocket Loop mit korrektem Reconnect-Counter"""
         while self.is_connected:
             # Prüfe Reconnect-Limit VOR dem Connect-Versuch
             if self._reconnect_count >= self.MAX_RECONNECT_ATTEMPTS:
@@ -183,17 +188,15 @@ class BitgetExchange(CEXExchange):
                                         f"Resetting reconnect counter."
                                     )
                                 self._reconnect_count = 0
-                                self._successful_messages = 0  # Reset für nächstes Mal
+                                self._successful_messages = 0
                             
                         except asyncio.TimeoutError:
                             logger.warning(
                                 f"Bitget WebSocket: No message received for {self.MESSAGE_TIMEOUT}s"
                             )
-                            # Check if WebSocket is still open
                             if ws.closed:
                                 logger.warning("Bitget WebSocket is closed, breaking loop...")
                                 break
-                            # Sonst: Continue waiting
                             continue
                         
                         except json.JSONDecodeError as e:
@@ -206,7 +209,6 @@ class BitgetExchange(CEXExchange):
                     f"Reconnect attempt {self._reconnect_count}/{self.MAX_RECONNECT_ATTEMPTS}"
                 )
                 
-                # Exponentielles Backoff
                 if self._reconnect_count < self.MAX_RECONNECT_ATTEMPTS:
                     delay = min(self.RECONNECT_DELAY * (2 ** (self._reconnect_count - 1)), 60)
                     logger.info(f"Waiting {delay}s before reconnecting...")
@@ -218,7 +220,6 @@ class BitgetExchange(CEXExchange):
                     f"Reconnect attempt {self._reconnect_count}/{self.MAX_RECONNECT_ATTEMPTS}"
                 )
                 
-                # Exponentielles Backoff
                 if self._reconnect_count < self.MAX_RECONNECT_ATTEMPTS:
                     delay = min(self.RECONNECT_DELAY * (2 ** (self._reconnect_count - 1)), 60)
                     await asyncio.sleep(delay)
@@ -226,18 +227,84 @@ class BitgetExchange(CEXExchange):
         logger.info(f"Bitget WebSocket loop ended (reconnect_count: {self._reconnect_count})")
     
     async def _handle_orderbook_update(self, data: Dict[str, Any]):
-        """Verarbeitet Orderbuch-Updates"""
+        """
+        FIXED: Verarbeitet Orderbuch-Updates
+        
+        Bitget sendet:
+        - action: "snapshot" → Komplettes Orderbook
+        - action: "update" → Inkrementelle Updates
+        """
         try:
-            if data.get("action") != "snapshot" and data.get("action") != "update":
+            action = data.get("action")
+            
+            if action not in ["snapshot", "update"]:
                 return
             
             orderbook_data = data.get("data", [{}])[0]
-            orderbook = self._parse_orderbook(orderbook_data, self._current_symbol)
+            
+            if action == "snapshot":
+                # FIXED: Store snapshot as local orderbook
+                self._local_orderbook = orderbook_data
+                orderbook = self._parse_orderbook(orderbook_data, self._current_symbol)
+            else:
+                # FIXED: Apply incremental updates
+                if self._local_orderbook:
+                    # Update bids
+                    if "bids" in orderbook_data:
+                        self._apply_updates(self._local_orderbook, "bids", orderbook_data["bids"])
+                    
+                    # Update asks
+                    if "asks" in orderbook_data:
+                        self._apply_updates(self._local_orderbook, "asks", orderbook_data["asks"])
+                    
+                    orderbook = self._parse_orderbook(self._local_orderbook, self._current_symbol)
+                else:
+                    # No local orderbook, fetch snapshot
+                    logger.warning("No local orderbook, fetching snapshot...")
+                    orderbook = await self.get_orderbook_snapshot(self._current_symbol)
+            
             if orderbook:
                 await self._emit_orderbook(orderbook)
                 
         except Exception as e:
             logger.error(f"Failed to handle Bitget update: {e}")
+    
+    def _apply_updates(self, local_ob: Dict, side: str, updates: list):
+        """
+        FIXED: Wendet inkrementelle Updates an
+        
+        Args:
+            local_ob: Lokales Orderbook
+            side: "bids" oder "asks"
+            updates: Liste von [price, qty] Updates
+        """
+        if side not in local_ob:
+            local_ob[side] = []
+        
+        # Convert to dict for easier updates
+        levels = {float(level[0]): float(level[1]) for level in local_ob[side]}
+        
+        # Apply updates
+        for price_str, qty_str in updates:
+            price = float(price_str)
+            qty = float(qty_str)
+            
+            if qty == 0:
+                # Remove level
+                levels.pop(price, None)
+            else:
+                # Update/add level
+                levels[price] = qty
+        
+        # Convert back to list and sort
+        local_ob[side] = [[str(p), str(q)] for p, q in levels.items()]
+        
+        # Sort: bids descending, asks ascending
+        reverse = (side == "bids")
+        local_ob[side].sort(key=lambda x: float(x[0]), reverse=reverse)
+        
+        # Keep only top 100
+        local_ob[side] = local_ob[side][:100]
     
     def _parse_orderbook(self, data: Dict[str, Any], symbol: str) -> Optional[Orderbook]:
         """Parst Bitget Orderbuch-Daten"""
@@ -272,7 +339,7 @@ class BitgetExchange(CEXExchange):
                 symbol=symbol,
                 bids=bids,
                 asks=asks,
-                is_snapshot=data.get("action") == "snapshot"
+                is_snapshot=data.get("action") == "snapshot" if "action" in data else True
             )
             
         except Exception as e:
