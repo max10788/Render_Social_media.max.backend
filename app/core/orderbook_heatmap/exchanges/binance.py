@@ -1,5 +1,5 @@
 """
-Binance Exchange Integration
+Binance Exchange Integration - FIXED VERSION
 """
 import asyncio
 import json
@@ -28,6 +28,9 @@ class BinanceExchange(CEXExchange):
         self.session: Optional[aiohttp.ClientSession] = None
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self._current_symbol: Optional[str] = None
+        
+        # FIXED: Lokales Orderbook für inkrementelle Updates
+        self._local_orderbook: Optional[Dict[str, Any]] = None
         
     async def connect(self, symbol: str) -> bool:
         """Verbindet zu Binance WebSocket"""
@@ -94,6 +97,10 @@ class BinanceExchange(CEXExchange):
                     return None
                 
                 data = await resp.json()
+                
+                # FIXED: Store local orderbook
+                self._local_orderbook = data
+                
                 return self._parse_orderbook(data, symbol)
                 
         except Exception as e:
@@ -123,17 +130,80 @@ class BinanceExchange(CEXExchange):
                 await asyncio.sleep(2)
     
     async def _handle_orderbook_update(self, data: Dict[str, Any]):
-        """Verarbeitet Orderbuch-Updates"""
+        """
+        FIXED: Verarbeitet Orderbuch-Updates
+        
+        Binance WebSocket sendet Updates im Format:
+        {
+          "e": "depthUpdate",
+          "b": [[price, qty], ...],  // bids
+          "a": [[price, qty], ...]   // asks
+        }
+        """
         try:
             if "e" not in data or data["e"] != "depthUpdate":
                 return
             
-            orderbook = self._parse_orderbook(data, self._current_symbol)
-            if orderbook:
-                await self._emit_orderbook(orderbook)
+            # FIXED: Apply incremental updates to local orderbook
+            if self._local_orderbook:
+                # Update bids
+                if "b" in data:
+                    self._apply_updates(self._local_orderbook, "bids", data["b"])
+                
+                # Update asks
+                if "a" in data:
+                    self._apply_updates(self._local_orderbook, "asks", data["a"])
+                
+                # Parse updated orderbook
+                orderbook = self._parse_orderbook(self._local_orderbook, self._current_symbol)
+                if orderbook:
+                    await self._emit_orderbook(orderbook)
+            else:
+                # No local orderbook yet, fetch snapshot
+                logger.warning("No local orderbook, fetching snapshot...")
+                snapshot = await self.get_orderbook_snapshot(self._current_symbol)
+                if snapshot:
+                    await self._emit_orderbook(snapshot)
                 
         except Exception as e:
             logger.error(f"Failed to handle Binance update: {e}")
+    
+    def _apply_updates(self, local_ob: Dict, side: str, updates: list):
+        """
+        FIXED: Wendet inkrementelle Updates an
+        
+        Args:
+            local_ob: Lokales Orderbook
+            side: "bids" oder "asks"
+            updates: Liste von [price, qty] Updates
+        """
+        if side not in local_ob:
+            local_ob[side] = []
+        
+        # Convert to dict for easier updates
+        levels = {float(level[0]): float(level[1]) for level in local_ob[side]}
+        
+        # Apply updates
+        for price_str, qty_str in updates:
+            price = float(price_str)
+            qty = float(qty_str)
+            
+            if qty == 0:
+                # Remove level
+                levels.pop(price, None)
+            else:
+                # Update/add level
+                levels[price] = qty
+        
+        # Convert back to list and sort
+        local_ob[side] = [[str(p), str(q)] for p, q in levels.items()]
+        
+        # Sort: bids descending, asks ascending
+        reverse = (side == "bids")
+        local_ob[side].sort(key=lambda x: float(x[0]), reverse=reverse)
+        
+        # Keep only top 100
+        local_ob[side] = local_ob[side][:100]
     
     def _parse_orderbook(self, data: Dict[str, Any], symbol: str) -> Optional[Orderbook]:
         """Parst Binance Orderbuch-Daten"""
