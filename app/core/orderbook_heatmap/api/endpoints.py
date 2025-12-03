@@ -379,6 +379,9 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
                         exchanges = list(aggregator.exchanges.keys())
                         matrix_data = snapshot.to_matrix(exchanges)
                         
+                        # CRITICAL: Use CURRENT time, not cached snapshot time
+                        matrix_data['timestamp'] = datetime.utcnow().isoformat()
+                        
                         message = {
                             "type": "heatmap_update",
                             "symbol": normalized_symbol,
