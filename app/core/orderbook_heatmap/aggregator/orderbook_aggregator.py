@@ -29,13 +29,15 @@ class OrderbookAggregator:
         self.current_orderbooks: Dict[str, Orderbook] = {}
         self.heatmap_timeseries: Dict[str, HeatmapTimeSeries] = {}
         self.update_callbacks: List[Callable] = []
+        self.symbols: set = set()  # ← HINZUFÜGEN: Track active symbols
         
         # Locks für Thread-Safety
         self._orderbook_lock = asyncio.Lock()
         self._heatmap_lock = asyncio.Lock()
         
-        # DEX Polling Task
+        # Tasks
         self._dex_poll_task: Optional[asyncio.Task] = None
+        self._snapshot_task: Optional[asyncio.Task] = None  # ← HINZUFÜGEN
         
     def add_exchange(self, exchange: BaseExchange):
         """Fügt eine Börse hinzu"""
