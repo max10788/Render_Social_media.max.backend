@@ -351,7 +351,7 @@ async def get_orderbook(symbol: str):
 
 @router.websocket("/ws/{symbol}")
 async def websocket_endpoint(websocket: WebSocket, symbol: str):
-    global ws_manager
+    global ws_manager, aggregator
     
     if ws_manager is None:
         try:
@@ -362,10 +362,48 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
             await websocket.close(code=1011, reason="WebSocket not available")
             return
     
-    logger.info(f"🔌 WebSocket connection request for {symbol}")
+    normalized_symbol = symbol.replace(".", "/")
+    logger.info(f"🔌 WebSocket connection request for {normalized_symbol}")
     
     await ws_manager.connect(websocket, symbol)
-    logger.info(f"  ✅ WebSocket connected for {symbol}")
+    logger.info(f"  ✅ WebSocket connected for {normalized_symbol}")
+    
+    # Background task to send updates
+    async def send_updates():
+        """Send heatmap updates every second"""
+        while True:
+            try:
+                if aggregator:
+                    snapshot = await aggregator.get_latest_heatmap(normalized_symbol)
+                    if snapshot:
+                        exchanges = list(aggregator.exchanges.keys())
+                        matrix_data = snapshot.to_matrix(exchanges)
+                        
+                        message = {
+                            "type": "heatmap_update",
+                            "symbol": normalized_symbol,
+                            "data": matrix_data,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                        
+                        await websocket.send_json(message)
+                        logger.debug(f"📊 Sent heatmap update: {len(matrix_data.get('prices', []))} price levels")
+                    else:
+                        logger.debug(f"⚠️ No snapshot available yet for {normalized_symbol}")
+                else:
+                    logger.debug(f"⚠️ No aggregator available")
+                
+                await asyncio.sleep(1)  # Update every second
+                
+            except asyncio.CancelledError:
+                logger.info("Update task cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in heatmap update loop: {e}", exc_info=True)
+                break
+    
+    # Start update task
+    update_task = asyncio.create_task(send_updates())
     
     try:
         while True:
@@ -373,8 +411,16 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
             logger.debug(f"  📥 WebSocket message: {data}")
             
     except WebSocketDisconnect:
+        update_task.cancel()
         ws_manager.disconnect(websocket)
-        logger.info(f"  🔌 WebSocket disconnected for {symbol}")
+        logger.info(f"  🔌 WebSocket disconnected for {normalized_symbol}")
+    except Exception as e:
+        update_task.cancel()
+        logger.error(f"❌ WebSocket error: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason=str(e))
+        except:
+            pass
 
 @router.get("/exchanges")
 async def get_available_exchanges():
