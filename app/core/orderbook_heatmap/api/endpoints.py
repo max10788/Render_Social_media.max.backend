@@ -529,14 +529,18 @@ async def price_websocket_endpoint(websocket: WebSocket, symbol: str):
                 logger.info("Price WS task cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in price update loop: {e}")
-                await asyncio.sleep(2)
+                logger.error(f"Error in price update loop: {e}", exc_info=True)
+                # If send fails, connection is probably closed
+                break
                 
     except WebSocketDisconnect:
         logger.info(f"🔌 Price WS disconnected for {normalized_symbol}")
     except Exception as e:
-        logger.error(f"❌ Price WS error for {normalized_symbol}: {e}")
-        await websocket.close(code=1011, reason=str(e))
+        logger.error(f"❌ Price WS error for {normalized_symbol}: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason=str(e))
+        except:
+            pass
 
 # ============================================================================
 # PRICE REST ENDPOINT (Testing)
