@@ -1,5 +1,6 @@
 """
 Orderbook Aggregator - Kombiniert Daten von mehreren Börsen
+FIXED VERSION: Mit periodic snapshot generation
 """
 import asyncio
 import logging
@@ -29,7 +30,7 @@ class OrderbookAggregator:
         self.current_orderbooks: Dict[str, Orderbook] = {}
         self.heatmap_timeseries: Dict[str, HeatmapTimeSeries] = {}
         self.update_callbacks: List[Callable] = []
-        self.symbols: set = set()  # ← HINZUFÜGEN: Track active symbols
+        self.symbols: set = set()  # FIXED: Track active symbols
         
         # Locks für Thread-Safety
         self._orderbook_lock = asyncio.Lock()
@@ -37,7 +38,7 @@ class OrderbookAggregator:
         
         # Tasks
         self._dex_poll_task: Optional[asyncio.Task] = None
-        self._snapshot_task: Optional[asyncio.Task] = None  # ← HINZUFÜGEN
+        self._snapshot_task: Optional[asyncio.Task] = None  # FIXED: Periodic snapshot generation
         
     def add_exchange(self, exchange: BaseExchange):
         """Fügt eine Börse hinzu"""
@@ -56,7 +57,6 @@ class OrderbookAggregator:
         Args:
             symbol: Trading Pair (z.B. "BTC/USDT")
             dex_pool_addresses: Dict mit DEX Namen und Pool Addresses
-                z.B. {"uniswap_v3": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640"}
         """
         tasks = []
         
@@ -89,10 +89,27 @@ class OrderbookAggregator:
                 self._poll_dex_orderbooks(symbol, dex_pool_addresses)
             )
         
+        # FIXED: Track symbol und starte Snapshot Task
+        self.symbols.add(symbol)
+        
+        if not self._snapshot_task or self._snapshot_task.done():
+            self._snapshot_task = asyncio.create_task(
+                self._generate_periodic_snapshots()
+            )
+            logger.info("🔄 Started periodic snapshot generation")
+        
         logger.info(f"Connected to {sum(1 for r in results if r)} / {len(results)} exchanges")
     
     async def disconnect_all(self):
         """Trennt alle Börsen"""
+        # FIXED: Stoppe Snapshot Task
+        if self._snapshot_task:
+            self._snapshot_task.cancel()
+            try:
+                await self._snapshot_task
+            except asyncio.CancelledError:
+                pass
+        
         # Stoppe DEX Polling
         if self._dex_poll_task:
             self._dex_poll_task.cancel()
@@ -100,6 +117,9 @@ class OrderbookAggregator:
                 await self._dex_poll_task
             except asyncio.CancelledError:
                 pass
+        
+        # Clear symbols
+        self.symbols.clear()
         
         tasks = [exchange.disconnect() for exchange in self.exchanges.values()]
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -125,6 +145,43 @@ class OrderbookAggregator:
             except Exception as e:
                 logger.error(f"Error polling DEX orderbooks: {e}")
     
+    async def _generate_periodic_snapshots(self):
+        """
+        FIXED: Generiert periodisch Snapshots (jede Sekunde)
+        
+        Diese Funktion läuft im Hintergrund und erstellt regelmäßig
+        Snapshots, unabhängig davon ob Callbacks aufgerufen werden.
+        """
+        logger.info("🔄 Periodic snapshot generation started")
+        
+        while True:
+            try:
+                await asyncio.sleep(1)  # Jede Sekunde
+                
+                for symbol in list(self.symbols):
+                    try:
+                        # Prüfe ob Orderbücher vorhanden
+                        if not self.current_orderbooks:
+                            logger.debug(f"No orderbooks available yet for {symbol}")
+                            continue
+                        
+                        # Generiere Snapshot
+                        await self._update_heatmap(symbol)
+                        
+                        # Trigger Callbacks
+                        await self._notify_callbacks()
+                        
+                        logger.debug(f"✅ Generated snapshot for {symbol}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error generating snapshot for {symbol}: {e}")
+                
+            except asyncio.CancelledError:
+                logger.info("Periodic snapshot generation stopped")
+                break
+            except Exception as e:
+                logger.error(f"Error in periodic snapshot generation: {e}")
+    
     async def _on_orderbook_update(self, orderbook: Orderbook):
         """
         Callback für Orderbuch-Updates
@@ -136,16 +193,13 @@ class OrderbookAggregator:
             exchange_name = orderbook.exchange.value
             self.current_orderbooks[exchange_name] = orderbook
             
-            logger.debug(
-                f"Orderbook update from {exchange_name}: "
+            logger.info(  # FIXED: Changed from debug to info
+                f"✅ Orderbook update from {exchange_name}: "
                 f"{len(orderbook.bids.levels)} bids, {len(orderbook.asks.levels)} asks"
             )
         
-        # Generiere Heatmap-Snapshot
-        await self._update_heatmap(orderbook.symbol)
-        
-        # Rufe Callbacks auf
-        await self._notify_callbacks()
+        # NOTE: Snapshot generation now handled by periodic task
+        # No need to generate here anymore
     
     async def _update_heatmap(self, symbol: str):
         """
