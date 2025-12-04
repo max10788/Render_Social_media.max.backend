@@ -100,6 +100,262 @@ class WebSocketManager:
                     
                 except Exception as e:
                     logger.error(f"Failed to broadcast update for {symbol}: {e}")
+
+
+    async def handle_dex_event(
+        self,
+        event_type: str,
+        pool_address: str,
+        event_data: Dict[str, Any],
+        symbol: str
+    ):
+        """
+        Verarbeitet On-Chain DEX Events und sendet an WebSocket Clients
+        
+        Args:
+            event_type: "Mint", "Burn", "Swap", "pool_state_update"
+            pool_address: Pool Contract Adresse
+            event_data: Event-spezifische Daten
+            symbol: Trading Pair
+        """
+        try:
+            # Erstelle Event-Message basierend auf Typ
+            if event_type == "Mint":
+                message = self._create_liquidity_change_message(
+                    "liquidity_added",
+                    pool_address,
+                    event_data,
+                    symbol
+                )
+            
+            elif event_type == "Burn":
+                message = self._create_liquidity_change_message(
+                    "liquidity_removed",
+                    pool_address,
+                    event_data,
+                    symbol
+                )
+            
+            elif event_type == "Swap":
+                message = self._create_swap_message(
+                    pool_address,
+                    event_data,
+                    symbol
+                )
+            
+            elif event_type == "pool_state_update":
+                message = self._create_pool_state_message(
+                    pool_address,
+                    event_data,
+                    symbol
+                )
+            
+            else:
+                logger.warning(f"Unknown DEX event type: {event_type}")
+                return
+            
+            # Sende an alle Clients für dieses Symbol
+            await self._broadcast_to_symbol(symbol, message)
+            
+            logger.debug(f"📡 Broadcasted DEX event: {event_type} for {symbol}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to handle DEX event: {e}")
+    
+    def _create_liquidity_change_message(
+        self,
+        change_type: str,
+        pool_address: str,
+        event_data: Dict[str, Any],
+        symbol: str
+    ) -> Dict[str, Any]:
+        """
+        Erstellt Liquidity-Change Message
+        
+        Args:
+            change_type: "liquidity_added" oder "liquidity_removed"
+            pool_address: Pool Adresse
+            event_data: Event Daten
+            symbol: Trading Pair
+            
+        Returns:
+            Message Dict
+        """
+        return {
+            "type": "liquidity_change",
+            "symbol": symbol,
+            "pool_address": pool_address,
+            "change_type": change_type,
+            "tick_lower": event_data.get("tick_lower"),
+            "tick_upper": event_data.get("tick_upper"),
+            "liquidity_delta": event_data.get("liquidity_delta", 0.0),
+            "amount0": event_data.get("amount0", 0.0),
+            "amount1": event_data.get("amount1", 0.0),
+            "provider": event_data.get("provider", "unknown"),
+            "tx_hash": event_data.get("tx_hash", ""),
+            "block_number": event_data.get("block_number", 0),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    
+    def _create_swap_message(
+        self,
+        pool_address: str,
+        event_data: Dict[str, Any],
+        symbol: str
+    ) -> Dict[str, Any]:
+        """
+        Erstellt Swap Event Message
+        
+        Args:
+            pool_address: Pool Adresse
+            event_data: Event Daten
+            symbol: Trading Pair
+            
+        Returns:
+            Message Dict
+        """
+        return {
+            "type": "swap_executed",
+            "symbol": symbol,
+            "pool_address": pool_address,
+            "amount0": event_data.get("amount0", 0.0),
+            "amount1": event_data.get("amount1", 0.0),
+            "sqrt_price_x96": event_data.get("sqrt_price_x96", 0),
+            "liquidity": event_data.get("liquidity", 0.0),
+            "tick": event_data.get("tick", 0),
+            "price": event_data.get("price", 0.0),
+            "tx_hash": event_data.get("tx_hash", ""),
+            "block_number": event_data.get("block_number", 0),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    
+    def _create_pool_state_message(
+        self,
+        pool_address: str,
+        event_data: Dict[str, Any],
+        symbol: str
+    ) -> Dict[str, Any]:
+        """
+        Erstellt Pool State Update Message
+        
+        Args:
+            pool_address: Pool Adresse
+            event_data: Pool State Daten
+            symbol: Trading Pair
+            
+        Returns:
+            Message Dict
+        """
+        return {
+            "type": "pool_state_update",
+            "symbol": symbol,
+            "pool_address": pool_address,
+            "current_price": event_data.get("current_price", 0.0),
+            "current_tick": event_data.get("current_tick", 0),
+            "total_liquidity": event_data.get("total_liquidity", 0.0),
+            "tvl_usd": event_data.get("tvl_usd", 0.0),
+            "last_event": event_data.get("last_event", {}),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    
+    async def broadcast_concentration_alert(
+        self,
+        symbol: str,
+        pool_address: str,
+        concentration_metrics: Dict[str, float],
+        alert_level: str = "info"
+    ):
+        """
+        Sendet Concentration Alert an Clients
+        
+        Args:
+            symbol: Trading Pair
+            pool_address: Pool Adresse
+            concentration_metrics: Konzentrations-Metriken
+            alert_level: "info", "warning", "high"
+        """
+        message = {
+            "type": "concentration_alert",
+            "symbol": symbol,
+            "pool_address": pool_address,
+            "alert_level": alert_level,
+            "message": self._generate_concentration_message(
+                concentration_metrics,
+                alert_level
+            ),
+            "concentration_metrics": concentration_metrics,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        await self._broadcast_to_symbol(symbol, message)
+        
+        logger.info(
+            f"⚠️ Concentration alert for {symbol}: "
+            f"{concentration_metrics.get('within_1_percent', 0)}% within ±1%"
+        )
+    
+    def _generate_concentration_message(
+        self,
+        metrics: Dict[str, float],
+        alert_level: str
+    ) -> str:
+        """
+        Generiert Human-Readable Concentration Message
+        
+        Args:
+            metrics: Concentration Metrics
+            alert_level: Alert Level
+            
+        Returns:
+            Message String
+        """
+        within_1pct = metrics.get("within_1_percent", 0)
+        within_2pct = metrics.get("within_2_percent", 0)
+        
+        if alert_level == "high":
+            return (
+                f"⚠️ HIGH CONCENTRATION: {within_1pct:.1f}% of liquidity "
+                f"within ±1% of current price"
+            )
+        elif alert_level == "warning":
+            return (
+                f"⚠ Increased concentration: {within_2pct:.1f}% of liquidity "
+                f"within ±2% of current price"
+            )
+        else:
+            return (
+                f"ℹ️ Liquidity distribution: {within_1pct:.1f}% within ±1%, "
+                f"{within_2pct:.1f}% within ±2%"
+            )
+    
+    async def _broadcast_to_symbol(
+        self,
+        symbol: str,
+        message: Dict[str, Any]
+    ):
+        """
+        Sendet Message an alle Clients die ein Symbol subscribed haben
+        
+        Args:
+            symbol: Trading Pair
+            message: Message Dict
+        """
+        if symbol not in self.active_connections:
+            return
+        
+        connections = self.active_connections[symbol]
+        disconnected = []
+        
+        for websocket in list(connections):
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                logger.error(f"Failed to send to websocket: {e}")
+                disconnected.append(websocket)
+        
+        # Entferne disconnected websockets
+        for ws in disconnected:
+            connections.discard(ws)
     
     async def send_personal_message(self, message: Dict, websocket: WebSocket):
         """
