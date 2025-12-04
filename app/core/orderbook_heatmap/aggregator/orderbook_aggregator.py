@@ -50,46 +50,60 @@ class OrderbookAggregator:
         
         logger.info(f"Added exchange: {exchange_name}")
     
-    async def connect_all(self, symbol: str, dex_pool_addresses: Optional[Dict[str, str]] = None):
+    async def connect_all(
+        self, 
+        symbol: str, 
+        dex_pool_addresses: Optional[Dict[str, str]] = None
+    ):
         """
-        Verbindet alle Börsen
+        Verbindet alle Börsen (CEX und DEX)
         
         Args:
             symbol: Trading Pair (z.B. "BTC/USDT")
-            dex_pool_addresses: Dict mit DEX Namen und Pool Addresses
+            dex_pool_addresses: Optional Dict mit DEX Namen und Pool Addresses
+                               z.B. {"uniswap_v3": "0x88e6a0c..."}
         """
         tasks = []
         
         for exchange_name, exchange in self.exchanges.items():
+            exchange_type = self._detect_exchange_type(exchange_name)
+            
             # CEX nutzen normales Symbol
-            if exchange.exchange_type.value == "cex":
+            if exchange_type == "CEX":
                 tasks.append(exchange.connect(symbol))
+                logger.info(f"📡 Connecting to CEX: {exchange_name}")
+            
             # DEX nutzen Pool Address
-            elif exchange.exchange_type.value == "dex":
+            elif exchange_type == "DEX":
                 if dex_pool_addresses and exchange_name in dex_pool_addresses:
                     pool_address = dex_pool_addresses[exchange_name]
                     tasks.append(exchange.connect(pool_address))
+                    logger.info(f"🔗 Connecting to DEX: {exchange_name} (pool: {pool_address[:10]}...)")
                 else:
-                    logger.warning(f"No pool address provided for {exchange_name}")
+                    logger.warning(f"⚠️ No pool address provided for DEX: {exchange_name}")
         
+        # Führe alle Connections parallel aus
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Logge Ergebnisse
+        success_count = 0
         for exchange_name, result in zip(self.exchanges.keys(), results):
             if isinstance(result, Exception):
-                logger.error(f"Failed to connect {exchange_name}: {result}")
+                logger.error(f"❌ Failed to connect {exchange_name}: {result}")
             elif result:
-                logger.info(f"Successfully connected to {exchange_name}")
+                logger.info(f"✅ Successfully connected to {exchange_name}")
+                success_count += 1
             else:
-                logger.warning(f"Failed to connect to {exchange_name}")
+                logger.warning(f"⚠️ Failed to connect to {exchange_name}")
         
-        # Starte DEX Polling
+        # Starte DEX Polling falls DEX vorhanden
         if dex_pool_addresses:
             self._dex_poll_task = asyncio.create_task(
                 self._poll_dex_orderbooks(symbol, dex_pool_addresses)
             )
+            logger.info("🔄 Started DEX polling task")
         
-        # FIXED: Track symbol und starte Snapshot Task
+        # Track symbol und starte Snapshot Task
         self.symbols.add(symbol)
         
         if not self._snapshot_task or self._snapshot_task.done():
@@ -98,7 +112,10 @@ class OrderbookAggregator:
             )
             logger.info("🔄 Started periodic snapshot generation")
         
-        logger.info(f"Connected to {sum(1 for r in results if r)} / {len(results)} exchanges")
+        logger.info(f"📊 Connected to {success_count} / {len(results)} exchanges")
+        
+        return success_count > 0
+
     
     async def disconnect_all(self):
         """Trennt alle Börsen"""
