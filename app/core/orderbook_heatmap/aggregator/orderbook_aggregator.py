@@ -248,38 +248,118 @@ class OrderbookAggregator:
     def _calculate_effective_depth(
         self,
         total_liquidity: float,
-        source_liquidities: List[float]
+        source_liquidities: List[float],
+        current_price: float = None,
+        trade_size: float = None
     ) -> float:
         """
-        Berechnet effektive Tiefe unter Berücksichtigung von Slippage
+        Berechnet effektive Tiefe unter Berücksichtigung von AMM Slippage
         
-        Bei DEX müssen wir berücksichtigen, dass große Orders Slippage haben.
-        Diese Methode passt die "sichtbare" Liquidität an die reale Trading-Tiefe an.
+        Verwendet die Constant Product Formula (x * y = k) um reale Trading-Tiefe
+        zu berechnen. Bei AMMs ist Slippage nicht linear - große Trades haben
+        exponentiell höheres Slippage.
         
         Args:
-            total_liquidity: Gesamt-Liquidität
-            source_liquidities: Liquidität pro Quelle
+            total_liquidity: Gesamt-Liquidität im Pool
+            source_liquidities: Liquidität pro Quelle (für Multi-Pool Adjustierung)
+            current_price: Aktueller Preis (optional, für präzise Berechnung)
+            trade_size: Erwartete Trade-Größe (optional, default: 1% des Pools)
             
         Returns:
-            Effektive Tiefe (adjustiert)
+            Effektive Tiefe (adjustiert für realistisches Slippage)
         """
         if total_liquidity == 0:
             return 0.0
         
-        # Vereinfachte Slippage-Adjustierung
-        # Bei DEX: größere Orders haben mehr Slippage
-        # Formel: effective = total * (1 - slippage_factor)
+        # ========================================================================
+        # 1. POOL FRAGMENTATION ADJUSTIERUNG
+        # ========================================================================
+        # Wenn Liquidität über viele Quellen verteilt ist, ist effektive Tiefe niedriger
+        # (man muss mehrere Pools nutzen = höhere Kosten)
         
-        # Slippage steigt mit Liquiditäts-Konzentration
-        # Wenn alle Liquidität von einer Quelle kommt: höheres Slippage
-        concentration = max(source_liquidities) / total_liquidity if total_liquidity > 0 else 0
+        if len(source_liquidities) > 1:
+            # Herfindahl-Hirschman Index (HHI) für Konzentration
+            # HHI = sum(market_share^2), Range: [0, 1]
+            # HHI = 1 → Monopol (eine Quelle)
+            # HHI → 0 → perfekte Verteilung
+            market_shares = [liq / total_liquidity for liq in source_liquidities if total_liquidity > 0]
+            hhi = sum(share ** 2 for share in market_shares)
+            
+            # Fragmentation Penalty: 0-30% basierend auf HHI
+            # Niedrige HHI = hohe Fragmentierung = höheres Penalty
+            fragmentation_penalty = (1 - hhi) * 0.3  # 0% bis 30%
+        else:
+            fragmentation_penalty = 0.0
         
-        # Slippage Factor: 0-20% basierend auf Konzentration
-        slippage_factor = 0.01 + (concentration * 0.19)  # 1% bis 20%
+        # ========================================================================
+        # 2. AMM SLIPPAGE BERECHNUNG (Constant Product Formula)
+        # ========================================================================
+        # Für Uniswap v3: Δy = L * (√P_1 - √P_0)
+        # Vereinfacht: price_impact = trade_size / (2 * liquidity)
         
-        effective = total_liquidity * (1 - slippage_factor)
+        if trade_size is None:
+            # Default: Simuliere 1% Trade des Pool-Volumens
+            trade_size = total_liquidity * 0.01
         
-        return max(0.0, effective)
+        if current_price is not None and current_price > 0:
+            # Präzise AMM Formula
+            # Für swap von amount_in zu amount_out:
+            # amount_out = (amount_in * reserve_out) / (reserve_in + amount_in)
+            
+            # Approximiere Reserves aus Liquidität
+            # L = sqrt(x * y), bei price = y/x
+            # Dann: x = L / sqrt(P), y = L * sqrt(P)
+            
+            sqrt_price = current_price ** 0.5
+            reserve_in = total_liquidity / sqrt_price
+            reserve_out = total_liquidity * sqrt_price
+            
+            # Berechne amount_out für trade_size
+            amount_out = (trade_size * reserve_out) / (reserve_in + trade_size)
+            
+            # Expected amount out ohne Slippage
+            expected_out = trade_size * current_price
+            
+            # Slippage als Prozent
+            if expected_out > 0:
+                slippage_pct = 1 - (amount_out / expected_out)
+                slippage_pct = max(0.0, min(1.0, slippage_pct))  # Clip [0, 1]
+            else:
+                slippage_pct = 0.0
+        else:
+            # Vereinfachte lineare Approximation
+            # Slippage ≈ trade_size / (2 * liquidity)
+            # Dies ist die First-Order Taylor Expansion der AMM Formula
+            slippage_pct = min(1.0, trade_size / (2 * total_liquidity))
+        
+        # ========================================================================
+        # 3. KOMBINIERTE ADJUSTIERUNG
+        # ========================================================================
+        # Effektive Tiefe = Liquidität * (1 - total_penalty)
+        
+        # Gesamtes Penalty: Slippage + Fragmentierung
+        # Verwende Max um konservativ zu sein
+        total_penalty = max(slippage_pct, fragmentation_penalty)
+        
+        # Zusätzlich: Gas Cost Adjustierung für DEX
+        # Bei kleinen Pools sind Gas Costs relativ hoch
+        if total_liquidity < 10000:  # Threshold: $10k
+            gas_penalty = 0.05  # 5% extra für geringe Liquidität
+            total_penalty = min(1.0, total_penalty + gas_penalty)
+        
+        # Berechne effektive Tiefe
+        effective_depth = total_liquidity * (1 - total_penalty)
+        
+        # ========================================================================
+        # 4. QUALITY ADJUSTIERUNG
+        # ========================================================================
+        # DEX Liquidität ist "weicher" als CEX (kein instant execution guarantee)
+        # Reduziere effektive Tiefe um 10-20% für DEX vs CEX Vergleichbarkeit
+        
+        dex_discount = 0.15  # 15% Discount für DEX vs CEX
+        effective_depth *= (1 - dex_discount)
+        
+        return max(0.0, effective_depth)
     
     def _detect_exchange_type(self, exchange_name: str) -> str:
         """
