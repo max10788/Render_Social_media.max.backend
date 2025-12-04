@@ -158,3 +158,109 @@ class HeatmapConfig(BaseModel):
         default="viridis",
         description="Farbskala für Heatmap (viridis, plasma, hot, etc.)"
     )
+
+
+# ============================================================================
+# DEX-SPECIFIC HEATMAP MODELS
+# ============================================================================
+
+class DEXHeatmapSnapshot(HeatmapSnapshot):
+    """
+    Erweiterter Heatmap-Snapshot für DEX mit zusätzlichen Metriken
+    """
+    pool_addresses: List[str] = Field(
+        default_factory=list,
+        description="Liste der Source Pool Contract Adressen"
+    )
+    total_tvl: float = Field(
+        default=0.0,
+        description="Kombinierter TVL über alle Pools in USD"
+    )
+    active_lp_count: int = Field(
+        default=0,
+        description="Anzahl aktiver Liquidity Provider"
+    )
+    fee_tier_distribution: Dict[int, float] = Field(
+        default_factory=dict,
+        description="TVL-Verteilung nach Fee Tier (z.B. {500: 123M, 3000: 456M})"
+    )
+    concentration_ratio: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Prozent der Liquidität innerhalb ±2% vom aktuellen Preis"
+    )
+    
+    # Zusätzliche Konzentrations-Metriken
+    concentration_metrics: Dict[str, float] = Field(
+        default_factory=dict,
+        description="Konzentrations-Metriken: within_1_percent, within_2_percent, within_5_percent"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "symbol": "WETH/USDC",
+                "pool_addresses": [
+                    "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+                    "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"
+                ],
+                "total_tvl": 410000000.0,
+                "active_lp_count": 523,
+                "fee_tier_distribution": {
+                    500: 285000000.0,
+                    3000: 125000000.0
+                },
+                "concentration_ratio": 0.582,
+                "concentration_metrics": {
+                    "within_1_percent": 35.5,
+                    "within_2_percent": 58.2,
+                    "within_5_percent": 82.4
+                }
+            }
+        }
+    
+    def calculate_concentration_ratio(self, current_price: float, tolerance_pct: float = 2.0):
+        """
+        Berechnet Konzentrations-Ratio (% Liquidität nahe current_price)
+        
+        Args:
+            current_price: Aktueller Preis
+            tolerance_pct: Toleranz in Prozent (default: 2% = ±2%)
+        """
+        if not self.price_levels:
+            self.concentration_ratio = 0.0
+            return
+        
+        price_lower = current_price * (1 - tolerance_pct / 100)
+        price_upper = current_price * (1 + tolerance_pct / 100)
+        
+        total_liquidity = sum(pl.total_liquidity for pl in self.price_levels)
+        concentrated_liquidity = sum(
+            pl.total_liquidity 
+            for pl in self.price_levels 
+            if price_lower <= pl.price <= price_upper
+        )
+        
+        if total_liquidity > 0:
+            self.concentration_ratio = concentrated_liquidity / total_liquidity
+        else:
+            self.concentration_ratio = 0.0
+    
+    def to_matrix(self, exchanges: List[str]) -> Dict:
+        """
+        Erweiterte Matrix-Konvertierung mit DEX-Metriken
+        """
+        matrix_data = super().to_matrix(exchanges)
+        
+        # Füge DEX-spezifische Felder hinzu
+        matrix_data.update({
+            "pool_addresses": self.pool_addresses,
+            "total_tvl": self.total_tvl,
+            "active_lp_count": self.active_lp_count,
+            "fee_tier_distribution": self.fee_tier_distribution,
+            "concentration_ratio": self.concentration_ratio,
+            "concentration_metrics": self.concentration_metrics
+        })
+        
+        return matrix_data
