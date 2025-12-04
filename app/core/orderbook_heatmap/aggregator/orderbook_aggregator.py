@@ -181,6 +181,108 @@ class OrderbookAggregator:
                 break
             except Exception as e:
                 logger.error(f"Error in periodic snapshot generation: {e}")
+
+
+    async def _aggregate_dex_liquidity(
+        self,
+        dex_orderbooks: Dict[str, 'Orderbook']
+    ) -> Dict[float, Dict[str, float]]:
+        """
+        Aggregiert Liquidität von mehreren DEX-Quellen
+        
+        Im Gegensatz zur CEX-Aggregation (die Orderbücher merged),
+        kombiniert diese Methode Liquiditätskurven von verschiedenen Pools.
+        
+        Args:
+            dex_orderbooks: Dict mit DEX-Namen -> Orderbook
+            
+        Returns:
+            Dict mit Preis -> {dex_name: liquidity_amount}
+        """
+        from collections import defaultdict
+        
+        # Gruppiere nach Preis-Bucket
+        price_buckets = defaultdict(lambda: {"total_liquidity": 0.0, "sources": {}})
+        
+        for dex_name, orderbook in dex_orderbooks.items():
+            # Bids
+            for level in orderbook.bids.levels:
+                bucket_price = self._quantize_price(level.price)
+                price_buckets[bucket_price]["total_liquidity"] += level.quantity
+                price_buckets[bucket_price]["sources"][dex_name] = \
+                    price_buckets[bucket_price]["sources"].get(dex_name, 0.0) + level.quantity
+            
+            # Asks
+            for level in orderbook.asks.levels:
+                bucket_price = self._quantize_price(level.price)
+                price_buckets[bucket_price]["total_liquidity"] += level.quantity
+                price_buckets[bucket_price]["sources"][dex_name] = \
+                    price_buckets[bucket_price]["sources"].get(dex_name, 0.0) + level.quantity
+        
+        # Berechne effektive Tiefe (berücksichtigt Slippage)
+        for bucket_data in price_buckets.values():
+            bucket_data["effective_depth"] = self._calculate_effective_depth(
+                bucket_data["total_liquidity"],
+                list(bucket_data["sources"].values())
+            )
+        
+        return price_buckets
+    
+    def _calculate_effective_depth(
+        self,
+        total_liquidity: float,
+        source_liquidities: List[float]
+    ) -> float:
+        """
+        Berechnet effektive Tiefe unter Berücksichtigung von Slippage
+        
+        Bei DEX müssen wir berücksichtigen, dass große Orders Slippage haben.
+        Diese Methode passt die "sichtbare" Liquidität an die reale Trading-Tiefe an.
+        
+        Args:
+            total_liquidity: Gesamt-Liquidität
+            source_liquidities: Liquidität pro Quelle
+            
+        Returns:
+            Effektive Tiefe (adjustiert)
+        """
+        if total_liquidity == 0:
+            return 0.0
+        
+        # Vereinfachte Slippage-Adjustierung
+        # Bei DEX: größere Orders haben mehr Slippage
+        # Formel: effective = total * (1 - slippage_factor)
+        
+        # Slippage steigt mit Liquiditäts-Konzentration
+        # Wenn alle Liquidität von einer Quelle kommt: höheres Slippage
+        concentration = max(source_liquidities) / total_liquidity if total_liquidity > 0 else 0
+        
+        # Slippage Factor: 0-20% basierend auf Konzentration
+        slippage_factor = 0.01 + (concentration * 0.19)  # 1% bis 20%
+        
+        effective = total_liquidity * (1 - slippage_factor)
+        
+        return max(0.0, effective)
+    
+    def _detect_exchange_type(self, exchange_name: str) -> str:
+        """
+        Erkennt ob Exchange CEX oder DEX ist
+        
+        Args:
+            exchange_name: Name der Exchange
+            
+        Returns:
+            "CEX" oder "DEX"
+        """
+        dex_indicators = ["uniswap", "raydium", "curve", "balancer", "pancake", "sushi"]
+        
+        exchange_lower = exchange_name.lower()
+        
+        for indicator in dex_indicators:
+            if indicator in exchange_lower:
+                return "DEX"
+        
+        return "CEX"
     
     async def _on_orderbook_update(self, orderbook: Orderbook):
         """
