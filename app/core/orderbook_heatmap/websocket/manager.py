@@ -4,7 +4,7 @@ WebSocket Manager für Live-Updates
 import asyncio
 import json
 import logging
-from typing import Optional, Dict, List, Set  # ← FIXED: Set import hinzugefügt
+from typing import Optional, Dict, List, Set, Any  # ← FIXED: Set import hinzugefügt
 from fastapi import WebSocket
 
 
