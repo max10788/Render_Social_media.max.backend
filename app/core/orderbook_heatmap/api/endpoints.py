@@ -591,6 +591,408 @@ async def price_websocket_endpoint(websocket: WebSocket, symbol: str):
         except:
             pass
 
+@router.get("/dex/pools/{network}/{token0}/{token1}")
+async def get_dex_pools(
+    network: str,
+    token0: str,
+    token1: str,
+    fee_tier: Optional[int] = Query(None, description="Filter by fee tier (500, 3000, 10000)")
+):
+    """
+    Liste verfügbare Pools für ein Trading Pair auf einem bestimmten Network
+    
+    Args:
+        network: ethereum, polygon, arbitrum, optimism, base
+        token0: Token0 Symbol oder Adresse
+        token1: Token1 Symbol oder Adresse
+        fee_tier: Optional - Filter nach Fee Tier
+        
+    Returns:
+        Liste von verfügbaren Pools mit TVL, Volume, etc.
+    """
+    try:
+        # Validiere Network
+        valid_networks = ["ethereum", "polygon", "arbitrum", "optimism", "base"]
+        if network.lower() not in valid_networks:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid network. Valid options: {valid_networks}"
+            )
+        
+        # TODO: Implementiere Pool-Suche via Uniswap Subgraph
+        # Für jetzt: Mock Response
+        
+        pools = [
+            {
+                "address": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+                "dex": "uniswap_v3",
+                "fee_tier": 500,
+                "tvl_usd": 285000000,
+                "volume_24h": 450000000,
+                "liquidity": 125000.5,
+                "tick_spacing": 10,
+                "current_tick": 201234,
+                "current_price": 2850.45
+            }
+        ]
+        
+        # Filter nach Fee Tier falls angegeben
+        if fee_tier is not None:
+            pools = [p for p in pools if p["fee_tier"] == fee_tier]
+        
+        response = {
+            "network": network,
+            "pair": f"{token0}/{token1}",
+            "pools": pools,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        logger.info(f"📋 Found {len(pools)} pools for {token0}/{token1} on {network}")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting DEX pools: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 2. GET /api/dex/liquidity/{pool_address}
+# ============================================================================
+
+@router.get("/dex/liquidity/{pool_address}")
+async def get_pool_liquidity(
+    pool_address: str,
+    bucket_size: float = Query(50.0, description="Price bucket size in USD"),
+    range_multiplier: float = Query(2.0, description="Price range multiplier (2.0 = ±100%)")
+):
+    """
+    Holt aktuelle Liquiditätsverteilung für einen spezifischen Pool
+    
+    Args:
+        pool_address: Pool Contract Adresse
+        bucket_size: Bucket-Größe für Preis-Aggregation
+        range_multiplier: Wie weit vom aktuellen Preis (2.0 = ±100%)
+        
+    Returns:
+        Liquiditätsverteilung mit Ticks, Concentration Metrics, etc.
+    """
+    global aggregator
+    
+    try:
+        # Validiere Pool Address Format
+        if not pool_address.startswith("0x") or len(pool_address) != 42:
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid pool address format. Expected 0x + 40 hex chars"
+            )
+        
+        # Hole Pool Info via Uniswap Integration
+        from app.core.orderbook_heatmap.exchanges.dex.uniswap_v3 import UniswapV3Exchange
+        
+        uniswap = UniswapV3Exchange()
+        pool_info = await uniswap.get_pool_info(pool_address)
+        
+        if not pool_info:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Pool not found: {pool_address}"
+            )
+        
+        ticks = await uniswap.get_liquidity_ticks(pool_address)
+        
+        # Berechne aktuellen Preis
+        sqrt_price_x96 = int(pool_info.get("sqrtPrice", 0))
+        current_price = uniswap._sqrt_price_to_price(sqrt_price_x96)
+        
+        # Gruppiere Ticks zu Liquiditätsverteilung
+        liquidity_distribution = []
+        
+        for tick in ticks:
+            # Filtere nach Range
+            price_lower_bound = current_price / range_multiplier
+            price_upper_bound = current_price * range_multiplier
+            
+            if price_lower_bound <= tick.price_lower <= price_upper_bound:
+                liquidity_distribution.append({
+                    "price_lower": tick.price_lower,
+                    "price_upper": tick.price_upper,
+                    "tick_lower": tick.tick_index,
+                    "tick_upper": tick.tick_index + 1,
+                    "liquidity": tick.liquidity,
+                    "liquidity_usd": tick.liquidity * current_price,  # Vereinfacht
+                    "provider_count": 1,  # TODO: Von Subgraph holen
+                    "concentration_pct": 0.0  # TODO: Berechnen
+                })
+        
+        # Berechne Concentration Metrics
+        total_liquidity = sum(t.liquidity for t in ticks)
+        
+        def calc_concentration(tolerance_pct: float) -> float:
+            lower = current_price * (1 - tolerance_pct / 100)
+            upper = current_price * (1 + tolerance_pct / 100)
+            
+            concentrated = sum(
+                t.liquidity for t in ticks
+                if lower <= t.price_lower <= upper
+            )
+            
+            return (concentrated / total_liquidity * 100) if total_liquidity > 0 else 0.0
+        
+        concentration_metrics = {
+            "within_1_percent": calc_concentration(1.0),
+            "within_2_percent": calc_concentration(2.0),
+            "within_5_percent": calc_concentration(5.0)
+        }
+        
+        response = {
+            "pool_address": pool_address,
+            "pair": f"{pool_info.get('token0', {}).get('symbol', 'TOKEN0')}/{pool_info.get('token1', {}).get('symbol', 'TOKEN1')}",
+            "current_price": current_price,
+            "current_tick": int(pool_info.get("tick", 0)),
+            "total_liquidity": total_liquidity,
+            "tvl_usd": total_liquidity * current_price,  # Vereinfacht
+            "liquidity_distribution": liquidity_distribution,
+            "concentration_metrics": concentration_metrics,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        logger.info(f"📊 Liquidität für Pool {pool_address[:10]}...: {len(liquidity_distribution)} Bereiche")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting pool liquidity: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 3. GET /api/dex/virtual-orderbook/{pool_address}
+# ============================================================================
+
+@router.get("/dex/virtual-orderbook/{pool_address}")
+async def get_virtual_orderbook(
+    pool_address: str,
+    depth: int = Query(100, ge=10, le=500, description="Number of price levels per side")
+):
+    """
+    Generiert CEX-Style Orderbook aus DEX Liquiditätskurve
+    
+    Ermöglicht es, DEX-Daten mit bestehendem CEX-Code zu konsumieren.
+    
+    Args:
+        pool_address: Pool Contract Adresse
+        depth: Anzahl Preis-Levels pro Seite (Bids/Asks)
+        
+    Returns:
+        Virtual Orderbook im CEX-Format
+    """
+    try:
+        from app.core.orderbook_heatmap.exchanges.dex.uniswap_v3 import UniswapV3Exchange
+        
+        uniswap = UniswapV3Exchange()
+        orderbook = await uniswap.get_orderbook_snapshot(pool_address, limit=depth)
+        
+        if not orderbook:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Could not generate orderbook for pool: {pool_address}"
+            )
+        
+        response = {
+            "exchange": "uniswap_v3",
+            "symbol": orderbook.symbol,
+            "source_type": "DEX",
+            "is_virtual": True,
+            "pool_address": pool_address,
+            "bids": [
+                [level.price, level.quantity]
+                for level in orderbook.bids.levels
+            ],
+            "asks": [
+                [level.price, level.quantity]
+                for level in orderbook.asks.levels
+            ],
+            "timestamp": orderbook.timestamp.isoformat()
+        }
+        
+        logger.info(
+            f"📖 Virtual Orderbook: {len(response['bids'])} bids, "
+            f"{len(response['asks'])} asks"
+        )
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting virtual orderbook: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 4. POST /api/heatmap/start-dex
+# ============================================================================
+
+class StartDEXHeatmapRequest(BaseModel):
+    """Request Body für DEX Heatmap Start"""
+    network: str = Field(..., description="ethereum, polygon, arbitrum, etc.")
+    pools: List[Dict[str, Any]] = Field(
+        ...,
+        description="Liste von Pools mit address, dex, weight"
+    )
+    bucket_size: float = Field(default=50.0, description="Price bucket size")
+    refresh_interval: int = Field(default=2000, description="Refresh interval in ms")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "network": "ethereum",
+                "pools": [
+                    {
+                        "address": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+                        "dex": "uniswap_v3",
+                        "weight": 1.0
+                    }
+                ],
+                "bucket_size": 50.0,
+                "refresh_interval": 2000
+            }
+        }
+
+
+@router.post("/heatmap/start-dex")
+async def start_dex_heatmap(data: StartDEXHeatmapRequest):
+    """
+    Startet DEX Orderbook Heatmap mit spezifischen Pools
+    
+    Args:
+        data: StartDEXHeatmapRequest mit Pools und Config
+        
+    Returns:
+        Status und WebSocket URL
+    """
+    global aggregator, ws_manager
+    
+    try:
+        # Erstelle Pool Address Dict
+        dex_pool_addresses = {
+            f"{pool['dex']}_{i}": pool['address']
+            for i, pool in enumerate(data.pools)
+        }
+        
+        # Erstelle Config
+        from app.core.orderbook_heatmap.models.heatmap import HeatmapConfig
+        
+        config = HeatmapConfig(
+            price_bucket_size=data.bucket_size,
+            time_window_seconds=int(data.refresh_interval / 1000),
+            exchanges=list(dex_pool_addresses.keys())
+        )
+        
+        # Initialisiere Aggregator falls noch nicht vorhanden
+        if aggregator is None:
+            from app.core.orderbook_heatmap.aggregator.orderbook_aggregator import OrderbookAggregator
+            aggregator = OrderbookAggregator(config)
+        
+        # Füge DEX Exchanges hinzu
+        from app.core.orderbook_heatmap.exchanges.dex.uniswap_v3 import UniswapV3Exchange
+        
+        for pool_name in dex_pool_addresses.keys():
+            uniswap = UniswapV3Exchange()
+            aggregator.add_exchange(uniswap)
+        
+        # Verbinde
+        # Nutze ersten Pool als "Symbol"
+        first_pool = data.pools[0]
+        symbol = f"{first_pool.get('token0', 'TOKEN0')}/{first_pool.get('token1', 'TOKEN1')}"
+        
+        await aggregator.connect_all(symbol, dex_pool_addresses)
+        
+        # Session ID generieren
+        import uuid
+        session_id = str(uuid.uuid4())[:8]
+        
+        response = {
+            "status": "started",
+            "session_id": f"dex_heatmap_{session_id}",
+            "pools_connected": len(data.pools),
+            "websocket_url": f"ws://localhost:8000/ws/dex-heatmap/{session_id}"
+        }
+        
+        logger.info(f"✅ DEX Heatmap started with {len(data.pools)} pools")
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error starting DEX heatmap: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# 5. GET /api/dex/tvl-history/{pool_address}
+# ============================================================================
+
+@router.get("/dex/tvl-history/{pool_address}")
+async def get_tvl_history(
+    pool_address: str,
+    start_time: int = Query(..., description="Unix timestamp"),
+    end_time: int = Query(..., description="Unix timestamp"),
+    interval: str = Query("1h", description="1m, 5m, 15m, 1h, 4h, 1d")
+):
+    """
+    Historische TVL und Liquiditätsverteilung über Zeit
+    
+    Args:
+        pool_address: Pool Contract Adresse
+        start_time: Start Unix Timestamp
+        end_time: End Unix Timestamp
+        interval: Time Interval
+        
+    Returns:
+        Historical TVL data
+    """
+    try:
+        # Validiere Interval
+        valid_intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
+        if interval not in valid_intervals:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid interval. Valid options: {valid_intervals}"
+            )
+        
+        # TODO: Query Uniswap Subgraph für historische Daten
+        # Für jetzt: Mock Response
+        
+        data = [
+            {
+                "timestamp": start_time,
+                "tvl_usd": 285000000,
+                "liquidity": 125000.5,
+                "volume_usd": 450000000,
+                "fees_usd": 1350000,
+                "price": 2850.45,
+                "tick": 201234,
+                "concentration_1pct": 35.5,
+                "lp_count": 1234
+            }
+        ]
+        
+        response = {
+            "pool_address": pool_address,
+            "interval": interval,
+            "data": data
+        }
+        
+        logger.info(f"📈 TVL History: {len(data)} data points")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting TVL history: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============================================================================
 # PRICE REST ENDPOINT (Testing)
 # ============================================================================
