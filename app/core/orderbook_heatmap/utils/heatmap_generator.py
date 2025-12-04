@@ -4,8 +4,10 @@ Heatmap-Generierung und Visualisierungs-Utils
 from typing import List, Dict, Tuple, Optional
 import numpy as np
 from datetime import datetime
+from scipy.interpolate import interp1d, CubicSpline
 
-from app.core.orderbook_heatmap.models.heatmap import HeatmapSnapshot, HeatmapTimeSeries, HeatmapConfig
+from app.core.orderbook_heatmap.models.heatmap import HeatmapSnapshot, HeatmapTimeSeries, HeatmapConfig, DEXHeatmapSnapshot
+from app.core.orderbook_heatmap.models.orderbook import LiquidityRange
 
 
 class HeatmapGenerator:
@@ -347,3 +349,160 @@ class HeatmapGenerator:
             return 0.0
         
         return float(np.mean(changes))
+    
+    # ============================================================================
+    # DEX-SPECIFIC METHODS
+    # ============================================================================
+    
+    @staticmethod
+    def generate_dex_heatmap(
+        liquidity_data: Dict[float, LiquidityRange],
+        price_range: Tuple[float, float],
+        bucket_size: float = 50.0,
+        interpolation_method: str = "linear"
+    ) -> DEXHeatmapSnapshot:
+        """
+        Generiert Heatmap speziell für DEX-Liquiditätsdaten
+        
+        Args:
+            liquidity_data: Dict[price -> LiquidityRange]
+            price_range: (min_price, max_price) Tuple
+            bucket_size: Bucket-Größe für Preis-Aggregation
+            interpolation_method: "linear", "cubic", oder "none"
+            
+        Returns:
+            DEXHeatmapSnapshot
+        """
+        if not liquidity_data:
+            return DEXHeatmapSnapshot(
+                symbol="UNKNOWN",
+                price_levels=[],
+                pool_addresses=[],
+                total_tvl=0.0
+            )
+        
+        min_price, max_price = price_range
+        
+        # Erstelle Price-Buckets
+        num_buckets = int((max_price - min_price) / bucket_size) + 1
+        bucket_prices = [min_price + i * bucket_size for i in range(num_buckets)]
+        
+        # Interpoliere Liquidität zwischen Datenpunkten
+        if interpolation_method != "none" and len(liquidity_data) > 1:
+            interpolated_liquidity = HeatmapGenerator._interpolate_liquidity(
+                liquidity_data,
+                bucket_prices,
+                method=interpolation_method
+            )
+        else:
+            # Keine Interpolation - verwende nächsten Datenpunkt
+            interpolated_liquidity = {}
+            for bucket_price in bucket_prices:
+                closest_price = min(
+                    liquidity_data.keys(),
+                    key=lambda p: abs(p - bucket_price)
+                )
+                interpolated_liquidity[bucket_price] = liquidity_data[closest_price]
+        
+        # Konvertiere zu PriceLevels
+        from app.core.orderbook_heatmap.models.heatmap import PriceLevel
+        price_levels = []
+        
+        for price in sorted(interpolated_liquidity.keys()):
+            liq_range = interpolated_liquidity[price]
+            
+            price_level = PriceLevel(price=price)
+            price_level.add_liquidity("dex", liq_range.liquidity)
+            
+            price_levels.append(price_level)
+        
+        # Berechne Gesamt-TVL
+        total_tvl = sum(lr.liquidity_usd for lr in liquidity_data.values())
+        
+        snapshot = DEXHeatmapSnapshot(
+            symbol="DEX_PAIR",
+            price_levels=price_levels,
+            min_price=min_price,
+            max_price=max_price,
+            pool_addresses=[],  # Wird von aufrufender Funktion gesetzt
+            total_tvl=total_tvl,
+            active_lp_count=0,
+            concentration_ratio=0.0
+        )
+        
+        return snapshot
+    
+    @staticmethod
+    def _interpolate_liquidity(
+        liquidity_data: Dict[float, LiquidityRange],
+        target_prices: List[float],
+        method: str = "linear"
+    ) -> Dict[float, LiquidityRange]:
+        """
+        Interpoliert Liquidität zwischen spärlichen Datenpunkten
+        
+        Args:
+            liquidity_data: Original Tick-Daten
+            target_prices: Ziel-Preise für Interpolation
+            method: "linear" oder "cubic"
+            
+        Returns:
+            Dict mit interpolierten LiquidityRanges
+        """
+        if not liquidity_data or len(liquidity_data) < 2:
+            return liquidity_data
+        
+        # Sortiere Original-Daten
+        sorted_prices = sorted(liquidity_data.keys())
+        liquidities = [liquidity_data[p].liquidity for p in sorted_prices]
+        liquidity_usd_values = [liquidity_data[p].liquidity_usd for p in sorted_prices]
+        
+        try:
+            # Erstelle Interpolations-Funktion
+            if method == "cubic" and len(sorted_prices) >= 4:
+                # Cubic Spline benötigt mindestens 4 Punkte
+                f_liquidity = CubicSpline(sorted_prices, liquidities)
+                f_liquidity_usd = CubicSpline(sorted_prices, liquidity_usd_values)
+            else:
+                # Linear Interpolation
+                f_liquidity = interp1d(
+                    sorted_prices, 
+                    liquidities,
+                    kind='linear',
+                    fill_value='extrapolate'
+                )
+                f_liquidity_usd = interp1d(
+                    sorted_prices,
+                    liquidity_usd_values,
+                    kind='linear',
+                    fill_value='extrapolate'
+                )
+            
+            # Interpoliere zu Ziel-Preisen
+            result = {}
+            for price in target_prices:
+                # Nur innerhalb des Original-Bereichs interpolieren
+                if sorted_prices[0] <= price <= sorted_prices[-1]:
+                    interpolated_liq = float(f_liquidity(price))
+                    interpolated_liq_usd = float(f_liquidity_usd(price))
+                    
+                    # Erstelle interpoliertes LiquidityRange
+                    result[price] = LiquidityRange(
+                        price_lower=price - 0.5,  # ±0.5 bucket
+                        price_upper=price + 0.5,
+                        liquidity=max(0.0, interpolated_liq),  # Keine negativen Werte
+                        liquidity_usd=max(0.0, interpolated_liq_usd),
+                        tick_lower=None,
+                        tick_upper=None,
+                        provider_count=1,
+                        effective_depth=max(0.0, interpolated_liq)
+                    )
+            
+            return result
+            
+        except Exception as e:
+            # Bei Fehler: Fallback auf Original-Daten
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Interpolation failed: {e}, using original data")
+            return liquidity_data
