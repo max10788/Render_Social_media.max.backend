@@ -3,7 +3,7 @@ FastAPI Endpoints für Orderbook Heatmap
 """
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.responses import JSONResponse
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 from pydantic import BaseModel, Field, ValidationError
 import asyncio
 import json
