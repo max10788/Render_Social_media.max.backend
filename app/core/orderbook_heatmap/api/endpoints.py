@@ -473,8 +473,301 @@ async def health_check():
     logger.debug(f"  ✅ {response}")
     return response
 
+"""
+DEX POOLS ENDPOINT - ECHTE IMPLEMENTATION
+Ersetze den @router.get("/dex/pools/{network}/{token0}/{token1}") Endpoint in endpoints.py
+"""
+
+import aiohttp
+from typing import Dict, List, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
 # ============================================================================
-# DEX ENDPOINTS MIT DETAILLIERTEM LOGGING
+# TOKEN ADDRESS MAPPING
+# ============================================================================
+
+# Bekannte Token-Adressen für verschiedene Netzwerke
+TOKEN_ADDRESSES = {
+    "ethereum": {
+        "WETH": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        "USDC": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "USDT": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+        "DAI": "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+        "WBTC": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+        "UNI": "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
+        "LINK": "0x514910771AF9Ca656af840dff83E8264EcF986CA",
+        "MATIC": "0x7D1AfA7B718fb893dB30A3aBc0Cfc608AaCfeBB0",
+        "AAVE": "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9",
+        "CRV": "0xD533a949740bb3306d119CC777fa900bA034cd52",
+    },
+    "polygon": {
+        "WETH": "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619",
+        "USDC": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
+        "USDT": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F",
+        "WMATIC": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
+        "DAI": "0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063",
+    },
+    "arbitrum": {
+        "WETH": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
+        "USDC": "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8",
+        "USDT": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
+        "ARB": "0x912CE59144191C1204E64559FE8253a0e49E6548",
+    },
+    "optimism": {
+        "WETH": "0x4200000000000000000000000000000000000006",
+        "USDC": "0x7F5c764cBc14f9669B88837ca1490cCa17c31607",
+        "USDT": "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
+        "OP": "0x4200000000000000000000000000000000000042",
+    },
+    "base": {
+        "WETH": "0x4200000000000000000000000000000000000006",
+        "USDC": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    }
+}
+
+# Subgraph URLs für verschiedene Netzwerke
+SUBGRAPH_URLS = {
+    "ethereum": "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3",
+    "polygon": "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-polygon",
+    "arbitrum": "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-arbitrum",
+    "optimism": "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-optimism",
+    "base": "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-base",
+}
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def resolve_token_address(network: str, symbol: str) -> Optional[str]:
+    """
+    Löst Token-Symbol zu Contract-Adresse auf
+    
+    Args:
+        network: Netzwerk (ethereum, polygon, etc.)
+        symbol: Token-Symbol (WETH, USDC, etc.)
+        
+    Returns:
+        Token-Adresse oder None
+    """
+    network_tokens = TOKEN_ADDRESSES.get(network.lower(), {})
+    return network_tokens.get(symbol.upper())
+
+
+def get_subgraph_url(network: str) -> Optional[str]:
+    """
+    Holt Subgraph URL für Netzwerk
+    
+    Args:
+        network: Netzwerk Name
+        
+    Returns:
+        Subgraph URL oder None
+    """
+    return SUBGRAPH_URLS.get(network.lower())
+
+
+def sqrt_price_x96_to_price(sqrt_price_x96: str, decimals0: int, decimals1: int) -> float:
+    """
+    Konvertiert sqrtPriceX96 zu human-readable Preis
+    
+    Args:
+        sqrt_price_x96: sqrtPriceX96 vom Pool (als String)
+        decimals0: Decimals von Token0
+        decimals1: Decimals von Token1
+        
+    Returns:
+        Preis als Float
+    """
+    try:
+        sqrt_price = int(sqrt_price_x96) / (2 ** 96)
+        price = sqrt_price ** 2
+        
+        # Adjust for decimals
+        price = price * (10 ** decimals0) / (10 ** decimals1)
+        
+        return price
+    except Exception as e:
+        logger.warning(f"Failed to calculate price from sqrtPriceX96: {e}")
+        return 0.0
+
+
+async def search_pools_subgraph(
+    network: str,
+    token0_address: str,
+    token1_address: str,
+    fee_tier: Optional[int] = None
+) -> List[Dict]:
+    """
+    Sucht Pools im Uniswap v3 Subgraph
+    
+    Args:
+        network: Netzwerk Name
+        token0_address: Token0 Contract Address
+        token1_address: Token1 Contract Address
+        fee_tier: Optional Fee Tier Filter (500, 3000, 10000)
+        
+    Returns:
+        Liste von Pool-Daten
+    """
+    subgraph_url = get_subgraph_url(network)
+    if not subgraph_url:
+        logger.error(f"No subgraph URL for network: {network}")
+        return []
+    
+    # GraphQL Query
+    # Suche nach Pools mit token0 UND token1 (in beliebiger Reihenfolge)
+    query = """
+    query($token0: String!, $token1: String!) {
+        pools(
+            first: 10
+            orderBy: totalValueLockedUSD
+            orderDirection: desc
+            where: {
+                or: [
+                    { token0: $token0, token1: $token1 },
+                    { token0: $token1, token1: $token0 }
+                ]
+            }
+        ) {
+            id
+            token0 {
+                id
+                symbol
+                decimals
+                name
+            }
+            token1 {
+                id
+                symbol
+                decimals
+                name
+            }
+            feeTier
+            liquidity
+            sqrtPrice
+            tick
+            token0Price
+            token1Price
+            volumeUSD
+            totalValueLockedUSD
+            totalValueLockedToken0
+            totalValueLockedToken1
+            tickSpacing
+            poolDayData(first: 1, orderBy: date, orderDirection: desc) {
+                volumeUSD
+                tvlUSD
+            }
+        }
+    }
+    """
+    
+    variables = {
+        "token0": token0_address.lower(),
+        "token1": token1_address.lower()
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                subgraph_url,
+                json={"query": query, "variables": variables},
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    logger.error(f"Subgraph returned status {resp.status}")
+                    return []
+                
+                result = await resp.json()
+                
+                # Check for errors
+                if "errors" in result:
+                    logger.error(f"Subgraph query errors: {result['errors']}")
+                    return []
+                
+                pools = result.get("data", {}).get("pools", [])
+                
+                # Filter by fee tier if specified
+                if fee_tier is not None:
+                    pools = [p for p in pools if int(p.get("feeTier", 0)) == fee_tier]
+                
+                logger.info(f"Found {len(pools)} pools from Subgraph")
+                return pools
+                
+    except asyncio.TimeoutError:
+        logger.error("Subgraph request timed out")
+        return []
+    except Exception as e:
+        logger.error(f"Subgraph request failed: {e}")
+        return []
+
+
+def format_pool_response(pool_data: Dict, network: str) -> Dict:
+    """
+    Formatiert Subgraph Pool-Daten für API Response
+    
+    Args:
+        pool_data: Pool-Daten vom Subgraph
+        network: Netzwerk Name
+        
+    Returns:
+        Formatiertes Pool-Dict
+    """
+    try:
+        # Token Info
+        token0 = pool_data.get("token0", {})
+        token1 = pool_data.get("token1", {})
+        
+        # Berechne aktuellen Preis
+        sqrt_price_x96 = pool_data.get("sqrtPrice", "0")
+        decimals0 = int(token0.get("decimals", 18))
+        decimals1 = int(token1.get("decimals", 18))
+        current_price = sqrt_price_x96_to_price(sqrt_price_x96, decimals0, decimals1)
+        
+        # TVL und Volume
+        tvl_usd = float(pool_data.get("totalValueLockedUSD", 0))
+        
+        # Volume 24h aus poolDayData
+        volume_24h = 0.0
+        pool_day_data = pool_data.get("poolDayData", [])
+        if pool_day_data:
+            volume_24h = float(pool_day_data[0].get("volumeUSD", 0))
+        
+        # Liquidity
+        liquidity = float(pool_data.get("liquidity", 0))
+        
+        return {
+            "address": pool_data.get("id"),
+            "dex": "uniswap_v3",
+            "network": network,
+            "fee_tier": int(pool_data.get("feeTier", 0)),
+            "tvl_usd": tvl_usd,
+            "volume_24h": volume_24h,
+            "liquidity": liquidity,
+            "tick_spacing": int(pool_data.get("tickSpacing", 0)),
+            "current_tick": int(pool_data.get("tick", 0)),
+            "current_price": current_price,
+            "token0": {
+                "address": token0.get("id"),
+                "symbol": token0.get("symbol"),
+                "decimals": decimals0,
+                "name": token0.get("name", "")
+            },
+            "token1": {
+                "address": token1.get("id"),
+                "symbol": token1.get("symbol"),
+                "decimals": decimals1,
+                "name": token1.get("name", "")
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to format pool response: {e}")
+        return {}
+
+
+# ============================================================================
+# ENDPOINT IMPLEMENTATION
 # ============================================================================
 
 @router.get("/dex/pools/{network}/{token0}/{token1}")
@@ -486,9 +779,20 @@ async def get_dex_pools(
 ):
     """
     Liste verfügbare Pools für ein Trading Pair auf einem bestimmten Network
+    
+    **ECHTE IMPLEMENTATION** mit Uniswap v3 Subgraph Integration
+    
+    Args:
+        network: ethereum, polygon, arbitrum, optimism, base
+        token0: Token0 Symbol (z.B. WETH, USDC)
+        token1: Token1 Symbol (z.B. USDC, USDT)
+        fee_tier: Optional - Filter nach Fee Tier (500 = 0.05%, 3000 = 0.3%, 10000 = 1%)
+        
+    Returns:
+        Liste von verfügbaren Pools mit TVL, Volume, etc.
     """
     logger.info("=" * 80)
-    logger.info("🔍 DEX POOLS REQUEST")
+    logger.info("🔍 DEX POOLS REQUEST (REAL IMPLEMENTATION)")
     logger.info("=" * 80)
     logger.info(f"📥 Parameters:")
     logger.info(f"  - network: {network}")
@@ -500,51 +804,91 @@ async def get_dex_pools(
         # Validiere Network
         valid_networks = ["ethereum", "polygon", "arbitrum", "optimism", "base"]
         logger.info(f"🔍 Validating network...")
-        logger.info(f"  Valid networks: {valid_networks}")
         
         if network.lower() not in valid_networks:
             error_msg = f"Invalid network: {network}. Valid options: {valid_networks}"
             logger.error(f"❌ {error_msg}")
-            raise HTTPException(
-                status_code=422,
-                detail=error_msg
-            )
+            raise HTTPException(status_code=422, detail=error_msg)
         logger.info(f"  ✅ Network valid: {network}")
         
-        logger.info("🔄 Fetching pools from Uniswap Subgraph...")
-        logger.info("  ⚠️ Currently returning MOCK data - Subgraph integration pending")
+        # Resolve Token Addresses
+        logger.info("🔍 Resolving token addresses...")
+        token0_address = resolve_token_address(network, token0)
+        token1_address = resolve_token_address(network, token1)
         
-        # TODO: Implementiere Pool-Suche via Uniswap Subgraph
-        # Für jetzt: Mock Response
+        if not token0_address:
+            error_msg = f"Unknown token: {token0} on {network}"
+            logger.error(f"❌ {error_msg}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"{error_msg}. Supported tokens: {list(TOKEN_ADDRESSES.get(network, {}).keys())}"
+            )
         
-        pools = [
-            {
-                "address": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
-                "dex": "uniswap_v3",
-                "fee_tier": 500,
-                "tvl_usd": 285000000,
-                "volume_24h": 450000000,
-                "liquidity": 125000.5,
-                "tick_spacing": 10,
-                "current_tick": 201234,
-                "current_price": 2850.45
+        if not token1_address:
+            error_msg = f"Unknown token: {token1} on {network}"
+            logger.error(f"❌ {error_msg}")
+            raise HTTPException(
+                status_code=422,
+                detail=f"{error_msg}. Supported tokens: {list(TOKEN_ADDRESSES.get(network, {}).keys())}"
+            )
+        
+        logger.info(f"  ✅ Token0 ({token0}): {token0_address}")
+        logger.info(f"  ✅ Token1 ({token1}): {token1_address}")
+        
+        # Suche Pools im Subgraph
+        logger.info("🔄 Querying Uniswap v3 Subgraph...")
+        logger.info(f"  Subgraph URL: {get_subgraph_url(network)}")
+        
+        pools_raw = await search_pools_subgraph(
+            network=network,
+            token0_address=token0_address,
+            token1_address=token1_address,
+            fee_tier=fee_tier
+        )
+        
+        if not pools_raw:
+            logger.warning(f"⚠️ No pools found for {token0}/{token1} on {network}")
+            # Return empty but valid response
+            return {
+                "network": network,
+                "pair": f"{token0}/{token1}",
+                "pools": [],
+                "timestamp": datetime.utcnow().isoformat(),
+                "_note": "No pools found. This pair may not exist or have low liquidity."
             }
-        ]
         
-        logger.info(f"📊 Found {len(pools)} pools (before filtering)")
+        logger.info(f"📊 Found {len(pools_raw)} pools from Subgraph")
         
-        # Filter nach Fee Tier falls angegeben
-        if fee_tier is not None:
-            logger.info(f"🔍 Filtering by fee_tier: {fee_tier}")
-            pools_before = len(pools)
-            pools = [p for p in pools if p["fee_tier"] == fee_tier]
-            logger.info(f"  Filtered {pools_before} → {len(pools)} pools")
+        # Formatiere Pools
+        logger.info("🔄 Formatting pool data...")
+        pools = []
+        for pool_raw in pools_raw:
+            formatted = format_pool_response(pool_raw, network)
+            if formatted:
+                pools.append(formatted)
+        
+        logger.info(f"  ✅ Formatted {len(pools)} pools")
+        
+        # Sortiere nach TVL (höchste zuerst)
+        pools.sort(key=lambda p: p.get("tvl_usd", 0), reverse=True)
+        
+        # Log top pool
+        if pools:
+            top_pool = pools[0]
+            logger.info(f"  🏆 Top Pool:")
+            logger.info(f"     Address: {top_pool['address']}")
+            logger.info(f"     Fee: {top_pool['fee_tier']/10000}%")
+            logger.info(f"     TVL: ${top_pool['tvl_usd']/1_000_000:.2f}M")
+            logger.info(f"     Volume 24h: ${top_pool['volume_24h']/1_000_000:.2f}M")
+            logger.info(f"     Price: ${top_pool['current_price']:.2f}")
         
         response = {
             "network": network,
             "pair": f"{token0}/{token1}",
             "pools": pools,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
+            "_data_source": "uniswap_v3_subgraph",
+            "_total_pools": len(pools)
         }
         
         logger.info("=" * 80)
@@ -563,7 +907,53 @@ async def get_dex_pools(
         logger.error(f"Error type: {type(e).__name__}")
         logger.error(f"Error message: {str(e)}")
         logger.error("Traceback:", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+# ============================================================================
+# USAGE EXAMPLES
+# ============================================================================
+
+"""
+BEISPIELE:
+
+1. Hole WETH/USDC Pools auf Ethereum:
+   GET /api/v1/orderbook-heatmap/dex/pools/ethereum/WETH/USDC
+   
+   Response:
+   {
+     "network": "ethereum",
+     "pair": "WETH/USDC",
+     "pools": [
+       {
+         "address": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
+         "dex": "uniswap_v3",
+         "fee_tier": 500,
+         "tvl_usd": 285000000,
+         "volume_24h": 450000000,
+         "current_price": 3845.50,
+         "token0": {"symbol": "WETH", "address": "0xC02a...", "decimals": 18},
+         "token1": {"symbol": "USDC", "address": "0xA0b8...", "decimals": 6}
+       },
+       {
+         "address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
+         "dex": "uniswap_v3",
+         "fee_tier": 3000,
+         "tvl_usd": 120000000,
+         ...
+       }
+     ]
+   }
+
+2. Filtere nach Fee Tier (0.05%):
+   GET /api/v1/orderbook-heatmap/dex/pools/ethereum/WETH/USDC?fee_tier=500
+
+3. Polygon Network:
+   GET /api/v1/orderbook-heatmap/dex/pools/polygon/WETH/USDC
+
+4. Arbitrum mit DAI/USDC:
+   GET /api/v1/orderbook-heatmap/dex/pools/arbitrum/DAI/USDC
+"""
 
 
 @router.get("/dex/liquidity/{pool_address}")
