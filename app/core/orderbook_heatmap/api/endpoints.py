@@ -1,6 +1,6 @@
 """
 FastAPI Endpoints für Orderbook Heatmap
-ENHANCED VERSION with detailed logging for DEX endpoints
+FIXED VERSION - Neue The Graph URLs (Dezember 2024)
 """
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.responses import JSONResponse
@@ -11,6 +11,7 @@ import json
 import logging
 from datetime import datetime
 import aiohttp
+import os
 
 from app.core.orderbook_heatmap.models.orderbook import Exchange, AggregatedOrderbook
 from app.core.orderbook_heatmap.models.heatmap import HeatmapConfig, HeatmapSnapshot, HeatmapTimeSeries
