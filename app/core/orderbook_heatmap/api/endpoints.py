@@ -489,6 +489,15 @@ logger = logging.getLogger(__name__)
 # TOKEN ADDRESS MAPPING
 # ============================================================================
 
+# Uniswap v3 Subgraph IDs (offizielle von Uniswap Docs)
+UNISWAP_V3_SUBGRAPH_IDS = {
+    "ethereum": "5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV",
+    "polygon": "3hCPRGf4z88VC5rsBKU5AA9FBBq5nF3jbKJG7VZCbhjm",
+    "arbitrum": "FbCGRftH4a3yZugY7TnbYgPJVEv2LvMT6oF1fxPe9aJM",
+    "optimism": "Cghf4LfVqPiFw6fp6Y5X5Ubc8UpmUhSfJL82zwiBFLaj",
+    "base": "43Hwfi3dJSoGpyas9VwNoDAv55yjgGrPpNSmbQZArzMG"
+}
+
 # Bekannte Token-Adressen für verschiedene Netzwerke
 TOKEN_ADDRESSES = {
     "ethereum": {
@@ -526,15 +535,6 @@ TOKEN_ADDRESSES = {
         "WETH": "0x4200000000000000000000000000000000000006",
         "USDC": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     }
-}
-
-# Subgraph URLs für verschiedene Netzwerke
-SUBGRAPH_URLS = {
-    "ethereum": "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3",
-    "polygon": "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-polygon",
-    "arbitrum": "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-arbitrum",
-    "optimism": "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-optimism",
-    "base": "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3-base",
 }
 
 # ============================================================================
