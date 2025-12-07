@@ -541,6 +541,20 @@ TOKEN_ADDRESSES = {
 # HELPER FUNCTIONS
 # ============================================================================
 
+    def _get_subgraph_url(self, network: str = "ethereum") -> str:
+        api_key = os.getenv("THE_GRAPH_API_KEY", "")
+        
+        if not api_key:
+            messari_urls = {
+                "ethereum": "https://api.thegraph.com/subgraphs/name/messari/uniswap-v3-ethereum",
+                "polygon": "https://api.thegraph.com/subgraphs/name/messari/uniswap-v3-polygon",
+                "arbitrum": "https://api.thegraph.com/subgraphs/name/messari/uniswap-v3-arbitrum",
+            }
+            return messari_urls.get(network, messari_urls["ethereum"])
+        
+        subgraph_id = self.SUBGRAPH_IDS.get(network, self.SUBGRAPH_IDS["ethereum"])
+        return f"https://gateway.thegraph.com/api/{api_key}/subgraphs/id/{subgraph_id}"
+
 def resolve_token_address(network: str, symbol: str) -> Optional[str]:
     """
     Löst Token-Symbol zu Contract-Adresse auf
