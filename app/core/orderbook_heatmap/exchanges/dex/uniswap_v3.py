@@ -7,6 +7,7 @@ from typing import Optional, Dict, Any, List
 import aiohttp
 from decimal import Decimal
 import math
+import os  # ← NEU: Für API Key aus Environment
 
 from app.core.orderbook_heatmap.exchanges.dex.base import DEXExchange, BaseDEX
 from app.core.orderbook_heatmap.models.orderbook import (
@@ -24,8 +25,17 @@ class UniswapV3Exchange(BaseDEX):
     Nutzt The Graph API oder direkten RPC-Call zum Pool Contract
     """
     
-    # The Graph Subgraph URL (Ethereum Mainnet)
-    SUBGRAPH_URL = "https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3"
+    # ============================================================================
+    # NEU: Subgraph IDs für The Graph Decentralized Network (Dezember 2024)
+    # Alte URL funktioniert nicht mehr seit Juni 2023!
+    # ============================================================================
+    SUBGRAPH_IDS = {
+        "ethereum": "5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV",
+        "polygon": "3hCPRGf4z88VC5rsBKU5AA9FBBq5nF3jbKJG7VZCbhjm",
+        "arbitrum": "FbCGRftH4a3yZugY7TnbYgPJVEv2LvMT6oF1fxPe9aJM",
+        "optimism": "Cghf4LfVqPiFw6fp6Y5X5Ubc8UpmUhSfJL82zwiBFLaj",
+        "base": "43Hwfi3dJSoGpyas9VwNoDAv55yjgGrPpNSmbQZArzMG"
+    }
     
     # Uniswap v3 Pool ABI (vereinfacht)
     POOL_ABI = [
@@ -39,6 +49,47 @@ class UniswapV3Exchange(BaseDEX):
         super().__init__(Exchange.UNISWAP_V3)
         self.session: Optional[aiohttp.ClientSession] = None
         self._pool_cache: Dict[str, Dict] = {}
+    
+    # ============================================================================
+    # NEU: Methode zum Holen der Subgraph URL mit API Key Support
+    # ============================================================================
+    def _get_subgraph_url(self, network: str = "ethereum") -> str:
+        """
+        Holt Subgraph URL mit API Key Support
+        
+        Args:
+            network: Netzwerk (ethereum, polygon, arbitrum, optimism, base)
+            
+        Returns:
+            Subgraph URL oder leerer String wenn kein API Key
+        """
+        api_key = os.getenv("THE_GRAPH_API_KEY", "")
+        
+        if not api_key:
+            logger.error("=" * 80)
+            logger.error("❌ THE_GRAPH_API_KEY NOT SET!")
+            logger.error("=" * 80)
+            logger.error("The Graph Hosted Service was shut down in June 2023.")
+            logger.error("You MUST set THE_GRAPH_API_KEY environment variable.")
+            logger.error("")
+            logger.error("HOW TO FIX:")
+            logger.error("1. Go to: https://thegraph.com/studio/")
+            logger.error("2. Create account / Sign in")
+            logger.error("3. Click 'API Keys' → 'Create API Key'")
+            logger.error("4. Copy the key")
+            logger.error("5. On Render Dashboard:")
+            logger.error("   - Go to Environment tab")
+            logger.error("   - Add Environment Variable:")
+            logger.error("     Key: THE_GRAPH_API_KEY")
+            logger.error("     Value: [your API key]")
+            logger.error("   - Save Changes (auto-deploy takes 2-3 min)")
+            logger.error("=" * 80)
+            return ""
+        
+        subgraph_id = self.SUBGRAPH_IDS.get(network, self.SUBGRAPH_IDS["ethereum"])
+        url = f"https://gateway.thegraph.com/api/{api_key}/subgraphs/id/{subgraph_id}"
+        logger.info(f"✅ Using The Graph URL for {network}: {url[:80]}...")
+        return url
         
     async def get_pool_info(self, pool_address: str) -> Dict[str, Any]:
         """Holt Pool-Informationen via The Graph"""
@@ -71,8 +122,16 @@ class UniswapV3Exchange(BaseDEX):
             
             variables = {"poolAddress": pool_address.lower()}
             
+            # ============================================================================
+            # GEÄNDERT: Nutze _get_subgraph_url() statt self.SUBGRAPH_URL
+            # ============================================================================
+            subgraph_url = self._get_subgraph_url()
+            if not subgraph_url:
+                logger.error("❌ Cannot get pool info: Subgraph URL not available (missing API key)")
+                return {}
+            
             async with self.session.post(
-                self.SUBGRAPH_URL,
+                subgraph_url,  # ← GEÄNDERT!
                 json={"query": query, "variables": variables}
             ) as resp:
                 if resp.status != 200:
@@ -118,6 +177,14 @@ class UniswapV3Exchange(BaseDEX):
             all_ticks = []
             skip = 0
             
+            # ============================================================================
+            # GEÄNDERT: Hole URL einmal vor der Loop
+            # ============================================================================
+            subgraph_url = self._get_subgraph_url()
+            if not subgraph_url:
+                logger.error("❌ Cannot get liquidity ticks: Subgraph URL not available (missing API key)")
+                return []
+            
             # Hole Ticks in Batches (max 1000 per Query)
             while True:
                 variables = {
@@ -126,7 +193,7 @@ class UniswapV3Exchange(BaseDEX):
                 }
                 
                 async with self.session.post(
-                    self.SUBGRAPH_URL,
+                    subgraph_url,  # ← GEÄNDERT!
                     json={"query": query, "variables": variables}
                 ) as resp:
                     if resp.status != 200:
