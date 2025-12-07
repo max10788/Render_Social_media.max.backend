@@ -593,6 +593,7 @@ async def search_pools_subgraph(
 ) -> List[Dict]:
     """
     🔄 UPDATED - Sucht Pools mit neuem Query Format
+    ✅ FIXED - tickSpacing entfernt aus Query
     
     Nutzt separates Query für beide Token-Reihenfolgen (pools0 + pools1)
     """
@@ -601,7 +602,10 @@ async def search_pools_subgraph(
         logger.error(f"No subgraph URL for network: {network}")
         return []
     
+    # ========================================================================
     # GraphQL Query - Kompatibel mit The Graph Network
+    # ✅ FIXED: tickSpacing entfernt (existiert nicht im Uniswap v3 Schema)
+    # ========================================================================
     query = """
     query($token0: String!, $token1: String!) {
         pools0: pools(
@@ -636,7 +640,6 @@ async def search_pools_subgraph(
             totalValueLockedUSD
             totalValueLockedToken0
             totalValueLockedToken1
-            tickSpacing
         }
         pools1: pools(
             first: 5
@@ -670,7 +673,6 @@ async def search_pools_subgraph(
             totalValueLockedUSD
             totalValueLockedToken0
             totalValueLockedToken1
-            tickSpacing
         }
     }
     """
@@ -758,15 +760,22 @@ def format_pool_response(pool_data: Dict, network: str) -> Dict:
         volume_usd = float(pool_data.get("volumeUSD", 0))
         liquidity = float(pool_data.get("liquidity", 0))
         
+        # ✅ FIXED: tickSpacing nicht mehr verwendet
+        # Berechne tickSpacing aus feeTier falls notwendig:
+        # 500 (0.05%) → 10, 3000 (0.3%) → 60, 10000 (1%) → 200
+        fee_tier = int(pool_data.get("feeTier", 0))
+        tick_spacing_map = {500: 10, 3000: 60, 10000: 200}
+        tick_spacing = tick_spacing_map.get(fee_tier, 60)  # Default: 60
+        
         return {
             "address": pool_data.get("id"),
             "dex": "uniswap_v3",
             "network": network,
-            "fee_tier": int(pool_data.get("feeTier", 0)),
+            "fee_tier": fee_tier,
             "tvl_usd": tvl_usd,
             "volume_24h": volume_usd,
             "liquidity": liquidity,
-            "tick_spacing": int(pool_data.get("tickSpacing", 0)),
+            "tick_spacing": tick_spacing,  # Berechnet, nicht von Subgraph
             "current_tick": int(pool_data.get("tick", 0)),
             "current_price": current_price,
             "token0": {
@@ -801,6 +810,7 @@ async def get_dex_pools(
     Liste verfügbare Pools für ein Trading Pair auf einem bestimmten Network
     
     **FIXED VERSION** mit neuen The Graph URLs (Dezember 2024)
+    **FIXED VERSION 2** tickSpacing entfernt aus GraphQL Query
     """
     logger.info("=" * 80)
     logger.info("🔍 DEX POOLS REQUEST (FIXED VERSION)")
