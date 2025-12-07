@@ -474,22 +474,16 @@ async def health_check():
     logger.debug(f"  ✅ {response}")
     return response
 
-"""
-DEX POOLS ENDPOINT - ECHTE IMPLEMENTATION
-Ersetze den @router.get("/dex/pools/{network}/{token0}/{token1}") Endpoint in endpoints.py
-"""
-
-import aiohttp
-from typing import Dict, List, Optional
-import logging
-
-logger = logging.getLogger(__name__)
-
 # ============================================================================
-# TOKEN ADDRESS MAPPING
+# DEX POOLS ENDPOINT - FIXED VERSION mit neuen Subgraph URLs
 # ============================================================================
 
-# Uniswap v3 Subgraph IDs (offizielle von Uniswap Docs)
+# ============================================================================
+# ⚡ WICHTIGE ÄNDERUNG: NEUE SUBGRAPH IDS (Dezember 2024)
+# Die alten URLs (api.thegraph.com/subgraphs/name/...) funktionieren nicht mehr!
+# Neue IDs von: https://docs.uniswap.org/api/subgraph/overview
+# ============================================================================
+
 UNISWAP_V3_SUBGRAPH_IDS = {
     "ethereum": "5zvR82QoaXYFyDEKLZ9t6v9adgnptxYpKpSbxtgVENFV",
     "polygon": "3hCPRGf4z88VC5rsBKU5AA9FBBq5nF3jbKJG7VZCbhjm",
@@ -538,70 +532,53 @@ TOKEN_ADDRESSES = {
 }
 
 # ============================================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (FIXED)
 # ============================================================================
 
-    def _get_subgraph_url(self, network: str = "ethereum") -> str:
-        api_key = os.getenv("THE_GRAPH_API_KEY", "")
-        
-        if not api_key:
-            messari_urls = {
-                "ethereum": "https://api.thegraph.com/subgraphs/name/messari/uniswap-v3-ethereum",
-                "polygon": "https://api.thegraph.com/subgraphs/name/messari/uniswap-v3-polygon",
-                "arbitrum": "https://api.thegraph.com/subgraphs/name/messari/uniswap-v3-arbitrum",
-            }
-            return messari_urls.get(network, messari_urls["ethereum"])
-        
-        subgraph_id = self.SUBGRAPH_IDS.get(network, self.SUBGRAPH_IDS["ethereum"])
-        return f"https://gateway.thegraph.com/api/{api_key}/subgraphs/id/{subgraph_id}"
-
 def resolve_token_address(network: str, symbol: str) -> Optional[str]:
-    """
-    Löst Token-Symbol zu Contract-Adresse auf
-    
-    Args:
-        network: Netzwerk (ethereum, polygon, etc.)
-        symbol: Token-Symbol (WETH, USDC, etc.)
-        
-    Returns:
-        Token-Adresse oder None
-    """
+    """Löst Token-Symbol zu Contract-Adresse auf"""
     network_tokens = TOKEN_ADDRESSES.get(network.lower(), {})
     return network_tokens.get(symbol.upper())
 
 
 def get_subgraph_url(network: str) -> Optional[str]:
     """
-    Holt Subgraph URL für Netzwerk
+    🆕 NEUE FUNKTION - Holt Subgraph URL mit neuem Format
     
-    Args:
-        network: Netzwerk Name
-        
-    Returns:
-        Subgraph URL oder None
+    Nutzt The Graph API Key falls vorhanden, sonst Fallback zu Messari
     """
-    return SUBGRAPH_URLS.get(network.lower())
+    network = network.lower()
+    
+    # Hole API Key aus Environment
+    api_key = os.getenv("THE_GRAPH_API_KEY", "")
+    
+    if not api_key:
+        logger.warning("⚠️ THE_GRAPH_API_KEY not set! Using fallback Subgraph (slower)")
+        logger.warning("💡 Get free API key at: https://thegraph.com/studio/")
+        
+        # Fallback: Messari Subgraphs (public, aber langsamer)
+        messari_urls = {
+            "ethereum": "https://api.thegraph.com/subgraphs/name/messari/uniswap-v3-ethereum",
+            "polygon": "https://api.thegraph.com/subgraphs/name/messari/uniswap-v3-polygon",
+            "arbitrum": "https://api.thegraph.com/subgraphs/name/messari/uniswap-v3-arbitrum",
+        }
+        return messari_urls.get(network)
+    
+    # Offizielle Graph Network URLs mit API Key
+    subgraph_id = UNISWAP_V3_SUBGRAPH_IDS.get(network)
+    if subgraph_id:
+        return f"https://gateway.thegraph.com/api/{api_key}/subgraphs/id/{subgraph_id}"
+    
+    logger.error(f"No subgraph ID for network: {network}")
+    return None
 
 
 def sqrt_price_x96_to_price(sqrt_price_x96: str, decimals0: int, decimals1: int) -> float:
-    """
-    Konvertiert sqrtPriceX96 zu human-readable Preis
-    
-    Args:
-        sqrt_price_x96: sqrtPriceX96 vom Pool (als String)
-        decimals0: Decimals von Token0
-        decimals1: Decimals von Token1
-        
-    Returns:
-        Preis als Float
-    """
+    """Konvertiert sqrtPriceX96 zu human-readable Preis"""
     try:
         sqrt_price = int(sqrt_price_x96) / (2 ** 96)
         price = sqrt_price ** 2
-        
-        # Adjust for decimals
         price = price * (10 ** decimals0) / (10 ** decimals1)
-        
         return price
     except Exception as e:
         logger.warning(f"Failed to calculate price from sqrtPriceX96: {e}")
@@ -615,35 +592,25 @@ async def search_pools_subgraph(
     fee_tier: Optional[int] = None
 ) -> List[Dict]:
     """
-    Sucht Pools im Uniswap v3 Subgraph
+    🔄 UPDATED - Sucht Pools mit neuem Query Format
     
-    Args:
-        network: Netzwerk Name
-        token0_address: Token0 Contract Address
-        token1_address: Token1 Contract Address
-        fee_tier: Optional Fee Tier Filter (500, 3000, 10000)
-        
-    Returns:
-        Liste von Pool-Daten
+    Nutzt separates Query für beide Token-Reihenfolgen (pools0 + pools1)
     """
     subgraph_url = get_subgraph_url(network)
     if not subgraph_url:
         logger.error(f"No subgraph URL for network: {network}")
         return []
     
-    # GraphQL Query
-    # Suche nach Pools mit token0 UND token1 (in beliebiger Reihenfolge)
+    # GraphQL Query - Kompatibel mit The Graph Network
     query = """
     query($token0: String!, $token1: String!) {
-        pools(
-            first: 10
+        pools0: pools(
+            first: 5
             orderBy: totalValueLockedUSD
             orderDirection: desc
             where: {
-                or: [
-                    { token0: $token0, token1: $token1 },
-                    { token0: $token1, token1: $token0 }
-                ]
+                token0: $token0
+                token1: $token1
             }
         ) {
             id
@@ -670,10 +637,40 @@ async def search_pools_subgraph(
             totalValueLockedToken0
             totalValueLockedToken1
             tickSpacing
-            poolDayData(first: 1, orderBy: date, orderDirection: desc) {
-                volumeUSD
-                tvlUSD
+        }
+        pools1: pools(
+            first: 5
+            orderBy: totalValueLockedUSD
+            orderDirection: desc
+            where: {
+                token0: $token1
+                token1: $token0
             }
+        ) {
+            id
+            token0 {
+                id
+                symbol
+                decimals
+                name
+            }
+            token1 {
+                id
+                symbol
+                decimals
+                name
+            }
+            feeTier
+            liquidity
+            sqrtPrice
+            tick
+            token0Price
+            token1Price
+            volumeUSD
+            totalValueLockedUSD
+            totalValueLockedToken0
+            totalValueLockedToken1
+            tickSpacing
         }
     }
     """
@@ -684,72 +681,81 @@ async def search_pools_subgraph(
     }
     
     try:
+        logger.info(f"  📡 Querying: {subgraph_url[:60]}...")
+        
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 subgraph_url,
                 json={"query": query, "variables": variables},
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=15),
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json"
+                }
             ) as resp:
                 if resp.status != 200:
                     logger.error(f"Subgraph returned status {resp.status}")
+                    resp_text = await resp.text()
+                    logger.error(f"Response: {resp_text[:200]}")
                     return []
                 
                 result = await resp.json()
                 
                 # Check for errors
                 if "errors" in result:
-                    logger.error(f"Subgraph query errors: {result['errors']}")
+                    error_messages = [e.get("message", str(e)) for e in result["errors"]]
+                    logger.error(f"Subgraph query errors: {error_messages}")
+                    
+                    if any("endpoint has been removed" in msg.lower() for msg in error_messages):
+                        logger.error("  ❌ OLD SUBGRAPH URL - Endpoint deprecated!")
+                        logger.error("  💡 Solution: Set THE_GRAPH_API_KEY environment variable")
+                    
                     return []
                 
-                pools = result.get("data", {}).get("pools", [])
+                # Kombiniere pools0 und pools1
+                data = result.get("data", {})
+                pools = data.get("pools0", []) + data.get("pools1", [])
                 
-                # Filter by fee tier if specified
+                # Entferne Duplikate
+                seen = set()
+                unique_pools = []
+                for pool in pools:
+                    pool_id = pool.get("id", "").lower()
+                    if pool_id not in seen:
+                        seen.add(pool_id)
+                        unique_pools.append(pool)
+                
+                # Filter by fee tier
                 if fee_tier is not None:
-                    pools = [p for p in pools if int(p.get("feeTier", 0)) == fee_tier]
+                    unique_pools = [p for p in unique_pools if int(p.get("feeTier", 0)) == fee_tier]
                 
-                logger.info(f"Found {len(pools)} pools from Subgraph")
-                return pools
+                logger.info(f"  ✅ Found {len(unique_pools)} unique pools")
+                return unique_pools
                 
     except asyncio.TimeoutError:
-        logger.error("Subgraph request timed out")
+        logger.error("  ⏱️ Subgraph request timed out (15s)")
+        return []
+    except aiohttp.ClientError as e:
+        logger.error(f"  🌐 Network error: {e}")
         return []
     except Exception as e:
-        logger.error(f"Subgraph request failed: {e}")
+        logger.error(f"  ❌ Subgraph request failed: {e}", exc_info=True)
         return []
 
 
 def format_pool_response(pool_data: Dict, network: str) -> Dict:
-    """
-    Formatiert Subgraph Pool-Daten für API Response
-    
-    Args:
-        pool_data: Pool-Daten vom Subgraph
-        network: Netzwerk Name
-        
-    Returns:
-        Formatiertes Pool-Dict
-    """
+    """Formatiert Subgraph Pool-Daten für API Response"""
     try:
-        # Token Info
         token0 = pool_data.get("token0", {})
         token1 = pool_data.get("token1", {})
         
-        # Berechne aktuellen Preis
         sqrt_price_x96 = pool_data.get("sqrtPrice", "0")
         decimals0 = int(token0.get("decimals", 18))
         decimals1 = int(token1.get("decimals", 18))
         current_price = sqrt_price_x96_to_price(sqrt_price_x96, decimals0, decimals1)
         
-        # TVL und Volume
         tvl_usd = float(pool_data.get("totalValueLockedUSD", 0))
-        
-        # Volume 24h aus poolDayData
-        volume_24h = 0.0
-        pool_day_data = pool_data.get("poolDayData", [])
-        if pool_day_data:
-            volume_24h = float(pool_day_data[0].get("volumeUSD", 0))
-        
-        # Liquidity
+        volume_usd = float(pool_data.get("volumeUSD", 0))
         liquidity = float(pool_data.get("liquidity", 0))
         
         return {
@@ -758,7 +764,7 @@ def format_pool_response(pool_data: Dict, network: str) -> Dict:
             "network": network,
             "fee_tier": int(pool_data.get("feeTier", 0)),
             "tvl_usd": tvl_usd,
-            "volume_24h": volume_24h,
+            "volume_24h": volume_usd,
             "liquidity": liquidity,
             "tick_spacing": int(pool_data.get("tickSpacing", 0)),
             "current_tick": int(pool_data.get("tick", 0)),
@@ -780,7 +786,6 @@ def format_pool_response(pool_data: Dict, network: str) -> Dict:
         logger.error(f"Failed to format pool response: {e}")
         return {}
 
-
 # ============================================================================
 # ENDPOINT IMPLEMENTATION
 # ============================================================================
@@ -795,19 +800,10 @@ async def get_dex_pools(
     """
     Liste verfügbare Pools für ein Trading Pair auf einem bestimmten Network
     
-    **ECHTE IMPLEMENTATION** mit Uniswap v3 Subgraph Integration
-    
-    Args:
-        network: ethereum, polygon, arbitrum, optimism, base
-        token0: Token0 Symbol (z.B. WETH, USDC)
-        token1: Token1 Symbol (z.B. USDC, USDT)
-        fee_tier: Optional - Filter nach Fee Tier (500 = 0.05%, 3000 = 0.3%, 10000 = 1%)
-        
-    Returns:
-        Liste von verfügbaren Pools mit TVL, Volume, etc.
+    **FIXED VERSION** mit neuen The Graph URLs (Dezember 2024)
     """
     logger.info("=" * 80)
-    logger.info("🔍 DEX POOLS REQUEST (REAL IMPLEMENTATION)")
+    logger.info("🔍 DEX POOLS REQUEST (FIXED VERSION)")
     logger.info("=" * 80)
     logger.info(f"📥 Parameters:")
     logger.info(f"  - network: {network}")
@@ -852,7 +848,8 @@ async def get_dex_pools(
         
         # Suche Pools im Subgraph
         logger.info("🔄 Querying Uniswap v3 Subgraph...")
-        logger.info(f"  Subgraph URL: {get_subgraph_url(network)}")
+        subgraph_url = get_subgraph_url(network)
+        logger.info(f"  Subgraph URL: {subgraph_url[:60] if subgraph_url else 'None'}...")
         
         pools_raw = await search_pools_subgraph(
             network=network,
@@ -863,13 +860,12 @@ async def get_dex_pools(
         
         if not pools_raw:
             logger.warning(f"⚠️ No pools found for {token0}/{token1} on {network}")
-            # Return empty but valid response
             return {
                 "network": network,
                 "pair": f"{token0}/{token1}",
                 "pools": [],
                 "timestamp": datetime.utcnow().isoformat(),
-                "_note": "No pools found. This pair may not exist or have low liquidity."
+                "_note": "No pools found."
             }
         
         logger.info(f"📊 Found {len(pools_raw)} pools from Subgraph")
@@ -884,7 +880,7 @@ async def get_dex_pools(
         
         logger.info(f"  ✅ Formatted {len(pools)} pools")
         
-        # Sortiere nach TVL (höchste zuerst)
+        # Sortiere nach TVL
         pools.sort(key=lambda p: p.get("tvl_usd", 0), reverse=True)
         
         # Log top pool
@@ -925,61 +921,13 @@ async def get_dex_pools(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-# ============================================================================
-# USAGE EXAMPLES
-# ============================================================================
-
-"""
-BEISPIELE:
-
-1. Hole WETH/USDC Pools auf Ethereum:
-   GET /api/v1/orderbook-heatmap/dex/pools/ethereum/WETH/USDC
-   
-   Response:
-   {
-     "network": "ethereum",
-     "pair": "WETH/USDC",
-     "pools": [
-       {
-         "address": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
-         "dex": "uniswap_v3",
-         "fee_tier": 500,
-         "tvl_usd": 285000000,
-         "volume_24h": 450000000,
-         "current_price": 3845.50,
-         "token0": {"symbol": "WETH", "address": "0xC02a...", "decimals": 18},
-         "token1": {"symbol": "USDC", "address": "0xA0b8...", "decimals": 6}
-       },
-       {
-         "address": "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8",
-         "dex": "uniswap_v3",
-         "fee_tier": 3000,
-         "tvl_usd": 120000000,
-         ...
-       }
-     ]
-   }
-
-2. Filtere nach Fee Tier (0.05%):
-   GET /api/v1/orderbook-heatmap/dex/pools/ethereum/WETH/USDC?fee_tier=500
-
-3. Polygon Network:
-   GET /api/v1/orderbook-heatmap/dex/pools/polygon/WETH/USDC
-
-4. Arbitrum mit DAI/USDC:
-   GET /api/v1/orderbook-heatmap/dex/pools/arbitrum/DAI/USDC
-"""
-
-
 @router.get("/dex/liquidity/{pool_address}")
 async def get_pool_liquidity(
     pool_address: str,
     bucket_size: float = Query(50.0, description="Price bucket size in USD"),
     range_multiplier: float = Query(2.0, description="Price range multiplier (2.0 = ±100%)")
 ):
-    """
-    Holt aktuelle Liquiditätsverteilung für einen spezifischen Pool
-    """
+    """Holt aktuelle Liquiditätsverteilung für einen spezifischen Pool"""
     logger.info("=" * 80)
     logger.info("💧 POOL LIQUIDITY REQUEST")
     logger.info("=" * 80)
@@ -996,11 +944,7 @@ async def get_pool_liquidity(
         if not pool_address.startswith("0x") or len(pool_address) != 42:
             error_msg = "Invalid pool address format. Expected 0x + 40 hex chars"
             logger.error(f"❌ {error_msg}")
-            logger.error(f"  Received: {pool_address} (length: {len(pool_address)})")
-            raise HTTPException(
-                status_code=422,
-                detail=error_msg
-            )
+            raise HTTPException(status_code=422, detail=error_msg)
         logger.info(f"  ✅ Pool address format valid")
         
         # Hole Pool Info via Uniswap Integration
@@ -1016,16 +960,11 @@ async def get_pool_liquidity(
         if not pool_info:
             error_msg = f"Pool not found: {pool_address}"
             logger.error(f"❌ {error_msg}")
-            logger.error("  Pool may not exist or Subgraph is unavailable")
-            raise HTTPException(
-                status_code=404,
-                detail=error_msg
-            )
+            raise HTTPException(status_code=404, detail=error_msg)
         
         logger.info("  ✅ Pool info retrieved")
         logger.info(f"  - Token0: {pool_info.get('token0', {}).get('symbol', 'UNKNOWN')}")
         logger.info(f"  - Token1: {pool_info.get('token1', {}).get('symbol', 'UNKNOWN')}")
-        logger.info(f"  - sqrtPrice: {pool_info.get('sqrtPrice', 'N/A')}")
         
         logger.info("📊 Fetching liquidity ticks...")
         ticks = await uniswap.get_liquidity_ticks(pool_address)
@@ -1043,10 +982,8 @@ async def get_pool_liquidity(
         
         price_lower_bound = current_price / range_multiplier
         price_upper_bound = current_price * range_multiplier
-        logger.info(f"  Price range: ${price_lower_bound:.2f} - ${price_upper_bound:.2f}")
         
         for tick in ticks:
-            # Filtere nach Range
             if price_lower_bound <= tick.price_lower <= price_upper_bound:
                 liquidity_distribution.append({
                     "price_lower": tick.price_lower,
@@ -1054,27 +991,20 @@ async def get_pool_liquidity(
                     "tick_lower": tick.tick_index,
                     "tick_upper": tick.tick_index + 1,
                     "liquidity": tick.liquidity,
-                    "liquidity_usd": tick.liquidity * current_price,  # Vereinfacht
-                    "provider_count": 1,  # TODO: Von Subgraph holen
-                    "concentration_pct": 0.0  # TODO: Berechnen
+                    "liquidity_usd": tick.liquidity * current_price,
+                    "provider_count": 1,
+                    "concentration_pct": 0.0
                 })
         
         logger.info(f"  ✅ Built {len(liquidity_distribution)} liquidity ranges")
         
         # Berechne Concentration Metrics
-        logger.info("📐 Calculating concentration metrics...")
         total_liquidity = sum(t.liquidity for t in ticks)
-        logger.info(f"  Total liquidity: {total_liquidity:.2f}")
         
         def calc_concentration(tolerance_pct: float) -> float:
             lower = current_price * (1 - tolerance_pct / 100)
             upper = current_price * (1 + tolerance_pct / 100)
-            
-            concentrated = sum(
-                t.liquidity for t in ticks
-                if lower <= t.price_lower <= upper
-            )
-            
+            concentrated = sum(t.liquidity for t in ticks if lower <= t.price_lower <= upper)
             return (concentrated / total_liquidity * 100) if total_liquidity > 0 else 0.0
         
         concentration_metrics = {
@@ -1082,9 +1012,6 @@ async def get_pool_liquidity(
             "within_2_percent": calc_concentration(2.0),
             "within_5_percent": calc_concentration(5.0)
         }
-        logger.info(f"  ✅ Concentration within ±1%: {concentration_metrics['within_1_percent']:.2f}%")
-        logger.info(f"  ✅ Concentration within ±2%: {concentration_metrics['within_2_percent']:.2f}%")
-        logger.info(f"  ✅ Concentration within ±5%: {concentration_metrics['within_5_percent']:.2f}%")
         
         response = {
             "pool_address": pool_address,
@@ -1092,7 +1019,7 @@ async def get_pool_liquidity(
             "current_price": current_price,
             "current_tick": int(pool_info.get("tick", 0)),
             "total_liquidity": total_liquidity,
-            "tvl_usd": total_liquidity * current_price,  # Vereinfacht
+            "tvl_usd": total_liquidity * current_price,
             "liquidity_distribution": liquidity_distribution,
             "concentration_metrics": concentration_metrics,
             "timestamp": datetime.utcnow().isoformat()
@@ -1100,7 +1027,6 @@ async def get_pool_liquidity(
         
         logger.info("=" * 80)
         logger.info("✅ POOL LIQUIDITY - SUCCESS")
-        logger.info(f"📤 Response: {len(liquidity_distribution)} liquidity ranges")
         logger.info("=" * 80)
         
         return response
@@ -1111,9 +1037,7 @@ async def get_pool_liquidity(
         logger.error("=" * 80)
         logger.error("❌ POOL LIQUIDITY - ERROR")
         logger.error("=" * 80)
-        logger.error(f"Error type: {type(e).__name__}")
-        logger.error(f"Error message: {str(e)}")
-        logger.error("Traceback:", exc_info=True)
+        logger.error(f"Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1122,39 +1046,19 @@ async def get_virtual_orderbook(
     pool_address: str,
     depth: int = Query(100, ge=10, le=500, description="Number of price levels per side")
 ):
-    """
-    Generiert CEX-Style Orderbook aus DEX Liquiditätskurve
-    """
+    """Generiert CEX-Style Orderbook aus DEX Liquiditätskurve"""
     logger.info("=" * 80)
     logger.info("📖 VIRTUAL ORDERBOOK REQUEST")
     logger.info("=" * 80)
-    logger.info(f"📥 Parameters:")
-    logger.info(f"  - pool_address: {pool_address}")
-    logger.info(f"  - depth: {depth}")
     
     try:
-        logger.info("🔄 Initializing Uniswap v3 Exchange...")
         from app.core.orderbook_heatmap.exchanges.dex.uniswap_v3 import UniswapV3Exchange
         
         uniswap = UniswapV3Exchange()
-        logger.info("  ✅ UniswapV3Exchange initialized")
-        
-        logger.info("📊 Generating virtual orderbook...")
         orderbook = await uniswap.get_orderbook_snapshot(pool_address, limit=depth)
         
         if not orderbook:
-            error_msg = f"Could not generate orderbook for pool: {pool_address}"
-            logger.error(f"❌ {error_msg}")
-            logger.error("  Pool may not exist or has no liquidity")
-            raise HTTPException(
-                status_code=404,
-                detail=error_msg
-            )
-        
-        logger.info("  ✅ Orderbook generated")
-        logger.info(f"  - Symbol: {orderbook.symbol}")
-        logger.info(f"  - Bids: {len(orderbook.bids.levels)}")
-        logger.info(f"  - Asks: {len(orderbook.asks.levels)}")
+            raise HTTPException(status_code=404, detail=f"Could not generate orderbook for pool: {pool_address}")
         
         response = {
             "exchange": "uniswap_v3",
@@ -1162,133 +1066,64 @@ async def get_virtual_orderbook(
             "source_type": "DEX",
             "is_virtual": True,
             "pool_address": pool_address,
-            "bids": [
-                [level.price, level.quantity]
-                for level in orderbook.bids.levels
-            ],
-            "asks": [
-                [level.price, level.quantity]
-                for level in orderbook.asks.levels
-            ],
+            "bids": [[level.price, level.quantity] for level in orderbook.bids.levels],
+            "asks": [[level.price, level.quantity] for level in orderbook.asks.levels],
             "timestamp": orderbook.timestamp.isoformat()
         }
         
-        logger.info("=" * 80)
         logger.info("✅ VIRTUAL ORDERBOOK - SUCCESS")
-        logger.info(f"📤 Response: {len(response['bids'])} bids, {len(response['asks'])} asks")
-        logger.info("=" * 80)
-        
         return response
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("=" * 80)
-        logger.error("❌ VIRTUAL ORDERBOOK - ERROR")
-        logger.error("=" * 80)
-        logger.error(f"Error type: {type(e).__name__}")
-        logger.error(f"Error message: {str(e)}")
-        logger.error("Traceback:", exc_info=True)
+        logger.error(f"❌ Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 class StartDEXHeatmapRequest(BaseModel):
     """Request Body für DEX Heatmap Start"""
     network: str = Field(..., description="ethereum, polygon, arbitrum, etc.")
-    pools: List[Dict[str, Any]] = Field(
-        ...,
-        description="Liste von Pools mit address, dex, weight"
-    )
-    bucket_size: float = Field(default=50.0, description="Price bucket size")
-    refresh_interval: int = Field(default=2000, description="Refresh interval in ms")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "network": "ethereum",
-                "pools": [
-                    {
-                        "address": "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640",
-                        "dex": "uniswap_v3",
-                        "weight": 1.0
-                    }
-                ],
-                "bucket_size": 50.0,
-                "refresh_interval": 2000
-            }
-        }
+    pools: List[Dict[str, Any]] = Field(..., description="Liste von Pools")
+    bucket_size: float = Field(default=50.0)
+    refresh_interval: int = Field(default=2000)
 
 
 @router.post("/heatmap/start-dex")
 async def start_dex_heatmap(data: StartDEXHeatmapRequest):
-    """
-    Startet DEX Orderbook Heatmap mit spezifischen Pools
-    """
-    logger.info("=" * 80)
+    """Startet DEX Orderbook Heatmap"""
     logger.info("🚀 START DEX HEATMAP REQUEST")
-    logger.info("=" * 80)
-    logger.info(f"📥 Parameters:")
-    logger.info(f"  - network: {data.network}")
-    logger.info(f"  - pools: {len(data.pools)} pool(s)")
-    for i, pool in enumerate(data.pools):
-        logger.info(f"    [{i+1}] {pool.get('address', 'N/A')} ({pool.get('dex', 'N/A')})")
-    logger.info(f"  - bucket_size: {data.bucket_size}")
-    logger.info(f"  - refresh_interval: {data.refresh_interval}ms")
     
     global aggregator, ws_manager
     
     try:
-        # Erstelle Pool Address Dict
-        logger.info("🔧 Creating pool address mapping...")
         dex_pool_addresses = {
             f"{pool['dex']}_{i}": pool['address']
             for i, pool in enumerate(data.pools)
         }
-        logger.info(f"  ✅ Mapped {len(dex_pool_addresses)} pools")
         
-        # Erstelle Config
-        logger.info("⚙️ Creating HeatmapConfig...")
         from app.core.orderbook_heatmap.models.heatmap import HeatmapConfig
-        
         config = HeatmapConfig(
             price_bucket_size=data.bucket_size,
             time_window_seconds=int(data.refresh_interval / 1000),
             exchanges=list(dex_pool_addresses.keys())
         )
-        logger.info("  ✅ Config created")
         
-        # Initialisiere Aggregator falls noch nicht vorhanden
-        logger.info("🔄 Initializing OrderbookAggregator...")
         if aggregator is None:
             from app.core.orderbook_heatmap.aggregator.orderbook_aggregator import OrderbookAggregator
             aggregator = OrderbookAggregator(config)
-            logger.info("  ✅ OrderbookAggregator initialized")
-        else:
-            logger.info("  ℹ️ Using existing aggregator")
         
-        # Füge DEX Exchanges hinzu
-        logger.info("📡 Adding DEX exchanges...")
         from app.core.orderbook_heatmap.exchanges.dex.uniswap_v3 import UniswapV3Exchange
-        
         for pool_name in dex_pool_addresses.keys():
             uniswap = UniswapV3Exchange()
             aggregator.add_exchange(uniswap)
-            logger.info(f"  ✅ Added {pool_name}")
         
-        # Verbinde
-        logger.info("🔌 Connecting to pools...")
-        # Nutze ersten Pool als "Symbol"
         first_pool = data.pools[0]
         symbol = f"{first_pool.get('token0', 'TOKEN0')}/{first_pool.get('token1', 'TOKEN1')}"
-        logger.info(f"  Symbol: {symbol}")
-        
         await aggregator.connect_all(symbol, dex_pool_addresses)
-        logger.info("  ✅ Connected to all pools")
         
-        # Session ID generieren
         import uuid
         session_id = str(uuid.uuid4())[:8]
-        logger.info(f"  Session ID: {session_id}")
         
         response = {
             "status": "started",
@@ -1297,20 +1132,11 @@ async def start_dex_heatmap(data: StartDEXHeatmapRequest):
             "websocket_url": f"ws://localhost:8000/ws/dex-heatmap/{session_id}"
         }
         
-        logger.info("=" * 80)
         logger.info("✅ START DEX HEATMAP - SUCCESS")
-        logger.info(f"📤 Response: {response}")
-        logger.info("=" * 80)
-        
         return response
         
     except Exception as e:
-        logger.error("=" * 80)
-        logger.error("❌ START DEX HEATMAP - ERROR")
-        logger.error("=" * 80)
-        logger.error(f"Error type: {type(e).__name__}")
-        logger.error(f"Error message: {str(e)}")
-        logger.error("Traceback:", exc_info=True)
+        logger.error(f"❌ Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1321,53 +1147,26 @@ async def get_tvl_history(
     end_time: int = Query(..., description="Unix timestamp"),
     interval: str = Query("1h", description="1m, 5m, 15m, 1h, 4h, 1d")
 ):
-    """
-    Historische TVL und Liquiditätsverteilung über Zeit
-    """
-    logger.info("=" * 80)
+    """Historische TVL und Liquiditätsverteilung"""
     logger.info("📈 TVL HISTORY REQUEST")
-    logger.info("=" * 80)
-    logger.info(f"📥 Parameters:")
-    logger.info(f"  - pool_address: {pool_address}")
-    logger.info(f"  - start_time: {start_time} ({datetime.fromtimestamp(start_time)})")
-    logger.info(f"  - end_time: {end_time} ({datetime.fromtimestamp(end_time)})")
-    logger.info(f"  - interval: {interval}")
     
     try:
-        # Validiere Interval
         valid_intervals = ["1m", "5m", "15m", "1h", "4h", "1d"]
-        logger.info("🔍 Validating interval...")
-        
         if interval not in valid_intervals:
-            error_msg = f"Invalid interval: {interval}. Valid options: {valid_intervals}"
-            logger.error(f"❌ {error_msg}")
-            raise HTTPException(
-                status_code=422,
-                detail=error_msg
-            )
-        logger.info(f"  ✅ Interval valid: {interval}")
+            raise HTTPException(status_code=422, detail=f"Invalid interval: {interval}")
         
-        logger.info("🔄 Querying Uniswap Subgraph for historical data...")
-        logger.info("  ⚠️ Currently returning MOCK data - Subgraph integration pending")
-        
-        # TODO: Query Uniswap Subgraph für historische Daten
-        # Für jetzt: Mock Response
-        
-        data = [
-            {
-                "timestamp": start_time,
-                "tvl_usd": 285000000,
-                "liquidity": 125000.5,
-                "volume_usd": 450000000,
-                "fees_usd": 1350000,
-                "price": 2850.45,
-                "tick": 201234,
-                "concentration_1pct": 35.5,
-                "lp_count": 1234
-            }
-        ]
-        
-        logger.info(f"📊 Retrieved {len(data)} data points")
+        # TODO: Query Subgraph für historische Daten
+        data = [{
+            "timestamp": start_time,
+            "tvl_usd": 285000000,
+            "liquidity": 125000.5,
+            "volume_usd": 450000000,
+            "fees_usd": 1350000,
+            "price": 2850.45,
+            "tick": 201234,
+            "concentration_1pct": 35.5,
+            "lp_count": 1234
+        }]
         
         response = {
             "pool_address": pool_address,
@@ -1375,22 +1174,13 @@ async def get_tvl_history(
             "data": data
         }
         
-        logger.info("=" * 80)
         logger.info("✅ TVL HISTORY - SUCCESS")
-        logger.info(f"📤 Response: {len(data)} data points")
-        logger.info("=" * 80)
-        
         return response
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error("=" * 80)
-        logger.error("❌ TVL HISTORY - ERROR")
-        logger.error("=" * 80)
-        logger.error(f"Error type: {type(e).__name__}")
-        logger.error(f"Error message: {str(e)}")
-        logger.error("Traceback:", exc_info=True)
+        logger.error(f"❌ Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # ============================================================================
@@ -1399,36 +1189,24 @@ async def get_tvl_history(
 
 async def get_current_price_from_aggregator(symbol: str) -> float:
     global aggregator
-    
     if not aggregator:
         return 0.0
-    
     try:
         agg_orderbook = await aggregator.get_aggregated_orderbook(symbol)
-        
         if not agg_orderbook or not agg_orderbook.orderbooks:
             return 0.0
-        
-        # Get best bid/ask across all exchanges
         best_bid = 0.0
         best_ask = float('inf')
-        
         for exchange_name, orderbook in agg_orderbook.orderbooks.items():
             if orderbook.bids.levels:
                 exchange_best_bid = max(level.price for level in orderbook.bids.levels)
                 best_bid = max(best_bid, exchange_best_bid)
-            
             if orderbook.asks.levels:
                 exchange_best_ask = min(level.price for level in orderbook.asks.levels)
                 best_ask = min(best_ask, exchange_best_ask)
-        
         if best_bid > 0 and best_ask < float('inf'):
-            mid_price = (best_bid + best_ask) / 2
-            logger.debug(f"Mid-Price for {symbol}: ${mid_price:.2f} (bid: ${best_bid:.2f}, ask: ${best_ask:.2f})")
-            return mid_price
-        
+            return (best_bid + best_ask) / 2
         return 0.0
-            
     except Exception as e:
         logger.debug(f"Aggregator price not available: {e}")
         return 0.0
@@ -1437,16 +1215,12 @@ async def get_current_price_from_binance(symbol: str) -> float:
     try:
         binance_symbol = symbol.replace("/", "").upper()
         url = "https://api.binance.com/api/v3/ticker/price"
-        
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params={"symbol": binance_symbol}, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    price = float(data["price"])
-                    logger.debug(f"Binance price for {symbol}: ${price:.2f}")
-                    return price
+                    return float(data["price"])
                 return 0.0
-                    
     except Exception as e:
         logger.error(f"Error getting price from Binance: {e}")
         return 0.0
@@ -1455,13 +1229,9 @@ async def get_current_price(symbol: str) -> float:
     price = await get_current_price_from_aggregator(symbol)
     if price > 0:
         return price
-    
-    logger.info(f"Aggregator unavailable, using Binance API for {symbol}")
     price = await get_current_price_from_binance(symbol)
     if price > 0:
         return price
-    
-    logger.error(f"Could not get price for {symbol} from any source")
     return 0.0
 
 # ============================================================================
@@ -1471,17 +1241,12 @@ async def get_current_price(symbol: str) -> float:
 @router.websocket("/ws/price/{symbol}")
 async def price_websocket_endpoint(websocket: WebSocket, symbol: str):
     normalized_symbol = symbol.replace(".", "/")
-    logger.info(f"🔌 Price WS connection request for {normalized_symbol}")
-    
     await websocket.accept()
-    logger.info(f"✅ Price WS connected for {normalized_symbol}")
-    
     try:
         while True:
             try:
                 price = await get_current_price(normalized_symbol)
                 source = "aggregator" if aggregator else "binance"
-                
                 message = {
                     "type": "price_update",
                     "symbol": normalized_symbol,
@@ -1489,41 +1254,27 @@ async def price_websocket_endpoint(websocket: WebSocket, symbol: str):
                     "timestamp": datetime.utcnow().isoformat(),
                     "source": source
                 }
-                
                 await websocket.send_json(message)
-                logger.debug(f"💰 Price update sent: ${price:.2f} ({source})")
-                
                 await asyncio.sleep(1)
-                
             except asyncio.CancelledError:
-                logger.info("Price WS task cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in price update loop: {e}", exc_info=True)
-                # If send fails, connection is probably closed
+                logger.error(f"Error in price update loop: {e}")
                 break
-                
     except WebSocketDisconnect:
-        logger.info(f"🔌 Price WS disconnected for {normalized_symbol}")
+        pass
     except Exception as e:
-        logger.error(f"❌ Price WS error for {normalized_symbol}: {e}", exc_info=True)
+        logger.error(f"Price WS error: {e}")
         try:
             await websocket.close(code=1011, reason=str(e))
         except:
             pass
 
-# ============================================================================
-# PRICE REST ENDPOINT (Testing)
-# ============================================================================
-
 @router.get("/price/{symbol}")
 async def get_price_endpoint(symbol: str):
     normalized_symbol = symbol.replace(".", "/")
-    logger.info(f"💰 Price request for {normalized_symbol}")
-    
     try:
         price = await get_current_price(normalized_symbol)
-        
         return {
             "success": True,
             "symbol": normalized_symbol,
