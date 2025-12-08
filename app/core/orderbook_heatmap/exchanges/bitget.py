@@ -1,5 +1,10 @@
 """
-Bitget Exchange Integration - FULLY FIXED VERSION with incremental updates
+Bitget Exchange Integration - COMPLETELY FIXED VERSION
+All 4 critical bugs resolved:
+1. instType: "SPOT" (uppercase, not "sp")
+2. WebSocket symbol: "BTCUSDT" (no _SPBL suffix)
+3. Ping/Pong: String format, not JSON
+4. WebSocket URL: V2 API endpoint
 """
 import asyncio
 import json
@@ -18,10 +23,13 @@ logger = logging.getLogger(__name__)
 
 
 class BitgetExchange(CEXExchange):
-    """Bitget Exchange Integration"""
+    """Bitget Exchange Integration - Fully Fixed"""
     
+    # REST API - V1 (funktioniert mit _SPBL)
     REST_API = "https://api.bitget.com"
-    WS_API = "wss://ws.bitget.com/spot/v1/stream"
+    
+    # WebSocket API - V2 (aktuellere, stabilere Version)
+    WS_API = "wss://ws.bitget.com/v2/ws/public"
     
     MAX_RECONNECT_ATTEMPTS = 5
     RECONNECT_DELAY = 5  # Sekunden
@@ -35,14 +43,13 @@ class BitgetExchange(CEXExchange):
         self._reconnect_count = 0
         self._successful_messages = 0
         
-        # FIXED: Lokales Orderbook für inkrementelle Updates
+        # Lokales Orderbook für inkrementelle Updates
         self._local_orderbook: Optional[Dict[str, Any]] = None
         
     async def connect(self, symbol: str) -> bool:
         """Verbindet zu Bitget WebSocket"""
         try:
             self._current_symbol = symbol
-            normalized_symbol = self.normalize_symbol(symbol)
             
             if not self.session:
                 self.session = aiohttp.ClientSession()
@@ -56,7 +63,7 @@ class BitgetExchange(CEXExchange):
             self._reconnect_count = 0
             
             # Starte WebSocket
-            self._ws_task = asyncio.create_task(self._ws_loop(normalized_symbol))
+            self._ws_task = asyncio.create_task(self._ws_loop(symbol))
             self.is_connected = True
             
             logger.info(f"Connected to Bitget for {symbol}")
@@ -87,9 +94,13 @@ class BitgetExchange(CEXExchange):
         logger.info("Disconnected from Bitget")
     
     async def get_orderbook_snapshot(self, symbol: str, limit: int = 100) -> Optional[Orderbook]:
-        """Holt Orderbuch-Snapshot via REST"""
+        """
+        Holt Orderbuch-Snapshot via REST API
+        REST API verwendet V1 Format: BTCUSDT_SPBL
+        """
         try:
-            normalized = self.normalize_symbol(symbol)
+            # REST API: Verwende V1 Format mit _SPBL
+            normalized = self.normalize_symbol_rest(symbol)
             url = f"{self.REST_API}/api/spot/v1/market/depth"
             params = {"symbol": normalized, "type": "step0", "limit": limit}
             
@@ -108,7 +119,7 @@ class BitgetExchange(CEXExchange):
                 
                 data = result.get("data", {})
                 
-                # FIXED: Store local orderbook
+                # Store local orderbook
                 self._local_orderbook = data
                 
                 return self._parse_orderbook(data, symbol)
@@ -118,9 +129,14 @@ class BitgetExchange(CEXExchange):
             return None
     
     async def _ws_loop(self, symbol: str):
-        """WebSocket Loop mit korrektem Reconnect-Counter"""
+        """
+        WebSocket Loop mit korrekter V2 API Implementation
+        """
+        # WebSocket: Verwende V2 Format ohne _SPBL
+        ws_symbol = self.normalize_symbol_ws(symbol)
+        
         while self.is_connected:
-            # Prüfe Reconnect-Limit VOR dem Connect-Versuch
+            # Prüfe Reconnect-Limit
             if self._reconnect_count >= self.MAX_RECONNECT_ATTEMPTS:
                 logger.error(
                     f"Bitget WebSocket: Max reconnect attempts ({self.MAX_RECONNECT_ATTEMPTS}) reached. "
@@ -146,18 +162,18 @@ class BitgetExchange(CEXExchange):
                     self.ws = ws
                     self._successful_messages = 0
                     
-                    # Subscribe zu Orderbook
+                    # Subscribe zu Orderbook - V2 API Format
                     subscribe_msg = {
                         "op": "subscribe",
                         "args": [{
-                            "instType": "sp",
+                            "instType": "SPOT",  # ✅ FIXED: Uppercase!
                             "channel": "books",
-                            "instId": symbol
+                            "instId": ws_symbol   # ✅ FIXED: Ohne _SPBL
                         }]
                     }
                     await ws.send(json.dumps(subscribe_msg))
                     
-                    logger.info(f"Bitget WebSocket subscribed: {symbol}")
+                    logger.info(f"Bitget WebSocket subscribed: {ws_symbol}")
                     
                     # Message-Loop
                     while self.is_connected:
@@ -168,20 +184,33 @@ class BitgetExchange(CEXExchange):
                                 timeout=self.MESSAGE_TIMEOUT
                             )
                             
-                            data = json.loads(message)
-                            
-                            # Ping/Pong handling
-                            if data.get("event") == "ping":
-                                await ws.send(json.dumps({"event": "pong"}))
+                            # ✅ FIXED: Ping/Pong handling
+                            # Bitget sendet "ping" als String, nicht als JSON
+                            if message == "ping":
+                                await ws.send("pong")
                                 continue
                             
-                            # Process message
+                            # Parse JSON für andere Messages
+                            try:
+                                data = json.loads(message)
+                            except json.JSONDecodeError:
+                                # Könnte "pong" sein oder andere String-Message
+                                if message == "pong":
+                                    continue
+                                logger.warning(f"Bitget WebSocket: Non-JSON message: {message}")
+                                continue
+                            
+                            # Handle subscription confirmation
+                            if data.get("event") == "subscribe":
+                                logger.info(f"Bitget subscription confirmed: {data}")
+                                continue
+                            
+                            # Process orderbook update
                             await self._handle_orderbook_update(data)
                             
-                            # ✅ KRITISCH: Reset Counter nach erfolgreicher Message!
+                            # ✅ Reset Counter nach erfolgreichen Messages
                             self._successful_messages += 1
                             if self._successful_messages >= 3:
-                                # Nach 3 erfolgreichen Messages: Connection ist stabil
                                 if self._reconnect_count > 0:
                                     logger.info(
                                         f"Bitget WebSocket stable after {self._successful_messages} messages. "
@@ -197,10 +226,6 @@ class BitgetExchange(CEXExchange):
                             if ws.closed:
                                 logger.warning("Bitget WebSocket is closed, breaking loop...")
                                 break
-                            continue
-                        
-                        except json.JSONDecodeError as e:
-                            logger.error(f"Bitget WebSocket: Invalid JSON: {e}")
                             continue
                     
             except websockets.ConnectionClosed as e:
@@ -228,9 +253,9 @@ class BitgetExchange(CEXExchange):
     
     async def _handle_orderbook_update(self, data: Dict[str, Any]):
         """
-        FIXED: Verarbeitet Orderbuch-Updates
+        Verarbeitet Orderbuch-Updates von V2 WebSocket API
         
-        Bitget sendet:
+        Bitget V2 sendet:
         - action: "snapshot" → Komplettes Orderbook
         - action: "update" → Inkrementelle Updates
         """
@@ -243,11 +268,11 @@ class BitgetExchange(CEXExchange):
             orderbook_data = data.get("data", [{}])[0]
             
             if action == "snapshot":
-                # FIXED: Store snapshot as local orderbook
+                # Store snapshot as local orderbook
                 self._local_orderbook = orderbook_data
                 orderbook = self._parse_orderbook(orderbook_data, self._current_symbol)
             else:
-                # FIXED: Apply incremental updates
+                # Apply incremental updates
                 if self._local_orderbook:
                     # Update bids
                     if "bids" in orderbook_data:
@@ -271,7 +296,7 @@ class BitgetExchange(CEXExchange):
     
     def _apply_updates(self, local_ob: Dict, side: str, updates: list):
         """
-        FIXED: Wendet inkrementelle Updates an
+        Wendet inkrementelle Updates an
         
         Args:
             local_ob: Lokales Orderbook
@@ -346,10 +371,23 @@ class BitgetExchange(CEXExchange):
             logger.error(f"Failed to parse Bitget orderbook: {e}")
             return None
     
-    def normalize_symbol(self, symbol: str) -> str:
+    def normalize_symbol_rest(self, symbol: str) -> str:
         """
-        Normalisiert Symbol für Bitget
+        Normalisiert Symbol für Bitget REST API (V1)
         BTC/USDT -> BTCUSDT_SPBL
         """
         base_symbol = symbol.replace("/", "").upper()
         return f"{base_symbol}_SPBL"
+    
+    def normalize_symbol_ws(self, symbol: str) -> str:
+        """
+        Normalisiert Symbol für Bitget WebSocket API (V2)
+        BTC/USDT -> BTCUSDT (ohne _SPBL!)
+        """
+        return symbol.replace("/", "").upper()
+    
+    def normalize_symbol(self, symbol: str) -> str:
+        """
+        Legacy method - verwendet REST format
+        """
+        return self.normalize_symbol_rest(symbol)
