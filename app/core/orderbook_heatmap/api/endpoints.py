@@ -321,8 +321,20 @@ async def get_snapshot(symbol: str):
         snapshot = await aggregator.get_latest_heatmap(normalized_symbol)
         
         if not snapshot:
-            logger.warning(f"  ⚠️ No snapshot available for {normalized_symbol}")
-            raise HTTPException(status_code=404, detail=f"No snapshot available for {normalized_symbol}")
+            # Wait up to 10 seconds for first snapshot
+            logger.info(f"  ⏳ Waiting for first snapshot generation...")
+            for _ in range(10):
+                await asyncio.sleep(1)
+                snapshot = await aggregator.get_latest_heatmap(normalized_symbol)
+                if snapshot:
+                    break
+            
+            if not snapshot:
+                logger.warning(f"  ⚠️ No snapshot available for {normalized_symbol} after 10s wait")
+                raise HTTPException(
+                    status_code=503, 
+                    detail=f"Snapshot generation in progress. Please try again in a few seconds."
+                )
         
         exchanges = list(aggregator.exchanges.keys())
         matrix_data = snapshot.to_matrix(exchanges)
