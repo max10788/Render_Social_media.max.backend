@@ -15,10 +15,19 @@ class ExchangeType(str, Enum):
 
 class Exchange(str, Enum):
     """Unterstützte Börsen"""
+    # CEX
     BINANCE = "binance"
     BITGET = "bitget"
     KRAKEN = "kraken"
+    BYBIT = "bybit"
+    OKX = "okx"
+    COINBASE = "coinbase"
+    DERIBIT = "deribit"
+    
+    # DEX
     UNISWAP_V3 = "uniswap_v3"
+    CURVE_V2 = "curve_v2"
+    PANCAKESWAP = "pancakeswap"
     RAYDIUM = "raydium"
 
 
@@ -100,7 +109,7 @@ class Orderbook(BaseModel):
 
 
 class DEXLiquidityTick(BaseModel):
-    """DEX Liquiditäts-Tick (für Uniswap v3)"""
+    """DEX Liquiditäts-Tick (für Uniswap v3, PancakeSwap v3)"""
     tick_index: int
     liquidity: float
     price_lower: float
