@@ -817,7 +817,7 @@ async def search_pools_subgraph(
             async with session.post(
                 subgraph_url,
                 json={"query": query, "variables": variables},
-                timeout=aiohttp.ClientTimeout(total=15),
+                timeout=aiohttp.ClientTimeout(total=60),
                 headers={
                     "Content-Type": "application/json",
                     "Accept": "application/json"
