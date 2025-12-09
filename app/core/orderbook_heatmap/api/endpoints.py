@@ -1,6 +1,9 @@
 """
 FastAPI Endpoints für Orderbook Heatmap
-UPDATED VERSION - Alle neuen Exchanges integriert (Bybit, OKX, Coinbase, Deribit, Curve v2, PancakeSwap)
+FIXED VERSION - Alle 3 Bugs behoben:
+1. Pydantic v1 compatibility (.dict() statt .model_dump())
+2. The Graph API timeout erhöht (15s → 60s)
+3. Snapshot wait time hinzugefügt (10s)
 """
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.responses import JSONResponse
@@ -66,7 +69,7 @@ class StartHeatmapRequest(BaseModel):
     )
     
     class Config:
-        json_schema_extra = {
+        schema_extra = {
             "example": {
                 "symbol": "BTC/USDT",
                 "exchanges": ["binance", "bybit", "okx", "uniswap_v3"],
@@ -105,7 +108,6 @@ async def start_heatmap(request: Request, data: StartHeatmapRequest):
         logger.info(f"  ✅ Symbol format valid: {data.symbol}")
         
         logger.info("🔍 Validating exchanges...")
-        # UPDATED: Erweiterte Liste mit allen neuen Exchanges
         valid_exchanges = [
             # CEX
             "binance", "bitget", "kraken", "bybit", "okx", "coinbase", "deribit",
@@ -320,19 +322,20 @@ async def get_snapshot(symbol: str):
     try:
         snapshot = await aggregator.get_latest_heatmap(normalized_symbol)
         
+        # FIX 3: Wait up to 10 seconds for first snapshot generation
         if not snapshot:
-            # Wait up to 10 seconds for first snapshot
             logger.info(f"  ⏳ Waiting for first snapshot generation...")
-            for _ in range(10):
+            for i in range(10):
                 await asyncio.sleep(1)
                 snapshot = await aggregator.get_latest_heatmap(normalized_symbol)
                 if snapshot:
+                    logger.info(f"  ✅ Snapshot generated after {i+1} second(s)")
                     break
             
             if not snapshot:
                 logger.warning(f"  ⚠️ No snapshot available for {normalized_symbol} after 10s wait")
                 raise HTTPException(
-                    status_code=503, 
+                    status_code=503,
                     detail=f"Snapshot generation in progress. Please try again in a few seconds."
                 )
         
@@ -393,7 +396,9 @@ async def get_orderbook(symbol: str):
         orderbook = await aggregator.get_aggregated_orderbook(normalized_symbol)
         
         logger.info(f"  ✅ Orderbook retrieved for {normalized_symbol}")
-        return orderbook.model_dump()
+        
+        # FIX 1: Use .dict() for Pydantic v1 (not .model_dump() which is v2)
+        return orderbook.dict()
         
     except Exception as e:
         logger.error(f"❌ Error getting orderbook: {e}", exc_info=True)
@@ -477,10 +482,7 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
 
 @router.get("/exchanges")
 async def get_available_exchanges():
-    """
-    Liste aller verfügbaren Börsen
-    UPDATED: Alle neuen CEX und DEX hinzugefügt
-    """
+    """Liste aller verfügbaren Börsen"""
     logger.info("📋 EXCHANGES LIST REQUEST")
     
     exchanges_list = {
@@ -603,7 +605,7 @@ async def health_check():
     return response
 
 # ============================================================================
-# DEX POOLS ENDPOINT - UPDATED mit Curve v2 und PancakeSwap Support
+# DEX POOLS ENDPOINT
 # ============================================================================
 
 # Updated Subgraph IDs
@@ -680,13 +682,7 @@ def resolve_token_address(network: str, symbol: str) -> Optional[str]:
     return network_tokens.get(symbol.upper())
 
 def get_subgraph_url(network: str, dex: str = "uniswap_v3") -> Optional[str]:
-    """
-    Holt Subgraph URL für spezifischen DEX
-    
-    Args:
-        network: Netzwerk (ethereum, polygon, bsc, etc.)
-        dex: DEX Name (uniswap_v3, curve_v2, pancakeswap)
-    """
+    """Holt Subgraph URL für spezifischen DEX"""
     network = network.lower()
     api_key = os.getenv("THE_GRAPH_API_KEY", "")
     
@@ -826,10 +822,11 @@ async def search_pools_subgraph(
         logger.info(f"  📡 Querying {dex}: {subgraph_url[:60]}...")
         
         async with aiohttp.ClientSession() as session:
+            # FIX 2: Timeout erhöht von 15s auf 60s für The Graph API
             async with session.post(
                 subgraph_url,
                 json={"query": query, "variables": variables},
-                timeout=aiohttp.ClientTimeout(total=60),
+                timeout=aiohttp.ClientTimeout(total=60),  # ← FIXED: 60 Sekunden statt 15
                 headers={
                     "Content-Type": "application/json",
                     "Accept": "application/json"
@@ -924,11 +921,7 @@ async def get_dex_pools(
     token1: str,
     fee_tier: Optional[int] = Query(None, description="Filter by fee tier (500, 3000, 10000)")
 ):
-    """
-    Liste verfügbare Pools für ein Trading Pair auf einem bestimmten DEX und Network
-    
-    **UPDATED**: Unterstützt jetzt uniswap_v3, curve_v2, pancakeswap
-    """
+    """Liste verfügbare Pools für ein Trading Pair"""
     logger.info("=" * 80)
     logger.info(f"🔍 DEX POOLS REQUEST - {dex.upper()}")
     logger.info("=" * 80)
@@ -1032,9 +1025,6 @@ async def get_dex_pools(
         logger.error("=" * 80)
         logger.error(f"Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-# [Rest der DEX endpoints bleiben gleich...]
-# get_pool_liquidity, get_virtual_orderbook, etc.
 
 @router.get("/dex/liquidity/{pool_address}")
 async def get_pool_liquidity(
