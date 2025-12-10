@@ -620,17 +620,17 @@ UNISWAP_V3_SUBGRAPH_IDS = {
 }
 
 CURVE_V2_SUBGRAPH_IDS = {
-    "ethereum": "FNZXWQJz9FtuPwGxZnALg2Ej5xGMEgYBPFQqJkFCX8mH",
-    "polygon": "3cYpGP8N1JkWPUVCLqGNZf9sF3UYZVQ4NKGZfBmAj8Kq",
-    "arbitrum": "2VqFNfaMCfJLWNXFg6HJMqUTZZQDDmLhkB9pEKN8B6K9",
-    "optimism": "5XwP9vDZqQfBCJmNkLX3Hg7VYxmEPWj8mZKB2pQR6C4N"
+    # NOTE: Curve v2 doesn't have a dedicated Uniswap v3-style subgraph with 'pools' query
+    # Curve uses a different architecture (meta pools, factory pools, etc.)
+    # For now, Curve v2 is not supported - would require custom implementation
+    # Alternative: Use Messari standardized subgraph but different schema
 }
 
-# FIX 4: Korrekte PancakeSwap Subgraph IDs (aus The Graph Explorer 2024)
+# FIX 4: Korrekte PancakeSwap Subgraph IDs (offizielle v3 Exchange IDs, Dezember 2024)
 PANCAKESWAP_SUBGRAPH_IDS = {
-    "bsc": "78EUqzJmEVJsAKvWghn7qotf9LVGqcTQxJhT5z84ZmgJ",  # BSC V3 Exchange
-    "ethereum": "9opY17WnEPD4REcC43yHycQthSeUMQE26wyoeMjZTLEx",  # ETH V3 Exchange  
-    "arbitrum": "EsL7geTRcA3LaLLM9EcMFzYbUgnvf8RixoEEGErrodB3"  # ARB V3 Exchange
+    "bsc": "Hv1GncLY5docZoGtXjo4kwbTvxm3MAhVZqBZE4sUT9eZ",  # ✅ BSC V3 Exchange (official)
+    "ethereum": "CJYGNhb7RvnhfBDjqpRnD3oxgyhibzc7fkAMa38YV3oS",  # ✅ ETH V3 Exchange (official)
+    "arbitrum": "251MHFNN1rwjErXD2efWMpNS73SANZN8Ua192zw6iXve"   # ✅ ARB V3 Exchange (official)
 }
 
 # Token Addresses
