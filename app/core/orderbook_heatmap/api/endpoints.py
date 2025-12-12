@@ -1,11 +1,8 @@
 """
 FastAPI Endpoints für Orderbook Heatmap
-FINAL VERSION - All bugs fixed:
-1. Pydantic v1 compatibility (.dict() statt .model_dump())
-2. The Graph API timeout erhöht (15s → 60s)
-3. Snapshot wait time hinzugefügt (10s)
-4. PancakeSwap subgraph IDs korrigiert
-5. aiohttp session leaks gefixt
+FIXED VERSION - DEX Pools Route korrigiert
+- Route geändert von /dex/pools/{dex}/{network}/{token0}/{token1}
+  zu /dex/pools/{network}/{token0}/{token1}?dex=uniswap_v3
 """
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Query, Request
 from fastapi.responses import JSONResponse
@@ -917,23 +914,33 @@ def format_pool_response(pool_data: Dict, network: str, dex: str = "uniswap_v3")
         logger.error(f"Failed to format pool response: {e}")
         return {}
 
-@router.get("/dex/pools/{dex}/{network}/{token0}/{token1}")
+# ============================================================================
+# FIXED DEX POOLS ENDPOINT - Route korrigiert
+# ============================================================================
+@router.get("/dex/pools/{network}/{token0}/{token1}")
 async def get_dex_pools(
-    dex: str,
     network: str,
     token0: str,
     token1: str,
+    dex: str = Query("uniswap_v3", description="DEX to query (uniswap_v3, pancakeswap, curve_v2)"),
     fee_tier: Optional[int] = Query(None, description="Filter by fee tier (500, 3000, 10000)")
 ):
-    """Liste verfügbare Pools für ein Trading Pair"""
+    """
+    Liste verfügbare Pools für ein Trading Pair
+    
+    FIXED: Route changed from /dex/pools/{dex}/{network}/{token0}/{token1}
+                        to /dex/pools/{network}/{token0}/{token1}?dex=uniswap_v3
+    
+    Example: GET /dex/pools/ethereum/WETH/USDC?dex=uniswap_v3&fee_tier=3000
+    """
     logger.info("=" * 80)
     logger.info(f"🔍 DEX POOLS REQUEST - {dex.upper()}")
     logger.info("=" * 80)
     logger.info(f"📥 Parameters:")
-    logger.info(f"  - dex: {dex}")
     logger.info(f"  - network: {network}")
     logger.info(f"  - token0: {token0}")
     logger.info(f"  - token1: {token1}")
+    logger.info(f"  - dex: {dex}")
     logger.info(f"  - fee_tier: {fee_tier}")
     
     try:
