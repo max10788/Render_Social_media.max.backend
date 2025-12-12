@@ -1046,6 +1046,7 @@ async def get_pool_liquidity(
     """Holt aktuelle Liquiditätsverteilung für einen spezifischen Pool"""
     logger.info("💧 POOL LIQUIDITY REQUEST")
     
+    uniswap = None
     try:
         if not pool_address.startswith("0x") or len(pool_address) != 42:
             raise HTTPException(status_code=422, detail="Invalid pool address format")
@@ -1054,7 +1055,6 @@ async def get_pool_liquidity(
         
         uniswap = UniswapV3Exchange()
         
-        # FIX 5: Session is properly managed inside UniswapV3Exchange class
         pool_info = await uniswap.get_pool_info(pool_address)
         
         if not pool_info:
@@ -1112,6 +1112,13 @@ async def get_pool_liquidity(
     except Exception as e:
         logger.error(f"❌ Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # CRITICAL: Close the session to prevent leaks
+        if uniswap is not None:
+            try:
+                await uniswap.disconnect()
+            except Exception as e:
+                logger.warning(f"Error closing UniswapV3Exchange session: {e}")
 
 @router.get("/dex/virtual-orderbook/{pool_address}")
 async def get_virtual_orderbook(
@@ -1121,12 +1128,12 @@ async def get_virtual_orderbook(
     """Generiert CEX-Style Orderbook aus DEX Liquiditätskurve"""
     logger.info("📖 VIRTUAL ORDERBOOK REQUEST")
     
+    uniswap = None
     try:
         from app.core.orderbook_heatmap.exchanges.dex.uniswap_v3 import UniswapV3Exchange
         
         uniswap = UniswapV3Exchange()
         
-        # FIX 5: Session is properly managed inside UniswapV3Exchange class
         orderbook = await uniswap.get_orderbook_snapshot(pool_address, limit=depth)
         
         if not orderbook:
@@ -1151,6 +1158,13 @@ async def get_virtual_orderbook(
     except Exception as e:
         logger.error(f"❌ Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # CRITICAL: Close the session to prevent leaks
+        if uniswap is not None:
+            try:
+                await uniswap.disconnect()
+            except Exception as e:
+                logger.warning(f"Error closing UniswapV3Exchange session: {e}")
 
 # Price helpers
 async def get_current_price_from_aggregator(symbol: str) -> float:
