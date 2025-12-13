@@ -33,6 +33,7 @@ from app.core.price_movers.api.wallet_detail_routes import router as wallet_deta
 from app.core.price_movers.api.hybrid_routes import router as hybrid_router
 from app.core.price_movers.api.routes_dex_chart import router as dex_chart_router
 from app.core.orderbook_heatmap.api.endpoints import router as orderbook_heatmap_router
+from app.core.iceberg_orders.api.endpoints import router
 
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
@@ -253,6 +254,7 @@ app.include_router(wallet_detail_router)
 app.include_router(hybrid_router)
 app.include_router(dex_chart_router, prefix="/api/v1")
 app.include_router(orderbook_heatmap_router)
+app.include_router(router)
 
 # ------------------------------------------------------------------
 # WebSocket Endpoint
