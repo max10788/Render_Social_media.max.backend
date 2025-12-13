@@ -13,7 +13,7 @@ from app.core.iceberg_orders.exchanges.kraken import KrakenExchange
 from app.core.iceberg_orders.detector.iceberg_detector import IcebergDetector
 from app.core.iceberg_orders.models.iceberg import IcebergDetectionResult
 
-router = APIRouter(prefix="/api/iceberg-orders", tags=["iceberg-orders"])
+router = APIRouter(prefix="/iceberg-orders", tags=["iceberg-orders"])
 
 # Exchange instances cache
 exchanges = {}
