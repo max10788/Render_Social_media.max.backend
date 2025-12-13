@@ -7,7 +7,7 @@ import hmac
 import hashlib
 import time
 from typing import Dict, List, Optional
-from .base import BaseExchange
+from app.core.iceberg_orders.exchanges.base import BaseExchange
 
 
 class BinanceExchange(BaseExchange):
