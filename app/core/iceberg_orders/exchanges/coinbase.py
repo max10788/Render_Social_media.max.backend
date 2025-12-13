@@ -3,8 +3,7 @@ Coinbase exchange implementation for iceberg order detection
 """
 import aiohttp
 from typing import Dict, List, Optional
-from .base import BaseExchange
-
+from app.core.iceberg_orders.exchanges.base import BaseExchange
 
 class CoinbaseExchange(BaseExchange):
     """Coinbase Advanced Trade API implementation"""
