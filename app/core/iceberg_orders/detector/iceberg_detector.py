@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import numpy as np
 from collections import defaultdict, deque
 
-from ..models.iceberg import (
+from app.core.iceberg_orders.models.iceberg import (
     IcebergOrder, OrderSide, DetectionMethod, 
     TradeEvent, OrderBookSnapshot, OrderBookLevel,
     RefillPattern, VolumeAnomaly, IcebergDetectionResult
