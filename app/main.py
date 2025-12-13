@@ -254,7 +254,7 @@ app.include_router(wallet_detail_router)
 app.include_router(hybrid_router)
 app.include_router(dex_chart_router, prefix="/api/v1")
 app.include_router(orderbook_heatmap_router)
-app.include_router(iceberg_orders_router)
+app.include_router(iceberg_orders_router, prefix="/api")  # ← Prefix hinzufügen!
 
 # ------------------------------------------------------------------
 # WebSocket Endpoint
