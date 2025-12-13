@@ -7,11 +7,11 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 import asyncio
 
-from ..exchanges.binance import BinanceExchange
-from ..exchanges.coinbase import CoinbaseExchange
-from ..exchanges.kraken import KrakenExchange
-from ..detector.iceberg_detector import IcebergDetector
-from ..models.iceberg import IcebergDetectionResult
+from app.core.iceberg_orders.exchanges.binance import BinanceExchange
+from app.core.iceberg_orders.exchanges.coinbase import CoinbaseExchange
+from app.core.iceberg_orders.exchanges.kraken import KrakenExchange
+from app.core.iceberg_orders.detector.iceberg_detector import IcebergDetector
+from app.core.iceberg_orders.models.iceberg import IcebergDetectionResult
 
 router = APIRouter(prefix="/api/iceberg-orders", tags=["iceberg-orders"])
 
