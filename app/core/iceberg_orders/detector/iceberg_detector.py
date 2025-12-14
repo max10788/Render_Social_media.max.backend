@@ -52,9 +52,13 @@ class IcebergDetector:
         self.price_level_volumes = defaultdict(list)
         self.refill_timestamps = defaultdict(list)
         
-        # Configuration
-        self.min_confidence = 0.3
-        self.min_trades_for_stats = 30  # Increased from 20
+        # OPTIMIZED BALANCE:
+        self.min_confidence = 0.4  # ← Statt 0.3 (filtert Noise, behält kleine Icebergs)
+        self.min_trades_for_stats = 25  # ← Statt 30 (mehr Flexibilität)
+        
+        # NEU: Größen-basierte Confidence-Anpassung
+        self.small_iceberg_boost = 0.05  # Bonus für kleinere Icebergs
+        self.large_iceberg_threshold = 0.7  # Strengere Kriterien für große
         
     def get_dynamic_tolerance(self, orderbook: Dict) -> float:
         """
