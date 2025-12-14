@@ -1,11 +1,13 @@
 """
 Coinbase exchange implementation for iceberg order detection
+FIXED: Proper timestamp parsing for ISO format
 """
 import aiohttp
 from typing import Dict, List, Optional
 from datetime import datetime
 import time
 from app.core.iceberg_orders.exchanges.base import BaseExchange
+
 
 class CoinbaseExchange(BaseExchange):
     """Coinbase Advanced Trade API implementation"""
@@ -22,6 +24,20 @@ class CoinbaseExchange(BaseExchange):
             self.session = aiohttp.ClientSession()
         return self.session
     
+    def _parse_timestamp(self, timestamp_str: str) -> int:
+        """
+        Parse Coinbase timestamp (ISO format) to milliseconds
+        
+        Coinbase returns: "2025-12-14T20:25:43.426846Z"
+        """
+        try:
+            # Remove 'Z' and parse ISO format
+            dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            return int(dt.timestamp() * 1000)
+        except (ValueError, AttributeError):
+            # Fallback to current time
+            return int(time.time() * 1000)
+    
     async def fetch_orderbook(self, symbol: str, limit: int = 100) -> Dict:
         session = await self._get_session()
         
@@ -34,12 +50,30 @@ class CoinbaseExchange(BaseExchange):
         async with session.get(url, params=params) as response:
             data = await response.json()
             
-            return self.normalize_orderbook({
-                'bids': [[float(price), float(size)] for price, size, _ in data.get('bids', [])],
-                'asks': [[float(price), float(size)] for price, size, _ in data.get('asks', [])],
-                'timestamp': int(datetime.now().timestamp() * 1000),
-                'symbol': symbol
-            })
+            # Coinbase orderbook structure: [[price, size, num_orders], ...]
+            bids = []
+            for price, size, num_orders in data.get('bids', []):
+                bids.append({
+                    'price': float(price),
+                    'volume': float(size),
+                    'order_count': int(num_orders)  # Coinbase provides this!
+                })
+            
+            asks = []
+            for price, size, num_orders in data.get('asks', []):
+                asks.append({
+                    'price': float(price),
+                    'volume': float(size),
+                    'order_count': int(num_orders)
+                })
+            
+            return {
+                'bids': bids,
+                'asks': asks,
+                'timestamp': int(time.time() * 1000),
+                'symbol': symbol,
+                'exchange': 'coinbase'
+            }
     
     async def fetch_trades(self, symbol: str, limit: int = 100) -> List[Dict]:
         session = await self._get_session()
@@ -53,13 +87,26 @@ class CoinbaseExchange(BaseExchange):
             
             trades = []
             for trade in data[:limit]:
-                trades.append(self.normalize_trade({
+                # FIXED: Parse ISO timestamp
+                timestamp = self._parse_timestamp(trade['time'])
+                
+                # Coinbase side: 'buy' or 'sell' (from taker perspective)
+                side = trade['side']
+                
+                # For iceberg detection, we need maker side
+                # In Coinbase: side is the TAKER side
+                # So maker side is opposite
+                maker_side = 'sell' if side == 'buy' else 'buy'
+                
+                trades.append({
                     'price': float(trade['price']),
                     'amount': float(trade['size']),
-                    'side': trade['side'],
-                    'timestamp': int(trade['time']),
-                    'id': trade['trade_id']
-                }))
+                    'side': side,  # Taker side
+                    'maker_side': maker_side,  # Maker side (for iceberg detection)
+                    'timestamp': timestamp,
+                    'id': str(trade['trade_id']),
+                    'is_buyer_maker': (side == 'sell')  # Compatibility
+                })
             
             return trades
     
