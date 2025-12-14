@@ -403,7 +403,10 @@ class IcebergDetector:
                     )
                     
                     if visible_vol < trade['amount']:
-                        z_score = (trade['amount'] - sell_stats['mean']) / sell_stats['std']
+                        if sell_stats['std'] > 0:
+                            z_score = (trade['amount'] - sell_stats['mean']) / sell_stats['std']
+                        else:
+                            z_score = 0  # Fallback wenn keine Standardabweichung
                         confidence = min(0.5 + (z_score - 2.5) * 0.1, 0.85)
                         
                         iceberg = {
