@@ -511,7 +511,7 @@ async def get_exchange_symbols(exchange: str):
         logger.error(f"Symbols fetch error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/test-logging")
+@router.get("/test-logging")
 async def test_real_data_logging(
     duration: int = Query(60, description="Duration in seconds"),
     interval: int = Query(10, description="Interval in seconds")
