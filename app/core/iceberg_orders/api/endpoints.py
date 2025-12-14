@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import asyncio
 import logging
 
-from app.core.iceberg_orders.exchanges.binance import BinanceExchange
+from app.core.iceberg_orders.exchanges.binance import BinanceExchangeImproved
 from app.core.iceberg_orders.exchanges.coinbase import CoinbaseExchange
 from app.core.iceberg_orders.exchanges.kraken import KrakenExchange
 from app.core.iceberg_orders.detector.iceberg_detector import IcebergDetector
