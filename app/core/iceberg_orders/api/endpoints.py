@@ -29,7 +29,7 @@ def get_exchange(exchange_name: str):
     """Get or create exchange instance"""
     if exchange_name not in exchanges:
         if exchange_name.lower() == 'binance':
-            exchanges[exchange_name] = BinanceExchange()
+            exchanges[exchange_name] = BinanceExchangeImproved()
         elif exchange_name.lower() == 'coinbase':
             exchanges[exchange_name] = CoinbaseExchange()
         elif exchange_name.lower() == 'kraken':
