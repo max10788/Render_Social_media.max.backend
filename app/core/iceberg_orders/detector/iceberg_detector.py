@@ -30,7 +30,7 @@ class DetectionMethod:
     HYBRID = "hybrid"
 
 
-class IcebergDetectorImproved:
+class IcebergDetector:
     """Improved iceberg order detector"""
     
     def __init__(self, threshold: float = 0.05, lookback_window: int = 200):
