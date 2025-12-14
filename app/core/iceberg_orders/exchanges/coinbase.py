@@ -35,7 +35,7 @@ class CoinbaseExchange(BaseExchange):
             return self.normalize_orderbook({
                 'bids': [[float(price), float(size)] for price, size, _ in data.get('bids', [])],
                 'asks': [[float(price), float(size)] for price, size, _ in data.get('asks', [])],
-                'timestamp': int(response.headers.get('date', 0)),
+                'timestamp': int(datetime.now().timestamp() * 1000),
                 'symbol': symbol
             })
     
