@@ -40,7 +40,7 @@ def get_exchange(exchange_name: str):
     return exchanges[exchange_name]
 
 
-def get_detector(threshold: float = 0.05) -> IcebergDetector:
+def get_detector(threshold: float = 0.05) -> IcebergDetectorImproved:
     """
     Get or create detector instance
     
