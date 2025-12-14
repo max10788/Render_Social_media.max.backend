@@ -510,3 +510,49 @@ async def get_exchange_symbols(exchange: str):
     except Exception as e:
         logger.error(f"Symbols fetch error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/test-logging")
+async def test_real_data_logging(
+    duration: int = Query(60, description="Duration in seconds"),
+    interval: int = Query(10, description="Interval in seconds")
+):
+    """Test logging endpoint - logs detections over time"""
+    import asyncio
+    
+    results = []
+    exchange_name = "binance"
+    symbol = "BTC/USDT"
+    threshold = 0.05
+    
+    start = datetime.now()
+    
+    for i in range(duration // interval):
+        # Get exchange and detector
+        exchange_instance = get_exchange(exchange_name)
+        detector = get_detector(threshold)
+        
+        # Fetch and detect
+        orderbook = await exchange_instance.fetch_orderbook(symbol)
+        trades = await exchange_instance.fetch_trades(symbol)
+        result = await detector.detect(orderbook, trades, exchange_name, symbol)
+        
+        # Store
+        results.append({
+            'iteration': i + 1,
+            'timestamp': datetime.now().isoformat(),
+            'total_detected': result['statistics']['totalDetected'],
+            'avg_confidence': result['statistics']['averageConfidence']
+        })
+        
+        await asyncio.sleep(interval)
+    
+    # Find persistent (appeared in >50% of snapshots)
+    return JSONResponse(content={
+        'duration_seconds': duration,
+        'iterations': len(results),
+        'results': results,
+        'summary': {
+            'avg_detections': sum(r['total_detected'] for r in results) / len(results),
+            'avg_confidence': sum(r['avg_confidence'] for r in results) / len(results)
+        }
+    })
