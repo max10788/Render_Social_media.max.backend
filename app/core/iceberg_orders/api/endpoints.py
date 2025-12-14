@@ -12,7 +12,7 @@ import logging
 from app.core.iceberg_orders.exchanges.binance import BinanceExchangeImproved
 from app.core.iceberg_orders.exchanges.coinbase import CoinbaseExchange
 from app.core.iceberg_orders.exchanges.kraken import KrakenExchange
-from app.core.iceberg_orders.detector.iceberg_detector import IcebergDetector
+from app.core.iceberg_orders.detector.iceberg_detector import IcebergDetectorImproved
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
