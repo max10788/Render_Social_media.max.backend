@@ -1,13 +1,8 @@
 """
-IMPROVED Iceberg Order Detector
-
-FIXES & IMPROVEMENTS:
-- ✅ Dynamic price tolerance based on spread
-- ✅ Improved statistical validation (checks for normality)
-- ✅ Trading session awareness
-- ✅ Uses maker_side from trades for better accuracy
-- ✅ Enhanced confidence scoring
-- ✅ Larger lookback window
+OPTIMIZED Iceberg Order Detector with BALANCED detection
+- Detects small icebergs without too many false positives
+- Uses adaptive confidence based on iceberg size
+- Optimized sigma threshold for volume anomaly detection
 """
 import asyncio
 from typing import List, Dict, Optional, Tuple
@@ -31,79 +26,67 @@ class DetectionMethod:
 
 
 class IcebergDetector:
-    """Improved iceberg order detector"""
+    """Optimized iceberg order detector with balanced detection"""
     
     def __init__(self, threshold: float = 0.05, lookback_window: int = 200):
         """
-        Initialize improved detector
+        Initialize detector with optimized parameters
         
         Args:
             threshold: Detection threshold (default 5%)
-            lookback_window: Increased to 200 for better statistics
+            lookback_window: Number of historical data points (200 for better stats)
         """
         self.threshold = threshold
         self.lookback_window = lookback_window
         
-        # Historical data storage (larger)
+        # Historical data storage
         self.orderbook_history = deque(maxlen=lookback_window)
-        self.trade_history = deque(maxlen=lookback_window * 3)  # More trade history
+        self.trade_history = deque(maxlen=lookback_window * 3)
         
         # Detection state
         self.price_level_volumes = defaultdict(list)
         self.refill_timestamps = defaultdict(list)
         
-        # OPTIMIZED BALANCE:
-        self.min_confidence = 0.4  # ← Statt 0.3 (filtert Noise, behält kleine Icebergs)
-        self.min_trades_for_stats = 25  # ← Statt 30 (mehr Flexibilität)
+        # OPTIMIZED CONFIGURATION for balanced detection
+        self.min_confidence = 0.4  # Raised from 0.3 - filters noise, keeps small icebergs
+        self.min_trades_for_stats = 25  # Lowered from 30 - more flexibility
         
-        # NEU: Größen-basierte Confidence-Anpassung
-        self.small_iceberg_boost = 0.05  # Bonus für kleinere Icebergs
-        self.large_iceberg_threshold = 0.7  # Strengere Kriterien für große
-        
+        # Size-based confidence adjustment
+        self.small_iceberg_boost = 0.05  # Bonus for smaller icebergs
+        self.large_iceberg_penalty = 0.9  # Stricter validation for very large
+    
     def get_dynamic_tolerance(self, orderbook: Dict) -> float:
-        """
-        Calculate dynamic price tolerance based on market conditions
-        
-        IMPROVEMENT: Adapts to volatility instead of fixed 0.1%
-        """
+        """Calculate dynamic price tolerance based on market conditions"""
         try:
             if not orderbook.get('bids') or not orderbook.get('asks'):
-                return 0.001  # Fallback to 0.1%
+                return 0.001
             
             # Get best bid/ask
-            best_bid = orderbook['bids'][0]['price']
-            best_ask = orderbook['asks'][0]['price']
+            if isinstance(orderbook['bids'][0], dict):
+                best_bid = orderbook['bids'][0]['price']
+                best_ask = orderbook['asks'][0]['price']
+            else:
+                best_bid = orderbook['bids'][0][0]
+                best_ask = orderbook['asks'][0][0]
             
             # Calculate spread percentage
             spread = best_ask - best_bid
             spread_pct = (spread / best_bid) * 100
             
-            # Tolerance is 50% of spread, but at least 0.05% and max 0.5%
+            # Tolerance is 50% of spread, min 0.05%, max 0.5%
             tolerance = max(0.0005, min(spread_pct * 0.005, 0.005))
             
             return tolerance
             
         except Exception as e:
-            return 0.001  # Fallback
+            return 0.001
     
     def is_active_trading_session(self, timestamp: datetime) -> bool:
-        """
-        Check if timestamp is during active trading session
-        
-        IMPROVEMENT: Accounts for trading hours
-        Higher confidence during active hours
-        """
+        """Check if timestamp is during active trading hours"""
         hour_utc = timestamp.hour
         
-        # Major trading sessions (UTC):
-        # Asian: 00:00 - 09:00
-        # European: 07:00 - 16:00  
-        # US: 13:00 - 22:00
-        
-        # Active hours: 07:00 - 22:00 UTC (overlap of EU + US)
+        # Active hours: 07:00 - 22:00 UTC (EU + US overlap)
         is_active = 7 <= hour_utc <= 22
-        
-        # Weekday check
         is_weekday = timestamp.weekday() < 5
         
         return is_active and is_weekday
@@ -115,9 +98,7 @@ class IcebergDetector:
         exchange: str,
         symbol: str
     ) -> Dict:
-        """
-        Main detection method with improvements
-        """
+        """Main detection method with optimized balance"""
         # Store history
         self.orderbook_history.append(orderbook)
         self.trade_history.extend(trades)
@@ -125,7 +106,7 @@ class IcebergDetector:
         # Get dynamic tolerance
         tolerance = self.get_dynamic_tolerance(orderbook)
         
-        # Run improved detection algorithms
+        # Run detection algorithms
         trade_flow_icebergs = await self._detect_via_trade_flow_improved(
             orderbook, trades, tolerance
         )
@@ -138,8 +119,8 @@ class IcebergDetector:
             orderbook, trades, tolerance
         )
         
-        # Merge and deduplicate
-        all_icebergs = self._merge_detections(
+        # Merge with optimized deduplication
+        all_icebergs = self._merge_detections_optimized(
             trade_flow_icebergs,
             refill_icebergs,
             volume_anomaly_icebergs
@@ -180,22 +161,22 @@ class IcebergDetector:
         trades: List[Dict],
         tolerance: float
     ) -> List[Dict]:
-        """
-        IMPROVED: Uses maker_side and dynamic tolerance
-        """
+        """Trade flow detection with maker_side support"""
         icebergs = []
         
         # Analyze bids (potential buy icebergs)
-        for bid in orderbook.get('bids', [])[:30]:  # Top 30 levels
-            bid_price = bid['price']
-            bid_volume = bid['volume']
+        bids = orderbook.get('bids', [])
+        for bid in bids[:30]:
+            if isinstance(bid, dict):
+                bid_price = bid['price']
+                bid_volume = bid['volume']
+            else:
+                bid_price = bid[0]
+                bid_volume = bid[1]
             
-            # Get trades that HIT this bid (maker_side = buy)
+            # Get trades that HIT this bid
             nearby_trades = self._get_trades_near_price_improved(
-                trades,
-                bid_price,
-                maker_side='buy',  # Using maker side now!
-                tolerance=tolerance
+                trades, bid_price, maker_side='buy', tolerance=tolerance
             )
             
             if not nearby_trades:
@@ -203,11 +184,11 @@ class IcebergDetector:
             
             total_trade_volume = sum(t['amount'] for t in nearby_trades)
             
-            # Detection: trade volume significantly exceeds visible volume
+            # Detection condition
             if total_trade_volume > bid_volume * (1 + self.threshold):
                 hidden_volume = total_trade_volume - bid_volume
                 
-                # Enhanced confidence calculation
+                # Enhanced confidence
                 volume_ratio = total_trade_volume / bid_volume if bid_volume > 0 else 0
                 confidence = min(0.4 + (volume_ratio - 1) * 0.3, 0.95)
                 
@@ -235,16 +216,17 @@ class IcebergDetector:
                 icebergs.append(iceberg)
         
         # Analyze asks (potential sell icebergs)
-        for ask in orderbook.get('asks', [])[:30]:
-            ask_price = ask['price']
-            ask_volume = ask['volume']
+        asks = orderbook.get('asks', [])
+        for ask in asks[:30]:
+            if isinstance(ask, dict):
+                ask_price = ask['price']
+                ask_volume = ask['volume']
+            else:
+                ask_price = ask[0]
+                ask_volume = ask[1]
             
-            # Get trades that HIT this ask (maker_side = sell)
             nearby_trades = self._get_trades_near_price_improved(
-                trades,
-                ask_price,
-                maker_side='sell',
-                tolerance=tolerance
+                trades, ask_price, maker_side='sell', tolerance=tolerance
             )
             
             if not nearby_trades:
@@ -287,35 +269,26 @@ class IcebergDetector:
         orderbook: Dict,
         tolerance: float
     ) -> List[Dict]:
-        """
-        IMPROVED: Better refill pattern detection
-        """
+        """Improved refill pattern detection"""
         icebergs = []
         
-        if len(self.orderbook_history) < 10:  # Need more history
+        if len(self.orderbook_history) < 10:
             return icebergs
         
-        # Identify refill patterns
         refill_patterns = self._identify_refill_patterns_improved()
         
         for pattern in refill_patterns:
             if pattern['refill_count'] >= 3 and pattern['confidence'] > 0.4:
-                # Estimate hidden volume
                 hidden_volume = pattern['total_volume_refilled'] * 0.8
                 
-                # Find current visible volume
                 visible_volume = self._get_volume_at_price(
-                    orderbook,
-                    pattern['price_level'],
-                    pattern['side'],
-                    tolerance
+                    orderbook, pattern['price_level'], pattern['side'], tolerance
                 )
                 
                 if visible_volume > 0:
-                    # Enhanced confidence based on consistency
                     confidence = pattern['confidence']
                     
-                    # Bonus for consistent refill intervals
+                    # Bonus for consistent intervals
                     if pattern['interval_std'] < pattern['avg_refill_interval'] * 0.3:
                         confidence *= 1.15
                     
@@ -345,7 +318,8 @@ class IcebergDetector:
         tolerance: float
     ) -> List[Dict]:
         """
-        IMPROVED: Statistical validation with normality check
+        OPTIMIZED: Statistical validation with 2.3 sigma threshold
+        (Down from 2.5 to catch smaller icebergs)
         """
         icebergs = []
         
@@ -358,7 +332,7 @@ class IcebergDetector:
         buy_maker_volumes = [t['amount'] for t in recent_trades if t.get('maker_side') == 'buy']
         sell_maker_volumes = [t['amount'] for t in recent_trades if t.get('maker_side') == 'sell']
         
-        # Calculate statistics with validation
+        # Calculate statistics
         if len(buy_maker_volumes) >= 20:
             buy_stats = self._calculate_robust_statistics(buy_maker_volumes)
         else:
@@ -374,16 +348,19 @@ class IcebergDetector:
             maker_side = trade.get('maker_side')
             
             if maker_side == 'buy' and buy_stats:
-                if trade['amount'] > buy_stats['mean'] + 2.5 * buy_stats['std']:
-                    # Anomalously large buy
+                # OPTIMIZED: 2.3 sigma instead of 2.5
+                if buy_stats['std'] > 0:
+                    z_score = (trade['amount'] - buy_stats['mean']) / buy_stats['std']
+                else:
+                    z_score = 0
+                
+                if trade['amount'] > buy_stats['mean'] + 2.3 * buy_stats['std']:
                     visible_vol = self._get_volume_at_price(
                         orderbook, trade['price'], 'buy', tolerance
                     )
                     
                     if visible_vol < trade['amount']:
-                        # Calculate z-score for confidence
-                        z_score = (trade['amount'] - buy_stats['mean']) / buy_stats['std']
-                        confidence = min(0.5 + (z_score - 2.5) * 0.1, 0.85)
+                        confidence = min(0.5 + (z_score - 2.3) * 0.1, 0.85)
                         
                         iceberg = {
                             'side': 'buy',
@@ -401,17 +378,19 @@ class IcebergDetector:
                         icebergs.append(iceberg)
             
             elif maker_side == 'sell' and sell_stats:
-                if trade['amount'] > sell_stats['mean'] + 2.5 * sell_stats['std']:
+                # OPTIMIZED: 2.3 sigma instead of 2.5
+                if sell_stats['std'] > 0:
+                    z_score = (trade['amount'] - sell_stats['mean']) / sell_stats['std']
+                else:
+                    z_score = 0
+                
+                if trade['amount'] > sell_stats['mean'] + 2.3 * sell_stats['std']:
                     visible_vol = self._get_volume_at_price(
                         orderbook, trade['price'], 'sell', tolerance
                     )
                     
                     if visible_vol < trade['amount']:
-                        if sell_stats['std'] > 0:
-                            z_score = (trade['amount'] - sell_stats['mean']) / sell_stats['std']
-                        else:
-                            z_score = 0  # Fallback wenn keine Standardabweichung
-                        confidence = min(0.5 + (z_score - 2.5) * 0.1, 0.85)
+                        confidence = min(0.5 + (z_score - 2.3) * 0.1, 0.85)
                         
                         iceberg = {
                             'side': 'sell',
@@ -431,33 +410,29 @@ class IcebergDetector:
         return icebergs
     
     def _calculate_robust_statistics(self, volumes: List[float]) -> Dict:
-        """
-        Calculate robust statistics with outlier detection
-        """
+        """Calculate robust statistics with outlier detection"""
         if not volumes:
             return {'mean': 0, 'std': 0, 'median': 0, 'is_normal': False}
         
         arr = np.array(volumes)
         
-        # Basic stats
         mean = np.mean(arr)
         std = np.std(arr)
         median = np.median(arr)
         
-        # Check for normality (Shapiro-Wilk test)
+        # Check for normality
         is_normal = False
         if len(arr) >= 8:
             try:
                 _, p_value = stats.shapiro(arr)
-                is_normal = p_value > 0.05  # Not significantly non-normal
+                is_normal = p_value > 0.05
             except:
                 pass
         
-        # If not normal, use robust estimators
+        # Use robust estimators if not normal
         if not is_normal and len(arr) >= 10:
-            # Use median and MAD (Median Absolute Deviation)
             mad = np.median(np.abs(arr - median))
-            std = mad * 1.4826  # MAD to std conversion factor
+            std = mad * 1.4826
         
         return {
             'mean': mean,
@@ -467,6 +442,49 @@ class IcebergDetector:
             'count': len(arr)
         }
     
+    def _merge_detections_optimized(self, *detection_lists) -> List[Dict]:
+        """
+        OPTIMIZED: Size-based confidence adjustment
+        - Small icebergs get slight boost
+        - Very large icebergs get stricter validation
+        """
+        all_icebergs = []
+        for detections in detection_lists:
+            all_icebergs.extend(detections)
+        
+        unique_icebergs = {}
+        for iceberg in all_icebergs:
+            key = (round(iceberg['price'], 4), iceberg['side'])
+            
+            if key not in unique_icebergs:
+                # Calculate hidden ratio
+                hidden_ratio = iceberg['hidden_volume'] / iceberg['visible_volume'] if iceberg['visible_volume'] > 0 else 0
+                
+                # OPTIMIZED: Size-based confidence adjustment
+                
+                # Small icebergs (ratio < 2): Slight boost
+                if hidden_ratio < 2 and iceberg['confidence'] < 0.6:
+                    iceberg['confidence'] = min(iceberg['confidence'] + self.small_iceberg_boost, 0.95)
+                
+                # Very large icebergs (ratio > 5): Stricter validation
+                elif hidden_ratio > 5:
+                    iceberg['confidence'] *= self.large_iceberg_penalty
+                
+                unique_icebergs[key] = iceberg
+            else:
+                # Multiple methods detected same iceberg
+                existing = unique_icebergs[key]
+                if iceberg['confidence'] > existing['confidence']:
+                    # Confidence boost for multiple method agreement
+                    iceberg['confidence'] = min(iceberg['confidence'] * 1.15, 0.98)
+                    iceberg['detection_methods'] = [
+                        existing.get('detection_method'),
+                        iceberg.get('detection_method')
+                    ]
+                    unique_icebergs[key] = iceberg
+        
+        return list(unique_icebergs.values())
+    
     def _get_trades_near_price_improved(
         self,
         trades: List[Dict],
@@ -474,7 +492,7 @@ class IcebergDetector:
         maker_side: str,
         tolerance: float
     ) -> List[Dict]:
-        """IMPROVED: Uses maker_side instead of taker side"""
+        """Get trades near price using maker_side"""
         nearby_trades = []
         
         for trade in trades:
@@ -496,18 +514,23 @@ class IcebergDetector:
         levels = orderbook.get('bids', []) if side == 'buy' else orderbook.get('asks', [])
         
         for level in levels:
-            if abs(level['price'] - price) <= price * tolerance:
-                return level['volume']
+            if isinstance(level, dict):
+                level_price = level['price']
+                level_volume = level['volume']
+            else:
+                level_price = level[0]
+                level_volume = level[1]
+            
+            if abs(level_price - price) <= price * tolerance:
+                return level_volume
         
         return 0.0
     
     def _identify_refill_patterns_improved(self) -> List[Dict]:
-        """IMPROVED: Better refill detection with timing analysis"""
+        """Identify refill patterns with timing analysis"""
         patterns = []
-        
         price_volumes = defaultdict(list)
         
-        # Track volume changes
         for snapshot in self.orderbook_history:
             timestamp = snapshot.get('timestamp', 0)
             if isinstance(timestamp, int):
@@ -515,13 +538,29 @@ class IcebergDetector:
             else:
                 ts = datetime.now()
             
+            # Track bids
             for bid in snapshot.get('bids', [])[:15]:
-                key = (round(bid['price'], 4), 'buy')
-                price_volumes[key].append((ts, bid['volume']))
+                if isinstance(bid, dict):
+                    price = round(bid['price'], 4)
+                    volume = bid['volume']
+                else:
+                    price = round(bid[0], 4)
+                    volume = bid[1]
+                
+                key = (price, 'buy')
+                price_volumes[key].append((ts, volume))
             
+            # Track asks
             for ask in snapshot.get('asks', [])[:15]:
-                key = (round(ask['price'], 4), 'sell')
-                price_volumes[key].append((ts, ask['volume']))
+                if isinstance(ask, dict):
+                    price = round(ask['price'], 4)
+                    volume = ask['volume']
+                else:
+                    price = round(ask[0], 4)
+                    volume = ask[1]
+                
+                key = (price, 'sell')
+                price_volumes[key].append((ts, volume))
         
         # Detect refills
         for (price, side), history in price_volumes.items():
@@ -536,8 +575,7 @@ class IcebergDetector:
                 prev_time, prev_vol = history[i-1]
                 curr_time, curr_vol = history[i]
                 
-                # Refill detected
-                if curr_vol > prev_vol * 1.15:  # 15% increase
+                if curr_vol > prev_vol * 1.15:
                     refills.append(i)
                     volumes_refilled.append(curr_vol - prev_vol)
                     interval = (curr_time - prev_time).total_seconds()
@@ -549,7 +587,6 @@ class IcebergDetector:
                 interval_std = np.std(intervals) if len(intervals) > 1 else 0
                 total_refilled = sum(volumes_refilled)
                 
-                # Confidence based on consistency
                 confidence = min(len(refills) / 8, 0.9)
                 
                 pattern = {
@@ -564,37 +601,6 @@ class IcebergDetector:
                 patterns.append(pattern)
         
         return patterns
-    
-    def _merge_detections(self, *detection_lists) -> List[Dict]:
-        all_icebergs = []
-        for detections in detection_lists:
-            all_icebergs.extend(detections)
-        
-        unique_icebergs = {}
-        for iceberg in all_icebergs:
-            key = (round(iceberg['price'], 4), iceberg['side'])
-            
-            if key not in unique_icebergs:
-                # OPTIMIZED: Größen-basierte Confidence
-                hidden_ratio = iceberg['hidden_volume'] / iceberg['visible_volume'] if iceberg['visible_volume'] > 0 else 0
-                
-                # Kleine Icebergs (ratio < 2): Leicht erleichtern
-                if hidden_ratio < 2 and iceberg['confidence'] < 0.6:
-                    iceberg['confidence'] = min(iceberg['confidence'] + 0.05, 0.95)
-                
-                # Sehr große Icebergs (ratio > 5): Strengere Prüfung
-                elif hidden_ratio > 5:
-                    iceberg['confidence'] *= 0.9
-                
-                unique_icebergs[key] = iceberg
-            else:
-                # Multiple Methods = Confidence Boost
-                existing = unique_icebergs[key]
-                if iceberg['confidence'] > existing['confidence']:
-                    iceberg['confidence'] = min(iceberg['confidence'] * 1.15, 0.98)
-                    unique_icebergs[key] = iceberg
-        
-        return list(unique_icebergs.values())
     
     def _create_timeline(self, icebergs: List[Dict], trades: List[Dict]) -> List[Dict]:
         """Create detection timeline"""
@@ -619,7 +625,8 @@ class IcebergDetector:
                 'buyOrders': 0,
                 'sellOrders': 0,
                 'totalHiddenVolume': 0,
-                'averageConfidence': 0
+                'averageConfidence': 0,
+                'highConfidenceDetections': 0
             }
         
         buy_icebergs = [i for i in icebergs if i['side'] == 'buy']
@@ -630,7 +637,6 @@ class IcebergDetector:
         
         largest = max(icebergs, key=lambda x: x['hidden_volume'])
         
-        # Method distribution
         methods = {}
         for iceberg in icebergs:
             method = iceberg.get('detection_method', 'unknown')
