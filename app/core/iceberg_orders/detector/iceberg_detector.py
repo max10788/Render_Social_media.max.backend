@@ -566,29 +566,32 @@ class IcebergDetector:
         return patterns
     
     def _merge_detections(self, *detection_lists) -> List[Dict]:
-        """Merge with improved deduplication"""
         all_icebergs = []
         for detections in detection_lists:
             all_icebergs.extend(detections)
         
-        # Group by price and side
         unique_icebergs = {}
         for iceberg in all_icebergs:
-            # Round price to avoid floating point issues
             key = (round(iceberg['price'], 4), iceberg['side'])
             
             if key not in unique_icebergs:
+                # OPTIMIZED: Größen-basierte Confidence
+                hidden_ratio = iceberg['hidden_volume'] / iceberg['visible_volume'] if iceberg['visible_volume'] > 0 else 0
+                
+                # Kleine Icebergs (ratio < 2): Leicht erleichtern
+                if hidden_ratio < 2 and iceberg['confidence'] < 0.6:
+                    iceberg['confidence'] = min(iceberg['confidence'] + 0.05, 0.95)
+                
+                # Sehr große Icebergs (ratio > 5): Strengere Prüfung
+                elif hidden_ratio > 5:
+                    iceberg['confidence'] *= 0.9
+                
                 unique_icebergs[key] = iceberg
             else:
-                # Keep highest confidence, but average the volumes
+                # Multiple Methods = Confidence Boost
                 existing = unique_icebergs[key]
                 if iceberg['confidence'] > existing['confidence']:
-                    # Update but keep track of multiple detections
-                    iceberg['detection_methods'] = [
-                        existing.get('detection_method'),
-                        iceberg.get('detection_method')
-                    ]
-                    iceberg['confidence'] = min(iceberg['confidence'] * 1.2, 0.98)  # Bonus for multiple methods
+                    iceberg['confidence'] = min(iceberg['confidence'] * 1.15, 0.98)
                     unique_icebergs[key] = iceberg
         
         return list(unique_icebergs.values())
