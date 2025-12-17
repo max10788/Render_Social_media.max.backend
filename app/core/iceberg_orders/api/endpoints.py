@@ -1,4 +1,4 @@
-""""
+"""
 FastAPI endpoints for iceberg order detection
 UPDATED with JSON logging functionality
 """
@@ -14,7 +14,8 @@ import json
 from app.core.iceberg_orders.exchanges.binance import BinanceExchangeImproved
 from app.core.iceberg_orders.exchanges.coinbase import CoinbaseExchange
 from app.core.iceberg_orders.exchanges.kraken import KrakenExchange
-from app.core.iceberg_orders.detector.iceberg_detector import IcebergDetector 
+from app.core.iceberg_orders.detector.iceberg_detector import IcebergDetector
+from app.core.iceberg_orders.clustering.iceberg_clusterer import IcebergClusterer, AdaptiveClusterer
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -25,6 +26,10 @@ router = APIRouter(prefix="/iceberg-orders", tags=["iceberg-orders"])
 # Exchange instances cache
 exchanges = {}
 detectors = {}
+
+# Clustering instances
+clusterer = IcebergClusterer()
+adaptive_clusterer = AdaptiveClusterer()
 
 # JSON logging configuration
 ICEBERG_LOG_DIR = Path("./logs/icebergs")
@@ -208,15 +213,19 @@ async def detect_iceberg_orders(
     symbol: str = Query(..., description="Trading symbol (e.g., BTC/USDT)"),
     timeframe: str = Query("1h", description="Timeframe for analysis"),
     threshold: float = Query(0.05, ge=0.01, le=0.5, description="Detection threshold"),
-    log_results: bool = Query(True, description="Log results to JSON file")
+    log_results: bool = Query(True, description="Log results to JSON file"),
+    enable_clustering: bool = Query(True, description="Enable parent order clustering"),
+    adaptive_clustering: bool = Query(False, description="Use adaptive clustering based on market conditions")
 ):
     """
     Detect iceberg orders for a specific symbol on an exchange
     
-    NEW: Automatically logs results to JSON if log_results=True
+    NEW: Now includes parent order clustering!
+    - Individual detections are grouped into parent orders
+    - Shows both individual icebergs and parent orders
     """
     try:
-        logger.info(f"Detection request: {exchange}/{symbol} threshold={threshold}")
+        logger.info(f"Detection request: {exchange}/{symbol} threshold={threshold}, clustering={enable_clustering}")
         
         # Get exchange
         exchange_instance = get_exchange(exchange)
@@ -237,6 +246,34 @@ async def detect_iceberg_orders(
             exchange=exchange,
             symbol=symbol
         )
+        
+        # Apply clustering if enabled
+        if enable_clustering and result.get('icebergs'):
+            if adaptive_clustering:
+                clustering_result = adaptive_clusterer.cluster_adaptive(
+                    result['icebergs'],
+                    orderbook
+                )
+            else:
+                clustering_result = clusterer.cluster(result['icebergs'])
+            
+            # Add clustering data to result
+            result['parent_orders'] = clustering_result['parent_orders']
+            result['individual_icebergs'] = clustering_result['individual_icebergs']
+            result['clustering_stats'] = clustering_result['clustering_stats']
+            
+            # Update statistics
+            result['statistics']['parent_orders_found'] = len(clustering_result['parent_orders'])
+            result['statistics']['clustering_rate'] = clustering_result['clustering_stats']['clustering_rate']
+            
+            logger.info(f"Clustering complete - Found {len(clustering_result['parent_orders'])} parent orders "
+                       f"from {len(result['icebergs'])} individual detections")
+        else:
+            result['parent_orders'] = []
+            result['individual_icebergs'] = result.get('icebergs', [])
+            result['clustering_stats'] = {
+                'clustering_enabled': False
+            }
         
         # Log results
         logger.info(f"Detection complete - Found {result['statistics']['totalDetected']} icebergs, "
@@ -556,6 +593,120 @@ async def get_iceberg_statistics(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/system-limits")
+async def check_system_limits(
+    exchange: str = Query(..., description="Exchange name")
+):
+    """
+    NEW ENDPOINT: Check system limits and potential data gaps
+    
+    Shows:
+    - Exchange API limits (orderbook/trades fetch limits)
+    - Detector history limits
+    - Potential data gaps that could affect parent order detection
+    """
+    try:
+        logger.info(f"Checking system limits for {exchange}")
+        
+        exchange_instance = get_exchange(exchange)
+        detector = get_detector(0.05)  # Get default detector
+        
+        # Exchange limits
+        exchange_limits = {
+            "orderbook": {
+                "default_limit": 100,
+                "max_limit": 5000 if exchange.lower() == 'binance' else 100,
+                "note": "Number of price levels fetched from orderbook"
+            },
+            "trades": {
+                "default_limit": 100,
+                "max_limit": 1000 if exchange.lower() == 'binance' else 100,
+                "note": "Number of recent trades fetched"
+            }
+        }
+        
+        # Detector limits
+        detector_limits = {
+            "orderbook_history": {
+                "max_snapshots": detector.lookback_window,
+                "current_size": len(detector.orderbook_history),
+                "note": "Older snapshots are automatically removed"
+            },
+            "trade_history": {
+                "max_trades": detector.lookback_window * 3,
+                "current_size": len(detector.trade_history),
+                "note": "Older trades are automatically removed"
+            }
+        }
+        
+        # Calculate potential gaps
+        gaps_analysis = {
+            "orderbook_gap": {
+                "description": "If a parent order has more price levels than fetch limit",
+                "risk": "medium",
+                "mitigation": "Use max_limit parameter and increase fetch size"
+            },
+            "trades_gap": {
+                "description": "If a parent order has more refills than trade history",
+                "risk": "high",
+                "example": "A parent order with 500 refills but only 100 trades fetched",
+                "mitigation": "Fetch more trades (up to 1000) or use WebSocket for continuous data"
+            },
+            "time_gap": {
+                "description": "If parent order spans longer than history retention",
+                "risk": "medium",
+                "example": "Order active for 20 minutes but only last 10 minutes in history",
+                "mitigation": "Increase lookback_window or use persistent storage"
+            }
+        }
+        
+        # Recommendations
+        recommendations = [
+            {
+                "issue": "Limited trade history",
+                "solution": "Increase trades fetch limit to 1000 for better parent order detection",
+                "implementation": "fetch_trades(symbol, limit=1000)"
+            },
+            {
+                "issue": "Missing historical data",
+                "solution": "Use WebSocket for continuous monitoring instead of polling",
+                "implementation": "subscribe_trades() and subscribe_orderbook()"
+            },
+            {
+                "issue": "Large parent orders split over time",
+                "solution": "Increase lookback_window to 500 or use database persistence",
+                "implementation": "IcebergDetector(lookback_window=500)"
+            },
+            {
+                "issue": "Clustering misses dispersed refills",
+                "solution": "Increase time_window in clustering parameters",
+                "implementation": "IcebergClusterer(time_window_seconds=600)"
+            }
+        ]
+        
+        limits_info = {
+            "exchange": exchange,
+            "exchange_limits": exchange_limits,
+            "detector_limits": detector_limits,
+            "potential_gaps": gaps_analysis,
+            "recommendations": recommendations,
+            "current_configuration": {
+                "orderbook_fetch_limit": 100,
+                "trades_fetch_limit": 100,
+                "detector_lookback_window": detector.lookback_window,
+                "clustering_time_window": 300
+            }
+        }
+        
+        logger.info(f"System limits check complete for {exchange}")
+        
+        return JSONResponse(content=limits_info)
+        
+    except Exception as e:
+        logger.error(f"System limits check error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/detector-health")
 async def detector_health():
     """Monitor detector performance and health"""
@@ -612,6 +763,201 @@ async def detector_health():
                 "error": str(e)
             }
         )
+
+
+@router.get("/compare-detections")
+async def compare_detection_methods(
+    exchange: str = Query(..., description="Exchange name"),
+    symbol: str = Query(..., description="Trading symbol"),
+    threshold: float = Query(0.05, description="Detection threshold"),
+    log_results: bool = Query(False, description="Log comparison results")
+):
+    """Compare different detection methods"""
+    try:
+        logger.info(f"Method comparison: {exchange}/{symbol}")
+        
+        exchange_instance = get_exchange(exchange)
+        
+        # Fetch data
+        orderbook = await exchange_instance.fetch_orderbook(symbol, limit=100)
+        trades = await exchange_instance.fetch_trades(symbol, limit=100)
+        
+        # Run detection
+        detector = get_detector(threshold)
+        result = await detector.detect(
+            orderbook=orderbook,
+            trades=trades,
+            exchange=exchange,
+            symbol=symbol
+        )
+        
+        # Group by method
+        by_method = {}
+        for iceberg in result.get('icebergs', []):
+            method = iceberg.get('detection_method', 'unknown')
+            if method not in by_method:
+                by_method[method] = []
+            by_method[method].append(iceberg)
+        
+        # Calculate method stats
+        method_stats = {}
+        for method, icebergs in by_method.items():
+            method_stats[method] = {
+                "count": len(icebergs),
+                "avg_confidence": sum(i['confidence'] for i in icebergs) / len(icebergs),
+                "total_hidden_volume": sum(i.get('hidden_volume', 0) for i in icebergs),
+                "buy_count": len([i for i in icebergs if i['side'] == 'buy']),
+                "sell_count": len([i for i in icebergs if i['side'] == 'sell'])
+            }
+        
+        comparison = {
+            "overview": {
+                "total_detections": len(result.get('icebergs', [])),
+                "methods_used": len(by_method)
+            },
+            "by_method": method_stats,
+            "detections": result.get('icebergs', [])
+        }
+        
+        # Optional logging
+        if log_results:
+            iceberg_logger.log_detection(result, exchange, symbol)
+        
+        logger.info(f"Comparison complete - {len(by_method)} methods, "
+                   f"{len(result.get('icebergs', []))} total detections")
+        
+        return JSONResponse(content=comparison)
+        
+    except Exception as e:
+        logger.error(f"Comparison error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cluster-analysis")
+async def analyze_clustering(
+    exchange: str = Query(..., description="Exchange name"),
+    symbol: str = Query(..., description="Trading symbol"),
+    threshold: float = Query(0.05, description="Detection threshold"),
+    time_window: int = Query(300, ge=60, le=1800, description="Clustering time window (seconds)"),
+    price_tolerance: float = Query(0.1, ge=0.01, le=1.0, description="Price tolerance (%)"),
+    min_refills: int = Query(3, ge=2, le=10, description="Minimum refills for parent order")
+):
+    """
+    NEW ENDPOINT: Detailed clustering analysis
+    
+    Shows how individual icebergs are grouped into parent orders
+    with configurable clustering parameters
+    """
+    try:
+        logger.info(f"Clustering analysis: {exchange}/{symbol}")
+        
+        exchange_instance = get_exchange(exchange)
+        
+        # Fetch data
+        orderbook = await exchange_instance.fetch_orderbook(symbol, limit=100)
+        trades = await exchange_instance.fetch_trades(symbol, limit=100)
+        
+        # Detect icebergs
+        detector = get_detector(threshold)
+        result = await detector.detect(
+            orderbook=orderbook,
+            trades=trades,
+            exchange=exchange,
+            symbol=symbol
+        )
+        
+        if not result.get('icebergs'):
+            return JSONResponse(content={
+                "message": "No icebergs detected",
+                "parent_orders": [],
+                "individual_icebergs": [],
+                "clustering_stats": {}
+            })
+        
+        # Create custom clusterer with specified parameters
+        custom_clusterer = IcebergClusterer(
+            time_window_seconds=time_window,
+            price_tolerance_percent=price_tolerance,
+            volume_tolerance_percent=50,
+            min_refills=min_refills,
+            min_consistency_score=0.5
+        )
+        
+        # Cluster
+        clustering_result = custom_clusterer.cluster(result['icebergs'])
+        
+        # Get summary
+        from app.core.iceberg_orders.clustering.iceberg_clusterer import ParentIcebergOrder
+        parent_order_objs = []
+        for po_dict in clustering_result['parent_orders']:
+            # Already in dict format, use directly
+            parent_order_objs.append(po_dict)
+        
+        analysis = {
+            "detection_summary": {
+                "total_icebergs_detected": len(result['icebergs']),
+                "detection_methods": result['statistics'].get('detectionMethods', {})
+            },
+            "clustering_parameters": {
+                "time_window_seconds": time_window,
+                "price_tolerance_percent": price_tolerance,
+                "min_refills": min_refills
+            },
+            "parent_orders": clustering_result['parent_orders'],
+            "individual_icebergs": clustering_result['individual_icebergs'],
+            "clustering_stats": clustering_result['clustering_stats'],
+            "insights": self._generate_clustering_insights(clustering_result)
+        }
+        
+        logger.info(f"Clustering analysis complete - {len(clustering_result['parent_orders'])} parent orders")
+        
+        return JSONResponse(content=analysis)
+        
+    except Exception as e:
+        logger.error(f"Clustering analysis error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _generate_clustering_insights(clustering_result: Dict) -> Dict:
+    """Generate insights from clustering results"""
+    parent_orders = clustering_result['parent_orders']
+    stats = clustering_result['clustering_stats']
+    
+    if not parent_orders:
+        return {
+            "message": "No parent orders found - icebergs are too dispersed or inconsistent"
+        }
+    
+    insights = {
+        "clustering_effectiveness": "high" if stats['clustering_rate'] > 70 else "medium" if stats['clustering_rate'] > 40 else "low",
+        "clustering_rate_percent": stats['clustering_rate'],
+        "average_refills_per_parent": stats['avg_refills_per_parent'],
+        "interpretation": []
+    }
+    
+    # Generate interpretations
+    if stats['clustering_rate'] > 70:
+        insights["interpretation"].append(
+            "High clustering rate suggests coordinated trading activity - likely large institutional orders"
+        )
+    
+    if stats['avg_refills_per_parent'] > 5:
+        insights["interpretation"].append(
+            f"Average of {stats['avg_refills_per_parent']:.1f} refills per parent order indicates systematic order splitting"
+        )
+    
+    # Analyze largest parent order
+    largest_po = max(parent_orders, key=lambda x: x['volume']['total'])
+    insights["largest_parent_order"] = {
+        "id": largest_po['id'],
+        "side": largest_po['side'],
+        "total_volume": largest_po['volume']['total'],
+        "refill_count": largest_po['refills']['count'],
+        "duration_minutes": largest_po['timing']['duration_minutes'],
+        "interpretation": f"Largest {largest_po['side']} order with {largest_po['refills']['count']} refills over {largest_po['timing']['duration_minutes']:.1f} minutes"
+    }
+    
+    return insights
 
 
 @router.get("/compare-detections")
