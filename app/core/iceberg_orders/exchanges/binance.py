@@ -235,7 +235,7 @@ class BinanceExchangeImproved:
     
     async def subscribe_orderbook(self, symbol: str, callback):
         """Subscribe to orderbook updates via WebSocket"""
-        binance_symbol = symbol.replace('/', '').lower()
+        binance_symbol = self._normalize_symbol(symbol).lower()
         stream_name = f"{binance_symbol}@depth@100ms"
         
         ws_url = f"{self.WS_URL}/{stream_name}"
@@ -270,7 +270,7 @@ class BinanceExchangeImproved:
     
     async def subscribe_trades(self, symbol: str, callback):
         """Subscribe to trade updates via WebSocket"""
-        binance_symbol = symbol.replace('/', '').lower()
+        binance_symbol = self._normalize_symbol(symbol).lower()
         stream_name = f"{binance_symbol}@trade"
         
         ws_url = f"{self.WS_URL}/{stream_name}"
