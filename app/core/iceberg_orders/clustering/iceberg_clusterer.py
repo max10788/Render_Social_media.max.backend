@@ -32,7 +32,6 @@ class ParentIcebergOrder:
     
     # Refill tracking
     refill_count: int
-    refills: List[Dict] = field(default_factory=list)
     
     # Time information
     first_seen: datetime
@@ -48,6 +47,9 @@ class ParentIcebergOrder:
     # Detection metadata
     exchange: str
     symbol: str
+    
+    # Fields with defaults MUST come last
+    refills: List[Dict] = field(default_factory=list)
     detection_methods: List[str] = field(default_factory=list)
     
     def to_dict(self) -> Dict:
