@@ -31,6 +31,17 @@ class BinanceExchangeImproved:
         self._orderbook_cache = {}
         self._trades_cache = {}
         self._cache_ttl = 0.1  # 100ms for fast-moving data
+    
+    def _normalize_symbol(self, symbol: str) -> str:
+        """
+        Normalize symbol for Binance API
+        Handles URL-encoded symbols (BTC%2FUSDT) and regular format (BTC/USDT)
+        Returns: BTCUSDT
+        """
+        from urllib.parse import unquote
+        decoded = unquote(symbol)  # BTC%2FUSDT -> BTC/USDT
+        binance_format = decoded.replace('/', '')  # BTC/USDT -> BTCUSDT
+        return binance_format
         
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session"""
@@ -46,11 +57,14 @@ class BinanceExchangeImproved:
         IMPROVEMENTS:
         - Proper timestamp from exchange
         - Order count estimation
+        - URL decode symbol first
         """
         session = await self._get_session()
         
-        # Convert symbol format (BTC/USDT -> BTCUSDT)
-        binance_symbol = symbol.replace('/', '')
+        # Normalize symbol (handles URL encoding)
+        binance_symbol = self._normalize_symbol(symbol)
+        
+        print(f"🔍 Orderbook Symbol: {symbol} -> {binance_symbol}")
         
         url = f"{self.BASE_URL}/api/v3/depth"
         params = {
@@ -108,11 +122,14 @@ class BinanceExchangeImproved:
         """
         Fetch recent trades from Binance
         
-        FIXED: Proper error handling for API response format
+        FIXED: Proper error handling for API response format + URL decode symbol
         """
         session = await self._get_session()
         
-        binance_symbol = symbol.replace('/', '')
+        # Normalize symbol (handles URL encoding)
+        binance_symbol = self._normalize_symbol(symbol)
+        
+        print(f"🔍 Trades Symbol: {symbol} -> {binance_symbol}")
         
         url = f"{self.BASE_URL}/api/v3/trades"
         params = {
