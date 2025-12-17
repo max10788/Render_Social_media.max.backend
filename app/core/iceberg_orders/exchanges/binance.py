@@ -5,6 +5,7 @@ FIXES:
 - ✅ Proper timestamp handling
 - ✅ Optimized cache (100ms TTL)
 - ✅ Order count estimation
+- ✅ FIXED: Proper error handling for API response format
 """
 import asyncio
 import aiohttp
@@ -61,6 +62,10 @@ class BinanceExchangeImproved:
             async with session.get(url, params=params) as response:
                 data = await response.json()
                 
+                # Check if response is valid
+                if not isinstance(data, dict):
+                    raise Exception(f"Unexpected orderbook response format: {type(data)}")
+                
                 # Extract server timestamp from response headers
                 server_time = int(time.time() * 1000)  # Fallback
                 if 'date' in response.headers:
@@ -103,50 +108,7 @@ class BinanceExchangeImproved:
         """
         Fetch recent trades from Binance
         
-        CRITICAL FIX: Corrected side interpretation!
-        - isBuyerMaker = True  → BUY order (buyer was maker, filled a sell order)
-        - isBuyerMaker = False → SELL order (seller was maker, filled a buy order)
-        
-        Actually, let me reconsider:
-        - isBuyerMaker = True means buyer placed the order on the book (maker)
-        - isBuyerMaker = False means seller placed the order on the book (maker)
-        
-        For iceberg detection, we care about the TAKER side (aggressive order):
-        - isBuyerMaker = True  → Sell was aggressive (taker) → 'sell'
-        - isBuyerMaker = False → Buy was aggressive (taker) → 'buy'
-        
-        Wait, let me verify this logic again:
-        
-        isBuyerMaker field documentation:
-        - True: buyer is maker, seller is taker (aggressive sell)
-        - False: seller is maker, buyer is taker (aggressive buy)
-        
-        For detecting which side has the iceberg, we need the TAKER side:
-        - isBuyerMaker = True  → taker was SELL
-        - isBuyerMaker = False → taker was BUY
-        
-        So original code was actually correct for detecting the aggressive (taker) side!
-        
-        BUT - for iceberg detection, we actually want to know where the ORDER is sitting,
-        which is the MAKER side, not the taker side.
-        
-        Let me think about this more carefully:
-        
-        An iceberg order sits on the book as a LIMIT order (maker).
-        When trades execute against it, those trades show the TAKER side.
-        
-        For iceberg detection:
-        - If an iceberg BUY order is sitting on the book
-        - Aggressive SELL orders will hit it
-        - These trades show isBuyerMaker = True (buyer was maker)
-        - We want to detect the BUY iceberg
-        
-        So we need BOTH sides of the trade:
-        - The maker side (the iceberg)
-        - The taker side (the aggressive order)
-        
-        For the algorithm, we should track BOTH.
-        Let's provide both in the data structure.
+        FIXED: Proper error handling for API response format
         """
         session = await self._get_session()
         
@@ -160,32 +122,59 @@ class BinanceExchangeImproved:
         
         try:
             async with session.get(url, params=params) as response:
-                data = await response.json()
+                response_text = await response.text()
+                
+                # Log response for debugging
+                print(f"🔍 Binance API Response (first 200 chars): {response_text[:200]}")
+                
+                # Try to parse as JSON
+                try:
+                    data = await response.json()
+                except Exception as json_error:
+                    raise Exception(f"Failed to parse JSON response: {json_error}. Response: {response_text[:500]}")
+                
+                # Check if response is valid list
+                if not isinstance(data, list):
+                    raise Exception(f"Unexpected API response format. Expected list, got {type(data)}. Response: {str(data)[:200]}")
+                
+                if len(data) == 0:
+                    print(f"⚠️ No trades returned for {symbol}")
+                    return []
                 
                 trades = []
-                for trade in data:
-                    # FIXED: Proper side interpretation
-                    # isBuyerMaker = True means:
-                    #   - Buyer was the maker (limit order on book)
-                    #   - Seller was the taker (market order)
-                    #   - This was an aggressive SELL hitting a buy order
-                    
-                    is_buyer_maker = trade.get('isBuyerMaker', False)
-                    
-                    trades.append({
-                        'price': float(trade['price']),
-                        'amount': float(trade['qty']),
-                        # Taker side (aggressive order)
-                        'side': 'sell' if is_buyer_maker else 'buy',
-                        # Maker side (passive order - potential iceberg location)
-                        'maker_side': 'buy' if is_buyer_maker else 'sell',
-                        'timestamp': trade['time'],
-                        'id': trade['id'],
-                        'is_buyer_maker': is_buyer_maker
-                    })
+                for idx, trade in enumerate(data):
+                    try:
+                        # Ensure trade is a dictionary
+                        if not isinstance(trade, dict):
+                            print(f"⚠️ Trade {idx} is not a dict: {type(trade)} - {trade}")
+                            continue
+                        
+                        # Extract with safe defaults
+                        is_buyer_maker = trade.get('isBuyerMaker', False)
+                        
+                        trade_data = {
+                            'price': float(trade.get('price', 0)),
+                            'amount': float(trade.get('qty', 0)),
+                            # Taker side (aggressive order)
+                            'side': 'sell' if is_buyer_maker else 'buy',
+                            # Maker side (passive order - potential iceberg location)
+                            'maker_side': 'buy' if is_buyer_maker else 'sell',
+                            'timestamp': int(trade.get('time', 0)),
+                            'id': str(trade.get('id', '')),
+                            'is_buyer_maker': is_buyer_maker
+                        }
+                        
+                        trades.append(trade_data)
+                        
+                    except Exception as trade_error:
+                        print(f"⚠️ Error processing trade {idx}: {trade_error}")
+                        continue
                 
+                print(f"✅ Processed {len(trades)} trades for {symbol}")
                 return trades
                 
+        except aiohttp.ClientError as e:
+            raise Exception(f"Binance API connection failed: {str(e)}")
         except Exception as e:
             raise Exception(f"Binance trades fetch failed: {str(e)}")
     
@@ -208,19 +197,24 @@ class BinanceExchangeImproved:
         
         url = f"{self.BASE_URL}/api/v3/exchangeInfo"
         
-        async with session.get(url) as response:
-            data = await response.json()
-            
-            symbols = []
-            for symbol_info in data.get('symbols', []):
-                if symbol_info['status'] == 'TRADING':
-                    base = symbol_info['baseAsset']
-                    quote = symbol_info['quoteAsset']
-                    symbols.append(f"{base}/{quote}")
-            
-            # Filter to major USDT pairs
-            usdt_symbols = [s for s in symbols if s.endswith('/USDT')]
-            return sorted(usdt_symbols)[:100]
+        try:
+            async with session.get(url) as response:
+                data = await response.json()
+                
+                symbols = []
+                for symbol_info in data.get('symbols', []):
+                    if symbol_info.get('status') == 'TRADING':
+                        base = symbol_info.get('baseAsset', '')
+                        quote = symbol_info.get('quoteAsset', '')
+                        if base and quote:
+                            symbols.append(f"{base}/{quote}")
+                
+                # Filter to major USDT pairs
+                usdt_symbols = [s for s in symbols if s.endswith('/USDT')]
+                return sorted(usdt_symbols)[:100]
+                
+        except Exception as e:
+            raise Exception(f"Failed to fetch symbols: {str(e)}")
     
     async def subscribe_orderbook(self, symbol: str, callback):
         """Subscribe to orderbook updates via WebSocket"""
@@ -277,12 +271,12 @@ class BinanceExchangeImproved:
                         is_buyer_maker = data.get('m', False)
                         
                         trade = {
-                            'price': float(data['p']),
-                            'amount': float(data['q']),
+                            'price': float(data.get('p', 0)),
+                            'amount': float(data.get('q', 0)),
                             'side': 'sell' if is_buyer_maker else 'buy',
                             'maker_side': 'buy' if is_buyer_maker else 'sell',
-                            'timestamp': data['T'],
-                            'id': data['t'],
+                            'timestamp': data.get('T', int(time.time() * 1000)),
+                            'id': str(data.get('t', '')),
                             'is_buyer_maker': is_buyer_maker
                         }
                         
