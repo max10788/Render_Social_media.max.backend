@@ -4,7 +4,7 @@ UPDATED with JSON logging functionality
 """
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 from pathlib import Path
 import asyncio
