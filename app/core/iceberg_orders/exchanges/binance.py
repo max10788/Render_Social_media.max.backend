@@ -5,7 +5,7 @@ FIXES:
 - ✅ Proper timestamp handling
 - ✅ Optimized cache (100ms TTL)
 - ✅ Order count estimation
-- ✅ FIXED: Proper error handling for API response format
+- ✅ FIXED: URL decoding for symbols (BTC%2FUSDT -> BTCUSDT)
 """
 import asyncio
 import aiohttp
