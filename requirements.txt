@@ -2,7 +2,6 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 gunicorn==21.2.0
-
 # Web & HTTP
 aiohttp==3.9.1
 httpx==0.23.3  # Fix: Kompatibel mit solana 0.30.0
@@ -12,12 +11,10 @@ jinja2==3.1.2
 requests==2.31.0
 urllib3==2.0.4
 websockets==10.4  # Fix: Kompatibel mit solana + web3
-
 # Core Dependencies
 aiofiles==23.1.0
 web3==6.17.1
 python-dotenv==1.0.0
-
 # Database
 sqlalchemy==2.0.20
 asyncpg==0.28.0
@@ -26,23 +23,20 @@ motor==3.1.2
 pymongo==4.3.3
 alembic==1.10.0
 sqlalchemy-utils==0.38.2
-
 # Data Processing
 pandas==2.1.4
 numpy==1.26.3
 scipy==1.10.1
 scikit-learn>=1.0.0,<1.4.0
-
+networkx>=3.0  # Added for network graph analysis
 # JSON RPC + Validierung
 pydantic==1.10.13  # ← DOWNGRADE zu v1 (keine Code-Änderungen nötig!)
 jsonschema==4.19.0
-
 # Scheduling & Automation
 schedule==1.2.0
 celery==5.3.4
 redis==4.6.0
 flower==1.2.0
-
 # Ethereum & Solana & Blockchain
 python-bitcoinrpc==1.0
 solana==0.30.0
@@ -50,36 +44,30 @@ solders==0.15.1
 base58==2.1.1
 eth-abi==4.2.1
 eth-utils==2.3.1
-
 # Twitter API (optional)
 tweepy==4.14.0
 vaderSentiment==3.3.2
 textblob==0.15.3
 nltk==3.8.1
 langdetect==1.0.9
-
 # Monitoring & Logging
 prometheus-client==0.16.0
 structlog==23.1.0
 loguru==0.7.2
 python-json-logger==2.0.7
-
 # Security
 cryptography==41.0.1
 python-jose==3.3.0
 setuptools>=60.9.0
-
 # Testing
 pytest==7.4.4
 pytest-asyncio==0.23.3
 pytest-cov==4.1.0
 async-timeout>=4.0.0
 attrs>=21.2.0
-
 # Development
 black==23.12.1
 flake8==7.0.0
 mypy==1.8.0
-
 # Additional
 ccxt==4.4.30
