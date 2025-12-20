@@ -34,6 +34,7 @@ from app.core.price_movers.api.hybrid_routes import router as hybrid_router
 from app.core.price_movers.api.routes_dex_chart import router as dex_chart_router
 from app.core.orderbook_heatmap.api.endpoints import router as orderbook_heatmap_router
 from app.core.iceberg_orders.api.endpoints import router as iceberg_orders_router
+from app.core.otc_analysis.api.endpoints import router as otc_analysis_router
 
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
@@ -255,6 +256,7 @@ app.include_router(hybrid_router)
 app.include_router(dex_chart_router, prefix="/api/v1")
 app.include_router(orderbook_heatmap_router)
 app.include_router(iceberg_orders_router)  # ← Prefix hinzufügen!
+app.include_router(otc_analysis_router)  # OTC Analysis Router
 
 # ------------------------------------------------------------------
 # WebSocket Endpoint
