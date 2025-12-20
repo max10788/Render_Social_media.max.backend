@@ -36,28 +36,22 @@ class NodeProvider:
         if infura_key:
             if self.chain_id == ChainID.ETHEREUM.value:
                 providers.append(f"https://mainnet.infura.io/v3/{infura_key}")
-            elif self.chain_id == ChainID.POLYGON.value:
-                providers.append(f"https://polygon-mainnet.infura.io/v3/{infura_key}")
-            elif self.chain_id == ChainID.ARBITRUM.value:
-                providers.append(f"https://arbitrum-mainnet.infura.io/v3/{infura_key}")
         
         # Alchemy
         alchemy_key = os.getenv('ALCHEMY_API_KEY')
         if alchemy_key:
             if self.chain_id == ChainID.ETHEREUM.value:
                 providers.append(f"https://eth-mainnet.g.alchemy.com/v2/{alchemy_key}")
-            elif self.chain_id == ChainID.POLYGON.value:
-                providers.append(f"https://polygon-mainnet.g.alchemy.com/v2/{alchemy_key}")
-            elif self.chain_id == ChainID.ARBITRUM.value:
-                providers.append(f"https://arb-mainnet.g.alchemy.com/v2/{alchemy_key}")
         
-        # QuickNode
-        quicknode_url = os.getenv('QUICKNODE_URL')
-        if quicknode_url:
-            providers.append(quicknode_url)
+        # QuickNode - Hardcoded Public Endpoints als Fallback
+        if self.chain_id == ChainID.ETHEREUM.value:
+            # Public Ethereum endpoints (rate-limited but free)
+            providers.append("https://eth.llamarpc.com")
+            providers.append("https://rpc.ankr.com/eth")
+            providers.append("https://ethereum.publicnode.com")
         
         if not providers:
-            raise ValueError("No blockchain provider configured. Set INFURA_API_KEY, ALCHEMY_API_KEY, or QUICKNODE_URL")
+            raise ValueError("No blockchain provider configured. Set INFURA_API_KEY or ALCHEMY_API_KEY")
         
         return providers
     
