@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 from app.core.otc_analysis.utils.calculations import (
     sigmoid,
     weighted_average,
