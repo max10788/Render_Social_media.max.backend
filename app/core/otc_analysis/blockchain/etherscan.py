@@ -2,10 +2,13 @@ import requests
 import time
 from typing import List, Dict, Optional
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 class EtherscanAPI:
     """
-    Interface to Etherscan API (and BSCScan, Polygonscan, etc.)
+    Interface to Etherscan API V2 (and BSCScan, Polygonscan, etc.)
     Used for fetching transaction history, token transfers, contract info.
     """
     
@@ -33,9 +36,9 @@ class EtherscanAPI:
         return key
     
     def _get_base_url(self) -> str:
-        """Get base URL for API based on chain."""
+        """Get base URL for API based on chain - V2 for Ethereum."""
         urls = {
-            1: "https://api.etherscan.io/api",
+            1: "https://api.etherscan.io/v2/api",  # V2 for Ethereum
             56: "https://api.bscscan.com/api",
             137: "https://api.polygonscan.com/api",
             42161: "https://api.arbiscan.io/api",
@@ -59,27 +62,39 @@ class EtherscanAPI:
         
         params['apikey'] = self.api_key
         
+        # V2 API needs chainid parameter for Ethereum
+        if self.chain_id == 1:
+            params['chainid'] = '1'
+        
         try:
+            logger.info(f"🔍 Etherscan request: {params.get('action')} for {params.get('address', 'N/A')[:10]}...")
+            
             response = requests.get(self.base_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             
+            logger.info(f"📡 Etherscan response status: {data.get('status')} - {data.get('message')}")
+            
             if data['status'] == '1':
-                return data['result']
+                result = data['result']
+                if isinstance(result, list):
+                    logger.info(f"✅ Received {len(result)} items from Etherscan")
+                return result
             else:
-                # Don't log common errors (like "No transactions found")
                 error_msg = data.get('message', 'Unknown error')
                 if error_msg not in ['No transactions found', 'NOTOK']:
-                    logger.debug(f"Etherscan API: {error_msg}")
-                return None  # Return empty, not error
+                    logger.warning(f"⚠️  Etherscan API: {error_msg}")
+                else:
+                    logger.info(f"ℹ️  {error_msg}")
+                return None
         except requests.exceptions.Timeout:
-            logger.warning("Etherscan API timeout")
+            logger.error("❌ Etherscan API timeout")
             return None
         except requests.exceptions.RequestException as e:
-            logger.warning(f"Etherscan request failed: {e}")
+            logger.error(f"❌ Etherscan request failed: {e}")
             return None
         except Exception as e:
-            logger.debug(f"Etherscan error: {e}")
+            logger.error(f"❌ Etherscan error: {e}")
             return None
     
     def get_normal_transactions(
