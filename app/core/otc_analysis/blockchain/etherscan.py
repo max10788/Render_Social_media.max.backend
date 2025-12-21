@@ -67,10 +67,19 @@ class EtherscanAPI:
             if data['status'] == '1':
                 return data['result']
             else:
-                print(f"API error: {data.get('message', 'Unknown error')}")
-                return None
+                # Don't log common errors (like "No transactions found")
+                error_msg = data.get('message', 'Unknown error')
+                if error_msg not in ['No transactions found', 'NOTOK']:
+                    logger.debug(f"Etherscan API: {error_msg}")
+                return None  # Return empty, not error
+        except requests.exceptions.Timeout:
+            logger.warning("Etherscan API timeout")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Etherscan request failed: {e}")
+            return None
         except Exception as e:
-            print(f"Request error: {e}")
+            logger.debug(f"Etherscan error: {e}")
             return None
     
     def get_normal_transactions(
