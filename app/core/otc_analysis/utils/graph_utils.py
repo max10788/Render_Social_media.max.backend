@@ -1,20 +1,22 @@
-import networkx as nx
 from typing import List, Dict, Set, Tuple, Optional
 from collections import deque, defaultdict
+import networkx as nx
 
 def create_transaction_graph(transactions: List[Dict]) -> nx.DiGraph:
     """
     Create directed graph from transactions.
     Nodes are wallet addresses, edges are transactions.
+    
+    Handles None values for usd_value gracefully.
     """
     G = nx.DiGraph()
     
     for tx in transactions:
-        from_addr = tx['from_address']
-        to_addr = tx['to_address']
+        from_addr = tx.get('from_address')
+        to_addr = tx.get('to_address')
         
-        # Skip if to_address is None (contract creation)
-        if not to_addr:
+        # Skip if addresses are missing or to_address is None (contract creation)
+        if not from_addr or not to_addr:
             continue
         
         # Add nodes if they don't exist
@@ -24,21 +26,31 @@ def create_transaction_graph(transactions: List[Dict]) -> nx.DiGraph:
             G.add_node(to_addr, address=to_addr)
         
         # Get USD value, default to 0 if None
-        usd_value = tx.get('usd_value') or 0  # ← FIX: None wird zu 0
+        usd_value = tx.get('usd_value', 0)
+        if usd_value is None:
+            usd_value = 0
         
         # Add or update edge
         if G.has_edge(from_addr, to_addr):
+            # Increment weight
             G[from_addr][to_addr]['weight'] += 1
             
-            # Safe addition - handle None values
-            current_value = G[from_addr][to_addr].get('total_value', 0) or 0  # ← FIX
+            # Add to total value (handle None)
+            current_value = G[from_addr][to_addr].get('total_value', 0)
+            if current_value is None:
+                current_value = 0
             G[from_addr][to_addr]['total_value'] = current_value + usd_value
+            
+            # Update last transaction timestamp
+            if tx.get('timestamp'):
+                G[from_addr][to_addr]['last_tx'] = tx['timestamp']
         else:
+            # Create new edge
             G.add_edge(
                 from_addr,
                 to_addr,
                 weight=1,
-                total_value=usd_value,  # ← Already safe (0 if None)
+                total_value=usd_value,
                 first_tx=tx.get('timestamp'),
                 last_tx=tx.get('timestamp')
             )
