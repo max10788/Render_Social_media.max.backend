@@ -1,9 +1,15 @@
-from fastapi import APIRouter, HTTPException, Query, Depends
-from typing import List, Optional
-from datetime import datetime
-import logging
-from pydantic import BaseModel
+"""
+Complete OTC Analysis API Endpoints
+Combines Phase 1 and Phase 2 endpoints into a single file.
+"""
 
+from fastapi import APIRouter, HTTPException, Query, Depends, Header
+from typing import List, Optional
+from datetime import datetime, timedelta
+from pydantic import BaseModel
+import logging
+
+# Validators
 from app.core.otc_analysis.api.validators import (
     ScanRangeRequest,
     WalletProfileRequest,
@@ -11,16 +17,34 @@ from app.core.otc_analysis.api.validators import (
     validate_ethereum_address,
     validate_block_range
 )
+
+# Detection Services
 from app.core.otc_analysis.detection.otc_detector import OTCDetector
 from app.core.otc_analysis.detection.wallet_profiler import WalletProfiler
 from app.core.otc_analysis.detection.flow_tracer import FlowTracer
+
+# Blockchain Services
 from app.core.otc_analysis.blockchain.node_provider import NodeProvider
 from app.core.otc_analysis.blockchain.block_scanner import BlockScanner
 from app.core.otc_analysis.blockchain.transaction_extractor import TransactionExtractor
 from app.core.otc_analysis.blockchain.etherscan import EtherscanAPI
+
+# Data Sources
 from app.core.otc_analysis.data_sources.price_oracle import PriceOracle
 from app.core.otc_analysis.data_sources.otc_desks import OTCDeskRegistry
 from app.core.otc_analysis.data_sources.wallet_labels import WalletLabelingService
+
+# Analysis Services (Phase 2)
+from app.core.otc_analysis.analysis.statistics_service import StatisticsService
+from app.core.otc_analysis.analysis.graph_builder import GraphBuilderService
+from app.core.otc_analysis.analysis.network_graph import NetworkAnalysisService
+
+# Database Models (Phase 2)
+from app.core.otc_analysis.models.wallet import Wallet
+from app.core.otc_analysis.models.watchlist import WatchlistItem
+from app.core.otc_analysis.models.alert import Alert
+
+# Utils
 from app.core.otc_analysis.utils.cache import CacheManager
 
 # Configure logging
@@ -33,7 +57,11 @@ logger = logging.getLogger(__name__)
 # Create router
 router = APIRouter(prefix="/api/otc", tags=["OTC Analysis"])
 
-# Initialize services (in production, use dependency injection)
+# ============================================================================
+# SERVICE INITIALIZATION
+# ============================================================================
+
+# Core services
 cache_manager = CacheManager()
 otc_registry = OTCDeskRegistry(cache_manager)
 labeling_service = WalletLabelingService(cache_manager)
@@ -48,6 +76,71 @@ price_oracle = PriceOracle(cache_manager)
 transaction_extractor = TransactionExtractor(node_provider, etherscan)
 block_scanner = BlockScanner(node_provider, chain_id=1)
 
+# Phase 2 services
+statistics_service = StatisticsService(cache_manager)
+graph_builder = GraphBuilderService(cache_manager)
+
+# ============================================================================
+# DEPENDENCIES
+# ============================================================================
+
+def get_db():
+    """
+    Database session dependency.
+    
+    IMPORTANT: Replace this with your actual database session management.
+    
+    Example for SQLAlchemy:
+    from app.database import SessionLocal
+    
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+    """
+    raise HTTPException(
+        status_code=501,
+        detail="Database not configured. Implement get_db() dependency."
+    )
+
+def get_current_user(authorization: Optional[str] = Header(None)):
+    """
+    Get current user from JWT token.
+    
+    IMPORTANT: Replace this with your actual authentication.
+    
+    Example JWT validation:
+    from jose import jwt
+    
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    try:
+        token = authorization.replace("Bearer ", "")
+        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        user_id = payload.get("sub")
+        return user_id
+    except:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    """
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    # For development: return mock user
+    return "user_123"
+
+# ============================================================================
+# REQUEST MODELS
+# ============================================================================
+
+class WatchlistAddRequest(BaseModel):
+    address: str
+    label: Optional[str] = None
+
+# ============================================================================
+# PHASE 1 ENDPOINTS - CORE OTC DETECTION
+# ============================================================================
 
 @router.post("/scan/range")
 async def scan_block_range(request: ScanRangeRequest):
@@ -60,7 +153,7 @@ async def scan_block_range(request: ScanRangeRequest):
     {
         "from_block": 12000000,
         "to_block": 12001000,
-        "tokens": ["0x..."],  // optional
+        "tokens": ["0x..."],
         "min_usd_value": 100000,
         "exclude_exchanges": true
     }
@@ -68,10 +161,8 @@ async def scan_block_range(request: ScanRangeRequest):
     logger.info(f"🔍 Starting OTC scan: blocks {request.from_block} to {request.to_block}")
     
     try:
-        # Validate block range
         validate_block_range(request.from_block, request.to_block)
         
-        # Scan blocks
         logger.info(f"📦 Scanning blocks...")
         transactions = block_scanner.scan_range(
             from_block=request.from_block,
@@ -79,14 +170,12 @@ async def scan_block_range(request: ScanRangeRequest):
         )
         logger.info(f"✅ Found {len(transactions)} transactions")
         
-        # Enrich with USD values
         logger.info(f"💰 Enriching with USD values...")
         transactions = transaction_extractor.enrich_with_usd_value(
             transactions,
             price_oracle
         )
         
-        # Filter by value
         if request.min_usd_value:
             transactions = transaction_extractor.filter_by_value(
                 transactions,
@@ -94,7 +183,6 @@ async def scan_block_range(request: ScanRangeRequest):
             )
             logger.info(f"💵 Filtered to {len(transactions)} high-value transactions")
         
-        # Exclude exchanges if requested
         if request.exclude_exchanges:
             logger.info(f"🏦 Filtering out exchange addresses...")
             exchange_addresses = set()
@@ -111,7 +199,6 @@ async def scan_block_range(request: ScanRangeRequest):
             ]
             logger.info(f"✅ {len(transactions)} transactions after exchange filter")
         
-        # Detect OTC activity
         logger.info(f"🎯 Running OTC detection...")
         result = otc_detector.scan_block_range(transactions, request.min_usd_value)
         
@@ -133,7 +220,7 @@ async def scan_block_range(request: ScanRangeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/api/otc/wallet/{address}/profile")
+@router.get("/wallet/{address}/profile")
 async def get_wallet_profile(
     address: str,
     include_network_metrics: bool = Query(True),
@@ -147,16 +234,13 @@ async def get_wallet_profile(
     logger.info(f"👤 Fetching profile for {address[:10]}...")
     
     try:
-        # Validate address
         address = validate_ethereum_address(address)
         
-        # Check cache first
         cached_profile = cache_manager.get_wallet_profile(address)
         if cached_profile:
             logger.info(f"✅ Profile loaded from cache")
             return {"success": True, "data": cached_profile, "cached": True}
         
-        # Fetch transactions
         logger.info(f"📡 Fetching transactions from Etherscan...")
         transactions = transaction_extractor.extract_wallet_transactions(
             address,
@@ -165,7 +249,6 @@ async def get_wallet_profile(
         )
         logger.info(f"✅ Found {len(transactions)} transactions")
         
-        # Log transaction breakdown
         normal_txs = [tx for tx in transactions if tx.get('tx_type') == 'normal']
         internal_txs = [tx for tx in transactions if tx.get('tx_type') == 'internal']
         token_txs = [tx for tx in transactions if tx.get('tx_type') == 'erc20']
@@ -175,14 +258,12 @@ async def get_wallet_profile(
         logger.info(f"   • Internal: {len(internal_txs)}")
         logger.info(f"   • ERC20 Tokens: {len(token_txs)}")
         
-        # Enrich with USD values
         logger.info(f"💰 Enriching with prices...")
         transactions = transaction_extractor.enrich_with_usd_value(
             transactions,
             price_oracle
         )
         
-        # Log enrichment results
         enriched_txs = [tx for tx in transactions if tx.get('usd_value') is not None]
         if enriched_txs:
             total_value = sum(tx['usd_value'] for tx in enriched_txs)
@@ -195,7 +276,6 @@ async def get_wallet_profile(
             logger.info(f"   • Largest Tx: ${max_tx['usd_value']:,.2f}")
             logger.info(f"   • Enriched: {len(enriched_txs)}/{len(transactions)}")
         
-        # Get labels
         labels = None
         if include_labels:
             logger.info(f"🏷️  Fetching wallet labels...")
@@ -207,11 +287,9 @@ async def get_wallet_profile(
                 logger.info(f"   • Name: {labels.get('entity_name', 'N/A')}")
                 logger.info(f"   • Labels: {', '.join(labels.get('labels', []))}")
         
-        # Create profile
         logger.info(f"📊 Building wallet profile...")
         profile = wallet_profiler.create_profile(address, transactions, labels)
         
-        # Log profile metrics
         logger.info(f"👤 Wallet Profile Metrics:")
         logger.info(f"   • Total Transactions: {profile.get('total_transactions', 0)}")
         logger.info(f"   • Transaction Frequency: {profile.get('transaction_frequency', 0):.2f} tx/day")
@@ -220,7 +298,6 @@ async def get_wallet_profile(
         logger.info(f"   • Has DeFi Interactions: {profile.get('has_defi_interactions', False)}")
         logger.info(f"   • Has DEX Swaps: {profile.get('has_dex_swaps', False)}")
         
-        # Calculate OTC probability
         otc_probability = wallet_profiler.calculate_otc_probability(profile)
         profile['otc_probability'] = otc_probability
         
@@ -230,11 +307,8 @@ async def get_wallet_profile(
         logger.info(f"   • High Value: {'✅' if profile.get('avg_transaction_usd', 0) > 100000 else '❌'}")
         logger.info(f"   • No DeFi: {'✅' if not profile.get('has_defi_interactions', True) else '❌'}")
         
-        # Network metrics if requested
         if include_network_metrics and len(transactions) > 0:
             logger.info(f"🕸️  Calculating network metrics...")
-            from app.core.otc_analysis.analysis.network_graph import NetworkAnalysisService
-            
             network_analyzer = NetworkAnalysisService()
             network_analyzer.build_graph(transactions)
             network_metrics = network_analyzer.analyze_wallet_centrality(address)
@@ -248,11 +322,10 @@ async def get_wallet_profile(
             logger.info(f"   • Is Hub: {'✅' if network_metrics.get('is_hub', False) else '❌'}")
             logger.info(f"   • Hub Score: {network_metrics.get('hub_score', 0):.4f}")
         
-        # Cache the profile
         cache_manager.cache_wallet_profile(address, profile)
         
         logger.info(f"✅ Profile complete - OTC probability: {otc_probability:.2%}")
-        logger.info(f"=" * 80)  # Separator for readability
+        logger.info(f"=" * 80)
         
         return {
             "success": True,
@@ -263,6 +336,7 @@ async def get_wallet_profile(
     except Exception as e:
         logger.error(f"❌ Profile fetch failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/flow/trace")
 async def trace_flow(request: FlowTraceRequest):
@@ -282,29 +356,24 @@ async def trace_flow(request: FlowTraceRequest):
     logger.info(f"🔄 Tracing flow: {request.source_address[:10]}... → {request.target_address[:10]}...")
     
     try:
-        # Validate addresses
         source = validate_ethereum_address(request.source_address)
         target = validate_ethereum_address(request.target_address)
         
-        # Fetch transactions for both addresses
         logger.info(f"📡 Fetching transaction data...")
         
         source_txs = transaction_extractor.extract_wallet_transactions(source)
         target_txs = transaction_extractor.extract_wallet_transactions(target)
         
-        # Combine and deduplicate
         all_transactions = {tx['tx_hash']: tx for tx in source_txs + target_txs}
         transactions = list(all_transactions.values())
         
         logger.info(f"✅ Loaded {len(transactions)} transactions")
         
-        # Enrich with USD values
         transactions = transaction_extractor.enrich_with_usd_value(
             transactions,
             price_oracle
         )
         
-        # Trace flow
         logger.info(f"🎯 Tracing flow path...")
         result = flow_tracer.trace_flow(
             source,
@@ -398,17 +467,14 @@ async def analyze_transaction(tx_hash: str):
     logger.info(f"🔍 Analyzing transaction: {tx_hash[:16]}...")
     
     try:
-        # Fetch transaction details
         logger.info(f"📡 Fetching transaction from blockchain...")
         tx_data = node_provider.get_transaction(tx_hash)
         
         if not tx_data:
             raise HTTPException(status_code=404, detail="Transaction not found")
         
-        # Get receipt for additional info
         receipt = node_provider.get_transaction_receipt(tx_hash)
         
-        # Format transaction
         from_address = tx_data['from']
         to_address = tx_data.get('to')
         
@@ -422,7 +488,6 @@ async def analyze_transaction(tx_hash: str):
                 }
             }
         
-        # Build transaction dict
         transaction = {
             'tx_hash': tx_hash,
             'from_address': from_address,
@@ -430,29 +495,26 @@ async def analyze_transaction(tx_hash: str):
             'value': str(tx_data['value']),
             'value_decimal': node_provider.from_wei(tx_data['value']),
             'block_number': tx_data['blockNumber'],
-            'timestamp': datetime.now(),  # Would need block timestamp
+            'timestamp': datetime.now(),
             'gas_used': receipt.get('gasUsed'),
             'is_contract_interaction': node_provider.is_contract(to_address)
         }
         
-        # Get price and calculate USD value
         logger.info(f"💰 Fetching ETH price...")
-        eth_price = price_oracle.get_current_price(None)  # None = ETH
+        eth_price = price_oracle.get_current_price(None)
         if eth_price:
             transaction['usd_value'] = transaction['value_decimal'] * eth_price
             logger.info(f"💵 Transaction value: ${transaction['usd_value']:,.2f}")
         
-        # Get wallet profile
         logger.info(f"👤 Building wallet profile...")
         wallet_txs = transaction_extractor.extract_wallet_transactions(from_address)
         wallet_profile = wallet_profiler.create_profile(from_address, wallet_txs)
         
-        # Detect OTC
         logger.info(f"🎯 Running OTC detection...")
         result = otc_detector.detect_otc_transaction(
             transaction,
             wallet_profile,
-            wallet_txs[:100]  # Last 100 transactions
+            wallet_txs[:100]
         )
         
         logger.info(f"✅ Analysis complete - Confidence: {result['confidence_score']:.1f}")
@@ -470,7 +532,7 @@ async def analyze_transaction(tx_hash: str):
 
 
 @router.get("/stats")
-async def get_statistics():
+async def get_statistics_old():
     """
     Get overall OTC detection statistics.
     
@@ -480,8 +542,6 @@ async def get_statistics():
     
     try:
         stats = otc_detector.get_detection_stats()
-        
-        # Add cache stats
         cache_stats = cache_manager.get_stats()
         
         return {
@@ -498,6 +558,354 @@ async def get_statistics():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# PHASE 2 ENDPOINTS - VISUALIZATION & MONITORING
+# ============================================================================
+
+@router.get("/statistics")
+async def get_statistics(
+    from_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    to_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    entity_type: Optional[str] = Query(None, description="Filter by entity type"),
+    db = Depends(get_db)
+):
+    """
+    Get OTC statistics for OTCMetricsOverview component.
+    
+    GET /api/otc/statistics?from_date=2024-11-21&to_date=2024-12-21&entity_type=otc_desk
+    
+    Returns:
+    {
+        "total_volume_usd": 450000000,
+        "active_wallets": 234,
+        "avg_transfer_size": 1200000,
+        "avg_confidence_score": 78.5,
+        "volume_change_24h": 12.5,
+        "wallets_change_24h": 5.2,
+        "avg_size_change_24h": -3.1,
+        "confidence_change_24h": 2.3,
+        "last_updated": "2024-12-21T14:30:00Z"
+    }
+    """
+    logger.info(f"📊 GET /statistics: {from_date} to {to_date}")
+    
+    try:
+        from_dt = datetime.fromisoformat(from_date)
+        to_dt = datetime.fromisoformat(to_date)
+        
+        if to_dt < from_dt:
+            raise HTTPException(status_code=400, detail="to_date must be after from_date")
+        
+        if (to_dt - from_dt).days > 365:
+            raise HTTPException(status_code=400, detail="Date range cannot exceed 1 year")
+        
+        stats = statistics_service.get_statistics(
+            db=db,
+            from_date=from_dt,
+            to_date=to_dt,
+            entity_type=entity_type
+        )
+        
+        logger.info(f"✅ Statistics: {stats['active_wallets']} wallets, ${stats['total_volume_usd']:,.0f}")
+        
+        return stats
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ Failed to get statistics: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/network/graph")
+async def get_network_graph(
+    from_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
+    to_date: str = Query(..., description="End date (YYYY-MM-DD)"),
+    min_confidence: float = Query(0, ge=0, le=100, description="Minimum confidence score"),
+    min_transfer_size: float = Query(0, ge=0, description="Minimum transfer size (USD)"),
+    entity_types: Optional[str] = Query(None, description="Comma-separated entity types"),
+    tokens: Optional[str] = Query(None, description="Comma-separated token symbols"),
+    max_nodes: int = Query(500, ge=1, le=1000, description="Maximum nodes to return"),
+    db = Depends(get_db)
+):
+    """
+    Get network graph with ALL Phase 2 visualization data.
+    
+    GET /api/otc/network/graph?from_date=2024-11-21&to_date=2024-12-21&min_confidence=70&max_nodes=500
+    
+    Returns:
+    {
+        "nodes": [...],
+        "edges": [...],
+        "sankey_data": {...},
+        "time_heatmap": {...},
+        "timeline_data": {...},
+        "distributions": {...},
+        "metadata": {...}
+    }
+    """
+    logger.info(f"🌐 GET /network/graph: {from_date} to {to_date}, max_nodes={max_nodes}")
+    
+    try:
+        from_dt = datetime.fromisoformat(from_date)
+        to_dt = datetime.fromisoformat(to_date)
+        
+        entity_type_list = None
+        if entity_types:
+            entity_type_list = [t.strip() for t in entity_types.split(',')]
+        
+        token_list = None
+        if tokens:
+            token_list = [t.strip().upper() for t in tokens.split(',')]
+        
+        graph_data = graph_builder.build_complete_graph(
+            db=db,
+            from_date=from_dt,
+            to_date=to_dt,
+            min_confidence=min_confidence,
+            min_transfer_size=min_transfer_size,
+            entity_types=entity_type_list,
+            tokens=token_list,
+            max_nodes=max_nodes
+        )
+        
+        logger.info(f"✅ Graph: {len(graph_data['nodes'])} nodes, {len(graph_data['edges'])} edges")
+        
+        return graph_data
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+    except Exception as e:
+        logger.error(f"❌ Failed to build graph: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/watchlist")
+async def get_watchlist(
+    user_id: str = Depends(get_current_user),
+    db = Depends(get_db)
+):
+    """
+    Get user's watchlist.
+    
+    GET /api/otc/watchlist
+    Authorization: Bearer <token>
+    
+    Returns:
+    {
+        "watchlist": [
+            {
+                "id": 1,
+                "address": "0x...",
+                "label": "My Custom Label",
+                "entity_type": "otc_desk",
+                "entity_name": "Wintermute",
+                "added_at": "2024-12-15T10:00:00Z"
+            }
+        ]
+    }
+    """
+    logger.info(f"📋 GET /watchlist for user {user_id[:10]}...")
+    
+    try:
+        watchlist_items = db.query(WatchlistItem).filter(
+            WatchlistItem.user_id == user_id
+        ).order_by(
+            WatchlistItem.added_at.desc()
+        ).all()
+        
+        logger.info(f"✅ Found {len(watchlist_items)} watchlist items")
+        
+        return {
+            "watchlist": [item.to_dict() for item in watchlist_items]
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to get watchlist: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/watchlist/add")
+async def add_to_watchlist(
+    request: WatchlistAddRequest,
+    user_id: str = Depends(get_current_user),
+    db = Depends(get_db)
+):
+    """
+    Add address to watchlist.
+    
+    POST /api/otc/watchlist/add
+    Authorization: Bearer <token>
+    
+    Body:
+    {
+        "address": "0x...",
+        "label": "My Custom Label"
+    }
+    """
+    logger.info(f"➕ POST /watchlist/add: {request.address[:10]}...")
+    
+    try:
+        address = validate_ethereum_address(request.address)
+        
+        existing = db.query(WatchlistItem).filter(
+            WatchlistItem.user_id == user_id,
+            WatchlistItem.address == address
+        ).first()
+        
+        if existing:
+            raise HTTPException(status_code=400, detail="Address already in watchlist")
+        
+        wallet = db.query(Wallet).filter(Wallet.address == address).first()
+        
+        watchlist_item = WatchlistItem(
+            user_id=user_id,
+            address=address,
+            label=request.label,
+            entity_type=wallet.entity_type if wallet else None,
+            entity_name=wallet.entity_name if wallet else None,
+            added_at=datetime.utcnow()
+        )
+        
+        db.add(watchlist_item)
+        db.commit()
+        db.refresh(watchlist_item)
+        
+        logger.info(f"✅ Added {address[:10]}... to watchlist")
+        
+        return {
+            "success": True,
+            "message": "Address added to watchlist",
+            "watchlist_item": watchlist_item.to_dict()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Failed to add to watchlist: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/watchlist/{address}")
+async def remove_from_watchlist(
+    address: str,
+    user_id: str = Depends(get_current_user),
+    db = Depends(get_db)
+):
+    """
+    Remove address from watchlist.
+    
+    DELETE /api/otc/watchlist/0x...
+    Authorization: Bearer <token>
+    """
+    logger.info(f"➖ DELETE /watchlist/{address[:10]}...")
+    
+    try:
+        address = validate_ethereum_address(address)
+        
+        item = db.query(WatchlistItem).filter(
+            WatchlistItem.user_id == user_id,
+            WatchlistItem.address == address
+        ).first()
+        
+        if not item:
+            raise HTTPException(status_code=404, detail="Address not in watchlist")
+        
+        db.delete(item)
+        db.commit()
+        
+        logger.info(f"✅ Removed {address[:10]}... from watchlist")
+        
+        return {
+            "success": True,
+            "message": "Address removed from watchlist"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Failed to remove from watchlist: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/alerts")
+async def get_alerts(
+    limit: int = Query(50, ge=1, le=100, description="Max alerts to return"),
+    user_id: str = Depends(get_current_user),
+    db = Depends(get_db)
+):
+    """
+    Get alerts for user.
+    
+    GET /api/otc/alerts?limit=50
+    Authorization: Bearer <token>
+    """
+    logger.info(f"🔔 GET /alerts (limit={limit}) for user {user_id[:10]}...")
+    
+    try:
+        alerts = db.query(Alert).filter(
+            Alert.is_dismissed == False
+        ).order_by(
+            Alert.created_at.desc()
+        ).limit(limit).all()
+        
+        logger.info(f"✅ Found {len(alerts)} alerts")
+        
+        return {
+            "alerts": [alert.to_dict() for alert in alerts]
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to get alerts: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/alerts/{alert_id}/dismiss")
+async def dismiss_alert(
+    alert_id: int,
+    user_id: str = Depends(get_current_user),
+    db = Depends(get_db)
+):
+    """
+    Dismiss an alert.
+    
+    POST /api/otc/alerts/123/dismiss
+    Authorization: Bearer <token>
+    """
+    logger.info(f"✖️  POST /alerts/{alert_id}/dismiss")
+    
+    try:
+        alert = db.query(Alert).filter(Alert.id == alert_id).first()
+        
+        if not alert:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        
+        alert.is_dismissed = True
+        alert.dismissed_at = datetime.utcnow()
+        
+        db.commit()
+        
+        logger.info(f"✅ Alert {alert_id} dismissed")
+        
+        return {
+            "success": True,
+            "message": "Alert dismissed"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ Failed to dismiss alert: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# UTILITY ENDPOINTS
+# ============================================================================
+
 @router.get("/health")
 async def health_check():
     """
@@ -508,10 +916,8 @@ async def health_check():
     logger.info(f"🏥 Health check...")
     
     try:
-        # Check blockchain connection
         latest_block = node_provider.get_latest_block_number()
         
-        # Check cache connection
         cache_healthy = cache_manager.exists("health_check")
         cache_manager.set("health_check", True, ttl=60)
         
