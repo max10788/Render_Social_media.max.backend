@@ -3,6 +3,9 @@ from datetime import datetime
 from otc_analysis.blockchain.etherscan import EtherscanAPI
 from otc_analysis.blockchain.node_provider import NodeProvider
 
+
+logger = logging.getLogger(__name__)  # ← HINZUFÜGEN
+
 class TransactionExtractor:
     """
     Extracts and enriches transaction data from various sources.
