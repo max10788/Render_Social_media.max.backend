@@ -84,8 +84,11 @@ class PriceOracle:
             data = response.json()
             
             return data.get(token_id, {}).get('usd')
+        except requests.exceptions.Timeout:
+            logger.warning(f"CoinGecko timeout for {token_id}")
+            return None
         except Exception as e:
-            print(f"Error fetching current price for {token_id}: {e}")
+            logger.debug(f"Price fetch failed for {token_id}: {e}")
             return None
     
     def get_historical_price(
@@ -124,6 +127,7 @@ class PriceOracle:
         
         return price
     
+
     def _fetch_historical_price(self, token_id: str, date: str) -> Optional[float]:
         """Fetch historical price from CoinGecko."""
         self._rate_limit()
@@ -140,8 +144,11 @@ class PriceOracle:
             data = response.json()
             
             return data.get('market_data', {}).get('current_price', {}).get('usd')
+        except requests.exceptions.Timeout:
+            logger.warning(f"CoinGecko timeout for {token_id} on {date}")
+            return None
         except Exception as e:
-            print(f"Error fetching historical price for {token_id} on {date}: {e}")
+            logger.debug(f"Historical price fetch failed: {e}")
             return None
     
     def get_price_range(
