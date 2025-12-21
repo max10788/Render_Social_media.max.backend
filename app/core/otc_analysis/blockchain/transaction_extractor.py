@@ -2,7 +2,7 @@ from typing import List, Dict, Optional
 from datetime import datetime
 from otc_analysis.blockchain.etherscan import EtherscanAPI
 from otc_analysis.blockchain.node_provider import NodeProvider
-import logger
+import logging
 
 logger = logging.getLogger(__name__)  # ← HINZUFÜGEN
 
