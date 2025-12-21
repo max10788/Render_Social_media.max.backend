@@ -168,30 +168,43 @@ class TransactionExtractor:
     def enrich_with_usd_value(
         self,
         transactions: List[Dict],
-        price_oracle
+        price_oracle,
+        max_transactions: int = 100
     ) -> List[Dict]:
         """
         Add USD values to transactions using price oracle.
         
-        OPTIMIZED: Caches prices per day/token to avoid excessive API calls.
+        OPTIMIZED: 
+        - Only enriches most recent N transactions to avoid timeout
+        - Caches prices per day/token to avoid excessive API calls
         
         Args:
-            transactions: List of transaction dicts
+            transactions: List of transaction dicts (should be sorted by timestamp DESC)
             price_oracle: PriceOracle instance
+            max_transactions: Maximum number of transactions to enrich (default 100)
         
         Returns:
             Enriched transactions with usd_value field
         """
+        if not transactions:
+            return []
+        
+        # Split into transactions to enrich and skip
+        txs_to_enrich = transactions[:max_transactions]
+        remaining_txs = transactions[max_transactions:]
+        
+        logger.info(f"💰 Enriching top {len(txs_to_enrich)} of {len(transactions)} transactions...")
+        if remaining_txs:
+            logger.info(f"⏭️  Skipping {len(remaining_txs)} older transactions (set max_transactions higher to include)")
+        
         # Group transactions by date and token for batching
         price_cache = {}  # {(token, date): price}
-        
-        logger.info(f"💰 Enriching {len(transactions)} transactions with USD values...")
         
         enriched_count = 0
         cached_count = 0
         failed_count = 0
         
-        for tx in transactions:
+        for tx in txs_to_enrich:
             try:
                 token_address = tx.get('token_address')  # None for ETH
                 timestamp = tx['timestamp']
@@ -225,10 +238,15 @@ class TransactionExtractor:
                 tx['usd_value'] = None
                 failed_count += 1
         
-        logger.info(f"✅ Enriched {enriched_count} transactions ({cached_count} from cache, {failed_count} failed)")
-        logger.info(f"📊 Made {len(price_cache)} unique price API calls instead of {len(transactions)}")
+        # Set usd_value to None for remaining (non-enriched) transactions
+        for tx in remaining_txs:
+            tx['usd_value'] = None
         
-        return transactions
+        logger.info(f"✅ Enriched {enriched_count} transactions ({cached_count} from cache, {failed_count} failed)")
+        logger.info(f"📊 Made {len(price_cache)} unique price API calls instead of {len(txs_to_enrich)}")
+        
+        # Combine back together in original order
+        return txs_to_enrich + remaining_txs
     
     def filter_by_value(
         self,
