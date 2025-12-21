@@ -1,10 +1,10 @@
 from typing import List, Dict, Optional
 from datetime import datetime
-from otc_analysis.blockchain.etherscan import EtherscanAPI
-from otc_analysis.blockchain.node_provider import NodeProvider
+from app.core.otc_analysis.blockchain.etherscan import EtherscanAPI  # ← FIX
+from app.core.otc_analysis.blockchain.node_provider import NodeProvider  # ← FIX
 import logging
 
-logger = logging.getLogger(__name__)  # ← HINZUFÜGEN
+logger = logging.getLogger(__name__)
 
 class TransactionExtractor:
     """
@@ -40,7 +40,7 @@ class TransactionExtractor:
         all_txs = []
         
         # Get normal transactions
-        print(f"Fetching normal transactions for {address[:10]}...")
+        logger.info(f"Fetching normal transactions for {address[:10]}...")
         normal_txs = self.etherscan.get_normal_transactions(
             address, start_block, end_block
         )
@@ -48,7 +48,7 @@ class TransactionExtractor:
         
         # Get internal transactions
         if include_internal:
-            print(f"Fetching internal transactions...")
+            logger.info(f"Fetching internal transactions...")
             internal_txs = self.etherscan.get_internal_transactions(
                 address, start_block, end_block
             )
@@ -56,7 +56,7 @@ class TransactionExtractor:
         
         # Get ERC20 token transfers
         if include_tokens:
-            print(f"Fetching token transfers...")
+            logger.info(f"Fetching token transfers...")
             token_txs = self.etherscan.get_erc20_transfers(
                 address=address,
                 start_block=start_block,
@@ -67,7 +67,7 @@ class TransactionExtractor:
         # Sort by timestamp
         all_txs.sort(key=lambda x: x['timestamp'], reverse=True)
         
-        print(f"✓ Extracted {len(all_txs)} transactions for {address[:10]}...")
+        logger.info(f"✓ Extracted {len(all_txs)} transactions for {address[:10]}...")
         return all_txs
     
     def _format_normal_transactions(self, txs: List[Dict]) -> List[Dict]:
@@ -93,7 +93,7 @@ class TransactionExtractor:
                     'tx_type': 'normal'
                 })
             except Exception as e:
-                print(f"Error formatting transaction {tx.get('hash')}: {e}")
+                logger.debug(f"Error formatting transaction {tx.get('hash')}: {e}")
                 continue
         
         return formatted
@@ -125,7 +125,7 @@ class TransactionExtractor:
                     'tx_type': 'internal'
                 })
             except Exception as e:
-                print(f"Error formatting internal transaction: {e}")
+                logger.debug(f"Error formatting internal transaction: {e}")
                 continue
         
         return formatted
@@ -160,7 +160,7 @@ class TransactionExtractor:
                     'tx_type': 'erc20'
                 })
             except Exception as e:
-                print(f"Error formatting token transaction: {e}")
+                logger.debug(f"Error formatting token transaction: {e}")
                 continue
         
         return formatted
