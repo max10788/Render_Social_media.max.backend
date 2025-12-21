@@ -14,7 +14,7 @@ class PriceOracle:
     def __init__(self, cache_manager: Optional[CacheManager] = None):
         self.cache = cache_manager
         self.coingecko_base = "https://api.coingecko.com/api/v3"
-        self.rate_limit_delay = 1.2  # CoinGecko free tier: 50 calls/min
+        self.rate_limit_delay = 1.5  # ← Von 1.2 auf 1.5 erhöhen (40 calls/min statt 50)
         self.last_request_time = 0
         
         # Token address to CoinGecko ID mapping
