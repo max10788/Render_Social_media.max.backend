@@ -13,22 +13,32 @@ def create_transaction_graph(transactions: List[Dict]) -> nx.DiGraph:
         from_addr = tx['from_address']
         to_addr = tx['to_address']
         
+        # Skip if to_address is None (contract creation)
+        if not to_addr:
+            continue
+        
         # Add nodes if they don't exist
         if not G.has_node(from_addr):
             G.add_node(from_addr, address=from_addr)
         if not G.has_node(to_addr):
             G.add_node(to_addr, address=to_addr)
         
+        # Get USD value, default to 0 if None
+        usd_value = tx.get('usd_value') or 0  # ← FIX: None wird zu 0
+        
         # Add or update edge
         if G.has_edge(from_addr, to_addr):
             G[from_addr][to_addr]['weight'] += 1
-            G[from_addr][to_addr]['total_value'] += tx.get('usd_value', 0)
+            
+            # Safe addition - handle None values
+            current_value = G[from_addr][to_addr].get('total_value', 0) or 0  # ← FIX
+            G[from_addr][to_addr]['total_value'] = current_value + usd_value
         else:
             G.add_edge(
                 from_addr,
                 to_addr,
                 weight=1,
-                total_value=tx.get('usd_value', 0),
+                total_value=usd_value,  # ← Already safe (0 if None)
                 first_tx=tx.get('timestamp'),
                 last_tx=tx.get('timestamp')
             )
