@@ -133,7 +133,7 @@ async def scan_block_range(request: ScanRangeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/wallet/{address}/profile")
+@router.get("/api/otc/wallet/{address}/profile")
 async def get_wallet_profile(
     address: str,
     include_network_metrics: bool = Query(True),
@@ -165,6 +165,16 @@ async def get_wallet_profile(
         )
         logger.info(f"✅ Found {len(transactions)} transactions")
         
+        # Log transaction breakdown
+        normal_txs = [tx for tx in transactions if tx.get('tx_type') == 'normal']
+        internal_txs = [tx for tx in transactions if tx.get('tx_type') == 'internal']
+        token_txs = [tx for tx in transactions if tx.get('tx_type') == 'erc20']
+        
+        logger.info(f"📊 Transaction Breakdown:")
+        logger.info(f"   • Normal: {len(normal_txs)}")
+        logger.info(f"   • Internal: {len(internal_txs)}")
+        logger.info(f"   • ERC20 Tokens: {len(token_txs)}")
+        
         # Enrich with USD values
         logger.info(f"💰 Enriching with prices...")
         transactions = transaction_extractor.enrich_with_usd_value(
@@ -172,19 +182,53 @@ async def get_wallet_profile(
             price_oracle
         )
         
+        # Log enrichment results
+        enriched_txs = [tx for tx in transactions if tx.get('usd_value') is not None]
+        if enriched_txs:
+            total_value = sum(tx['usd_value'] for tx in enriched_txs)
+            avg_value = total_value / len(enriched_txs)
+            max_tx = max(enriched_txs, key=lambda x: x['usd_value'])
+            
+            logger.info(f"💵 Transaction Values:")
+            logger.info(f"   • Total Volume: ${total_value:,.2f}")
+            logger.info(f"   • Average Value: ${avg_value:,.2f}")
+            logger.info(f"   • Largest Tx: ${max_tx['usd_value']:,.2f}")
+            logger.info(f"   • Enriched: {len(enriched_txs)}/{len(transactions)}")
+        
         # Get labels
         labels = None
         if include_labels:
             logger.info(f"🏷️  Fetching wallet labels...")
             labels = labeling_service.get_wallet_labels(address)
+            
+            if labels and labels.get('entity_type') != 'unknown':
+                logger.info(f"🏢 Entity Identified:")
+                logger.info(f"   • Type: {labels.get('entity_type')}")
+                logger.info(f"   • Name: {labels.get('entity_name', 'N/A')}")
+                logger.info(f"   • Labels: {', '.join(labels.get('labels', []))}")
         
         # Create profile
         logger.info(f"📊 Building wallet profile...")
         profile = wallet_profiler.create_profile(address, transactions, labels)
         
+        # Log profile metrics
+        logger.info(f"👤 Wallet Profile Metrics:")
+        logger.info(f"   • Total Transactions: {profile.get('total_transactions', 0)}")
+        logger.info(f"   • Transaction Frequency: {profile.get('transaction_frequency', 0):.2f} tx/day")
+        logger.info(f"   • Avg Transaction: ${profile.get('avg_transaction_usd', 0):,.2f}")
+        logger.info(f"   • Unique Counterparties: {profile.get('unique_counterparties', 0)}")
+        logger.info(f"   • Has DeFi Interactions: {profile.get('has_defi_interactions', False)}")
+        logger.info(f"   • Has DEX Swaps: {profile.get('has_dex_swaps', False)}")
+        
         # Calculate OTC probability
         otc_probability = wallet_profiler.calculate_otc_probability(profile)
         profile['otc_probability'] = otc_probability
+        
+        logger.info(f"🎯 OTC Probability Calculation:")
+        logger.info(f"   • Base Score: {otc_probability:.2%}")
+        logger.info(f"   • Low Frequency: {'✅' if profile.get('transaction_frequency', 0) < 0.5 else '❌'}")
+        logger.info(f"   • High Value: {'✅' if profile.get('avg_transaction_usd', 0) > 100000 else '❌'}")
+        logger.info(f"   • No DeFi: {'✅' if not profile.get('has_defi_interactions', True) else '❌'}")
         
         # Network metrics if requested
         if include_network_metrics and len(transactions) > 0:
@@ -196,11 +240,19 @@ async def get_wallet_profile(
             network_metrics = network_analyzer.analyze_wallet_centrality(address)
             
             profile['network_metrics'] = network_metrics
+            
+            logger.info(f"🌐 Network Metrics:")
+            logger.info(f"   • Betweenness Centrality: {network_metrics.get('betweenness_centrality', 0):.4f}")
+            logger.info(f"   • Degree Centrality: {network_metrics.get('degree_centrality', 0):.4f}")
+            logger.info(f"   • Clustering Coefficient: {network_metrics.get('clustering_coefficient', 0):.4f}")
+            logger.info(f"   • Is Hub: {'✅' if network_metrics.get('is_hub', False) else '❌'}")
+            logger.info(f"   • Hub Score: {network_metrics.get('hub_score', 0):.4f}")
         
         # Cache the profile
         cache_manager.cache_wallet_profile(address, profile)
         
         logger.info(f"✅ Profile complete - OTC probability: {otc_probability:.2%}")
+        logger.info(f"=" * 80)  # Separator for readability
         
         return {
             "success": True,
@@ -211,7 +263,6 @@ async def get_wallet_profile(
     except Exception as e:
         logger.error(f"❌ Profile fetch failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/flow/trace")
 async def trace_flow(request: FlowTraceRequest):
