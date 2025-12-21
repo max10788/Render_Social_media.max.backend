@@ -173,6 +173,8 @@ class TransactionExtractor:
         """
         Add USD values to transactions using price oracle.
         
+        OPTIMIZED: Caches prices per day/token to avoid excessive API calls.
+        
         Args:
             transactions: List of transaction dicts
             price_oracle: PriceOracle instance
@@ -180,26 +182,51 @@ class TransactionExtractor:
         Returns:
             Enriched transactions with usd_value field
         """
+        # Group transactions by date and token for batching
+        price_cache = {}  # {(token, date): price}
+        
+        logger.info(f"💰 Enriching {len(transactions)} transactions with USD values...")
+        
+        enriched_count = 0
+        cached_count = 0
+        failed_count = 0
+        
         for tx in transactions:
             try:
                 token_address = tx.get('token_address')  # None for ETH
                 timestamp = tx['timestamp']
                 amount = tx['value_decimal']
                 
-                # Get historical price
-                price_usd = price_oracle.get_historical_price(
-                    token_address,
-                    timestamp
-                )
+                # Create cache key (token + date)
+                date_key = timestamp.strftime('%Y-%m-%d') if hasattr(timestamp, 'strftime') else None
+                cache_key = (token_address or 'ETH', date_key)
+                
+                # Check cache first
+                if cache_key in price_cache:
+                    price_usd = price_cache[cache_key]
+                    cached_count += 1
+                else:
+                    # Fetch price (only once per token per day)
+                    price_usd = price_oracle.get_historical_price(
+                        token_address,
+                        timestamp
+                    )
+                    price_cache[cache_key] = price_usd
                 
                 if price_usd:
                     tx['usd_value'] = amount * price_usd
+                    enriched_count += 1
                 else:
                     tx['usd_value'] = None
+                    failed_count += 1
                     
             except Exception as e:
-                print(f"Error enriching transaction {tx.get('tx_hash')}: {e}")
+                logger.debug(f"Error enriching transaction {tx.get('tx_hash')}: {e}")
                 tx['usd_value'] = None
+                failed_count += 1
+        
+        logger.info(f"✅ Enriched {enriched_count} transactions ({cached_count} from cache, {failed_count} failed)")
+        logger.info(f"📊 Made {len(price_cache)} unique price API calls instead of {len(transactions)}")
         
         return transactions
     
