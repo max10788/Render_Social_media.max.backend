@@ -35,7 +35,7 @@ class Alert(Base):
     confidence_score = Column(Float, nullable=True)
     
     # Additional context (JSON)
-    metadata = Column(JSON, default=dict)
+    alert_metadata = Column(JSON, default=dict)
     # Contains extra info depending on alert_type
     
     # User interaction
@@ -62,7 +62,7 @@ class Alert(Base):
                 'from_address': self.from_address,
                 'to_address': self.to_address,
                 'confidence_score': self.confidence_score,
-                **self.metadata
+                **self.alert_metadata
             },
             'is_dismissed': self.is_dismissed,
             'dismissed_at': self.dismissed_at.isoformat() if self.dismissed_at else None
