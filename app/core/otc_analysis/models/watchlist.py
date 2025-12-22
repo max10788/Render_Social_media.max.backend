@@ -1,8 +1,9 @@
+# app/core/otc_analysis/models/watchlist.py
 from sqlalchemy import Column, String, DateTime, Integer, Text
-from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
-Base = declarative_base()
+# ✅ WICHTIG: Importiere Base von database.py
+from app.core.backend_crypto_tracker.config.database import Base
 
 class WatchlistItem(Base):
     """
@@ -10,7 +11,7 @@ class WatchlistItem(Base):
     
     Allows users to save and track wallets of interest.
     """
-    __tablename__ = 'watchlist'
+    __tablename__ = 'otc_watchlist'  # ✅ Prefix für Klarheit
     
     # Composite primary key: user_id + address
     id = Column(Integer, primary_key=True, autoincrement=True)
