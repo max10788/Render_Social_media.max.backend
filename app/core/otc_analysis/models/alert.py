@@ -1,8 +1,9 @@
+# app/core/otc_analysis/models/alert.py
 from sqlalchemy import Column, String, DateTime, Integer, Float, JSON, Boolean
-from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
-Base = declarative_base()
+# ✅ WICHTIG: Importiere Base von database.py
+from app.core.backend_crypto_tracker.config.database import Base
 
 class Alert(Base):
     """
@@ -13,7 +14,7 @@ class Alert(Base):
     - cluster_activity: Activity spike in wallet cluster
     - desk_interaction: Transaction with known OTC desk
     """
-    __tablename__ = 'alerts'
+    __tablename__ = 'otc_alerts'  # ✅ Prefix für Klarheit
     
     # Primary key
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -34,7 +35,7 @@ class Alert(Base):
     usd_value = Column(Float, nullable=True)
     confidence_score = Column(Float, nullable=True)
     
-    # Additional context (JSON)
+    # ✅ ANGEPASST: alert_metadata (kein 'metadata' wegen SQLAlchemy Konflikt)
     alert_metadata = Column(JSON, default=dict)
     # Contains extra info depending on alert_type
     
