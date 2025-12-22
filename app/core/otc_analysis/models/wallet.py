@@ -1,11 +1,17 @@
+# app/core/otc_analysis/models/wallet.py
 from sqlalchemy import Column, String, Float, DateTime, Integer, Boolean, JSON
-from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
-Base = declarative_base()
+# ✅ WICHTIG: Importiere Base von database.py (nicht neu definieren!)
+from app.core.backend_crypto_tracker.config.database import Base
 
 class Wallet(Base):
-    __tablename__ = 'wallets'
+    """
+    OTC Wallet Model
+    
+    Stores wallet data with OTC classification and behavioral metrics.
+    """
+    __tablename__ = 'otc_wallets'  # ✅ Prefix für Klarheit
     
     # Primary identifier
     address = Column(String(42), primary_key=True)
