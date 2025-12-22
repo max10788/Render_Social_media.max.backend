@@ -104,31 +104,8 @@ def get_db():
         detail="Database not configured. Implement get_db() dependency."
     )
 
-def get_current_user(authorization: Optional[str] = Header(None)):
-    """
-    Get current user from JWT token.
-    
-    IMPORTANT: Replace this with your actual authentication.
-    
-    Example JWT validation:
-    from jose import jwt
-    
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    try:
-        token = authorization.replace("Bearer ", "")
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        user_id = payload.get("sub")
-        return user_id
-    except:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    """
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    
-    # For development: return mock user
-    return "user_123"
+def get_current_user():
+    return "dev_user_123"
 
 # ============================================================================
 # REQUEST MODELS
