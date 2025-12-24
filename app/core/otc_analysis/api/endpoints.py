@@ -12,7 +12,7 @@ from pydantic import BaseModel
 import logging
 
 # ✅ CRITICAL FIX: Import real database connection
-from app.core.backend_crypto_tracker.config.database import get_db as get_real_db
+from app.core.backend_crypto_tracker.config.database import get_db
 from sqlalchemy.orm import Session
 
 # Validators
@@ -89,14 +89,6 @@ graph_builder = GraphBuilderService(cache_manager)
 # ============================================================================
 # DEPENDENCIES - ✅ USING REAL DATABASE
 # ============================================================================
-
-# ✅ Use real database dependency from database.py
-def get_db():
-    """
-    Get database session from real PostgreSQL database.
-    This replaces the old Mock DB implementation.
-    """
-    return get_real_db()
 
 
 def get_current_user():
