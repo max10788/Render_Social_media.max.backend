@@ -1,13 +1,21 @@
+# app/core/backend_crypto_tracker/config/database.py
 import os
 from urllib.parse import urlparse
-from typing import Generator, Optional, AsyncGenerator
-from sqlalchemy import create_engine, text
+from typing import Generator
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.exc import SQLAlchemyError
 import logging
+
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# ============================================================================
+# SHARED BASE FOR ALL MODELS - WICHTIG!
+# ============================================================================
+Base = declarative_base()
 
 class DatabaseConfig:
     def __init__(self):
@@ -40,13 +48,14 @@ class DatabaseConfig:
         self.pool_timeout = int(os.getenv("DB_POOL_TIMEOUT", "30"))
         self.pool_recycle = int(os.getenv("DB_POOL_RECYCLE", "3600"))
         
-        # SSL-Modus aus Umgebungsvariable oder Standardwert
-        self.ssl_mode = os.getenv("POSTGRES_SSLMODE", "require")
+        # ✅ ANGEPASST: Schema für OTC Analysis
+        # Du kannst zwischen beiden wählen:
+        # Option 1: Eigenes Schema für OTC
+        self.schema_name = os.getenv("OTC_SCHEMA", "otc_analysis")
+        # Option 2: Shared Schema mit Token Analyzer
+        # self.schema_name = "token_analyzer"
         
-        # Schema-Name für dieses Tool
-        self.schema_name = "token_analyzer"
-        
-        logger.info(f"Database configuration: host={self.db_host}, port={self.db_port}, database={self.db_name}, schema={self.schema_name}, ssl_mode={self.ssl_mode}")
+        logger.info(f"Database configuration: host={self.db_host}, port={self.db_port}, database={self.db_name}, schema={self.schema_name}")
 
 # Globale Instanz
 database_config = DatabaseConfig()
@@ -59,32 +68,10 @@ engine = create_engine(
     pool_timeout=database_config.pool_timeout,
     pool_recycle=database_config.pool_recycle,
     echo=os.getenv("DB_ECHO", "false").lower() == "true",
-    connect_args={
-        "options": f"-csearch_path={database_config.schema_name},public",
-        "ssl": {"sslmode": database_config.ssl_mode}  # SSL als Dict übergeben
-    }
+    connect_args={"options": f"-csearch_path={database_config.schema_name},public"}
 )
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-
-# Asynchrone Engine und Session
-async_engine = create_async_engine(
-    database_config.async_database_url,
-    pool_size=database_config.pool_size,
-    max_overflow=database_config.max_overflow,
-    pool_timeout=database_config.pool_timeout,
-    pool_recycle=database_config.pool_recycle,
-    echo=os.getenv("DB_ECHO", "false").lower() == "true",
-    connect_args={
-        "ssl": {"sslmode": database_config.ssl_mode}  # SSL als Dict übergeben
-    }
-)
-
-AsyncSessionLocal = async_sessionmaker(
-    bind=async_engine, 
-    class_=AsyncSession, 
-    expire_on_commit=False
-)
 
 # Dependency für FastAPI
 def get_db() -> Generator[Session, None, None]:
@@ -95,14 +82,63 @@ def get_db() -> Generator[Session, None, None]:
     finally:
         db.close()
 
-async def get_async_db() -> AsyncGenerator[AsyncSession, None]:
-    """Stellt eine asynchrone Datenbank-Session bereit"""
-    async with AsyncSessionLocal() as session:
-        # Setze den Suchpfad nach dem Verbindungsaufbau
-        await session.execute(text(f"SET search_path TO {database_config.schema_name},public"))
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
+# ============================================================================
+# DATABASE INITIALIZATION
+# ============================================================================
+
+def init_db():
+    """
+    Erstellt alle Tabellen für OTC Analysis.
+    
+    WICHTIG: Führe diese Funktion einmal aus, um Tables zu erstellen!
+    
+    Usage:
+        from app.core.backend_crypto_tracker.config.database import init_db
+        init_db()
+    """
+    logger.info("🔨 Initialisiere OTC Analysis Datenbank...")
+    
+    # Import aller Models (damit sie in Base.metadata registriert sind)
+    from app.core.otc_analysis.models.wallet import Wallet
+    from app.core.otc_analysis.models.watchlist import WatchlistItem
+    from app.core.otc_analysis.models.alert import Alert
+    
+    # Schema erstellen falls nicht existiert
+    with engine.connect() as conn:
+        conn.execute(f"CREATE SCHEMA IF NOT EXISTS {database_config.schema_name}")
+        conn.commit()
+        logger.info(f"✅ Schema '{database_config.schema_name}' bereit")
+    
+    # Alle Tables erstellen
+    Base.metadata.create_all(bind=engine)
+    
+    logger.info("✅ OTC Analysis Tabellen erstellt:")
+    for table in Base.metadata.sorted_tables:
+        logger.info(f"   • {table.name}")
+
+def drop_all_tables():
+    """
+    ⚠️ VORSICHT: Löscht alle OTC Analysis Tabellen!
+    
+    Nur für Development/Testing!
+    """
+    logger.warning("⚠️  Lösche alle OTC Analysis Tabellen...")
+    
+    # Import Models
+    from app.core.otc_analysis.models.wallet import Wallet
+    from app.core.otc_analysis.models.watchlist import WatchlistItem
+    from app.core.otc_analysis.models.alert import Alert
+    
+    Base.metadata.drop_all(bind=engine)
+    logger.info("✅ Alle Tabellen gelöscht")
+
+def check_connection():
+    """Test der Datenbankverbindung"""
+    try:
+        with engine.connect() as conn:
+            result = conn.execute("SELECT 1")
+            logger.info("✅ Datenbankverbindung erfolgreich")
+            return True
+    except Exception as e:
+        logger.error(f"❌ Datenbankverbindung fehlgeschlagen: {e}")
+        return False
