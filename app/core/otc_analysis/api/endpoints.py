@@ -46,9 +46,9 @@ from app.core.otc_analysis.analysis.graph_builder import GraphBuilderService
 from app.core.otc_analysis.analysis.network_graph import NetworkAnalysisService
 
 # Database Models (Phase 2)
-from app.core.otc_analysis.models.wallet import OTCWallet
-from app.core.otc_analysis.models.watchlist import OTCWatchlist
-from app.core.otc_analysis.models.alert import OTCAlert
+from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
+from app.core.otc_analysis.models.watchlist import WatchlistItem as OTCWatchlist
+from app.core.otc_analysis.models.alert import Alert as OTCAlert
 
 # Utils
 from app.core.otc_analysis.utils.cache import CacheManager
