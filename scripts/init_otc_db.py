@@ -4,6 +4,8 @@ Path: scripts/init_otc_db.py
 
 This script creates sample OTC wallets in the database.
 Can be run manually or automatically on backend startup.
+
+✅ WICHTIG: Nutzt OTCWallet Model mit korrekten Feldnamen!
 """
 import os
 import sys
@@ -45,8 +47,13 @@ def create_sample_wallets(session):
     """
     Create realistic sample OTC wallets
     
+    ✅ WICHTIG: Feldnamen passen zu wallet_FINAL.py:
+    - last_active (nicht last_seen)
+    - total_volume UND total_volume_usd
+    - transaction_count UND total_transactions
+    
     Returns:
-        List of created wallet labels
+        Tuple of (created, skipped) wallet labels
     """
     
     sample_wallets = [
@@ -54,15 +61,20 @@ def create_sample_wallets(session):
             "address": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb",
             "label": "Wintermute Trading",
             "entity_type": "market_maker",
+            "entity_name": "Wintermute",
             "confidence_score": 0.95,
             "total_volume": 250_000_000.0,  # $250M
+            "total_volume_usd": 250_000_000.0,  # Same value
             "transaction_count": 1_245,
+            "total_transactions": 1_245,  # Same value
             "avg_transaction_size": 200_000.0,
+            "avg_transaction_usd": 200_000.0,  # Same value
             "unique_counterparties": 87,
             "first_seen": datetime.now() - timedelta(days=365),
-            "last_active": datetime.now() - timedelta(hours=3),
+            "last_active": datetime.now() - timedelta(hours=3),  # ✅ last_active!
             "is_active": True,
             "risk_score": 0.15,
+            "otc_probability": 0.95,
             "tags": ["market_maker", "high_volume", "verified"],
             "notes": "Large institutional market maker with consistent high volume"
         },
@@ -70,15 +82,20 @@ def create_sample_wallets(session):
             "address": "0x21a31Ee1afC51d94C2eFcCAa2092aD1028285549",
             "label": "Binance 14",
             "entity_type": "cex",
+            "entity_name": "Binance",
             "confidence_score": 0.98,
             "total_volume": 89_000_000.0,  # $89M
+            "total_volume_usd": 89_000_000.0,
             "transaction_count": 3_421,
+            "total_transactions": 3_421,
             "avg_transaction_size": 26_000.0,
+            "avg_transaction_usd": 26_000.0,
             "unique_counterparties": 234,
             "first_seen": datetime.now() - timedelta(days=500),
-            "last_active": datetime.now() - timedelta(minutes=45),
+            "last_active": datetime.now() - timedelta(minutes=45),  # ✅ last_active!
             "is_active": True,
             "risk_score": 0.05,
+            "otc_probability": 0.85,
             "tags": ["cex", "binance", "verified"],
             "notes": "Binance hot wallet - high frequency trading"
         },
@@ -86,15 +103,20 @@ def create_sample_wallets(session):
             "address": "0x6cc5F688a315f3dC28A7781717a9A798a59fDA7b",
             "label": "Jump Trading",
             "entity_type": "prop_trading",
+            "entity_name": "Jump Trading",
             "confidence_score": 0.92,
             "total_volume": 45_000_000.0,  # $45M
+            "total_volume_usd": 45_000_000.0,
             "transaction_count": 567,
+            "total_transactions": 567,
             "avg_transaction_size": 79_400.0,
+            "avg_transaction_usd": 79_400.0,
             "unique_counterparties": 34,
             "first_seen": datetime.now() - timedelta(days=280),
-            "last_active": datetime.now() - timedelta(hours=12),
+            "last_active": datetime.now() - timedelta(hours=12),  # ✅ last_active!
             "is_active": True,
             "risk_score": 0.20,
+            "otc_probability": 0.88,
             "tags": ["prop_trading", "high_frequency", "algorithmic"],
             "notes": "Proprietary trading firm with algorithmic strategies"
         },
@@ -102,15 +124,20 @@ def create_sample_wallets(session):
             "address": "0x075e72a5eDf65F0A5f44699c7654C1a76941Ddc8",
             "label": "Cumberland DRW",
             "entity_type": "otc_desk",
+            "entity_name": "Cumberland",
             "confidence_score": 0.88,
             "total_volume": 18_000_000.0,  # $18M
+            "total_volume_usd": 18_000_000.0,
             "transaction_count": 234,
+            "total_transactions": 234,
             "avg_transaction_size": 76_900.0,
+            "avg_transaction_usd": 76_900.0,
             "unique_counterparties": 45,
             "first_seen": datetime.now() - timedelta(days=420),
-            "last_active": datetime.now() - timedelta(days=2),
+            "last_active": datetime.now() - timedelta(days=2),  # ✅ last_active!
             "is_active": True,
             "risk_score": 0.18,
+            "otc_probability": 0.82,
             "tags": ["otc_desk", "institutional", "regulated"],
             "notes": "Institutional OTC desk serving large clients"
         },
@@ -118,15 +145,20 @@ def create_sample_wallets(session):
             "address": "0x9696f59E4d72E237BE84fFD425DCaD154Bf96976",
             "label": "Kraken 7",
             "entity_type": "cex",
+            "entity_name": "Kraken",
             "confidence_score": 0.97,
             "total_volume": 5_000_000.0,  # $5M
+            "total_volume_usd": 5_000_000.0,
             "transaction_count": 892,
+            "total_transactions": 892,
             "avg_transaction_size": 5_600.0,
+            "avg_transaction_usd": 5_600.0,
             "unique_counterparties": 156,
             "first_seen": datetime.now() - timedelta(days=600),
-            "last_active": datetime.now() - timedelta(hours=8),
+            "last_active": datetime.now() - timedelta(hours=8),  # ✅ last_active!
             "is_active": True,
             "risk_score": 0.08,
+            "otc_probability": 0.75,
             "tags": ["cex", "kraken", "verified"],
             "notes": "Kraken exchange wallet - retail and institutional"
         }
@@ -277,8 +309,8 @@ def main():
     if result["success"]:
         print("\n💡 Next steps:")
         print("   1. Deploy your backend to Render")
-        print("   2. The database will be auto-initialized on first startup")
-        print("   3. Check the dashboard - you should see data!")
+        print("   2. Check the logs - you should see 5 wallets, $407M")
+        print("   3. Open the dashboard - data should appear!")
         sys.exit(0)
     else:
         sys.exit(1)
