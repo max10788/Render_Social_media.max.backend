@@ -3,65 +3,51 @@ import logging
 from typing import Optional, List, Dict, Any, Union, AsyncGenerator
 from datetime import datetime, timedelta
 from contextlib import contextmanager, asynccontextmanager
+
 # Import Models
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 from app.core.backend_crypto_tracker.processor.database.models.wallet import WalletAnalysis, WalletTypeEnum
 from app.core.backend_crypto_tracker.processor.database.models.scan_result import ScanResult
 from app.core.backend_crypto_tracker.processor.database.models.scan_job import ScanJob, ScanStatus
 from app.core.backend_crypto_tracker.processor.database.models.custom_analysis import CustomAnalysis
+
 # Import SQLAlchemy
 from sqlalchemy import create_engine, text, func, and_, or_
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+
 # Import Exceptions
 from app.core.backend_crypto_tracker.utils.exceptions import DatabaseException, InvalidAddressException
 from app.core.backend_crypto_tracker.utils.logger import get_logger
-# Import the database configuration and sessions
-from app.core.backend_crypto_tracker.config.database import database_config, AsyncSessionLocal, SessionLocal
+
+# ✅ KRITISCH: Importiere die gepatchten Engines!
+from app.core.backend_crypto_tracker.config.database import (
+    database_config, 
+    AsyncSessionLocal, 
+    SessionLocal,
+    engine,        # ✅ Sync engine mit pool_pre_ping
+    async_engine   # ✅ Async engine mit pool_pre_ping
+)
 
 logger = get_logger(__name__)
 
-class DatabaseConfig:
-    def __init__(self, database_type: str = "postgresql"):
-        self.database_type = database_type
-        self.postgres_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('POSTGRES_PORT', 5432)),
-            'database': os.getenv('POSTGRES_DB', 'lowcap_analyzer'),
-            'username': os.getenv('POSTGRES_USER', 'postgres'),
-            'password': os.getenv('POSTGRES_PASSWORD', 'password'),
-            'pool_size': int(os.getenv('DB_POOL_SIZE', '10')),
-            'max_overflow': int(os.getenv('DB_MAX_OVERFLOW', '20')),
-            'pool_timeout': int(os.getenv('DB_POOL_TIMEOUT', '30')),
-            'pool_recycle': int(os.getenv('DB_POOL_RECYCLE', '3600')),
-            'sslmode': os.getenv('POSTGRES_SSLMODE', 'require')  # SSL-Modus hinzugefügt
-        }
-        
-    def get_postgres_url(self) -> str:
-        # Entferne sslmode aus der URL, da wir es in connect_args übergeben
-        return f"postgresql://{self.postgres_config['username']}:{self.postgres_config['password']}@{self.postgres_config['host']}:{self.postgres_config['port']}/{self.postgres_config['database']}"
-    
-    def get_async_postgres_url(self) -> str:
-        # Entferne sslmode aus der URL, da wir es in connect_args übergeben
-        return f"postgresql+asyncpg://{self.postgres_config['username']}:{self.postgres_config['password']}@{self.postgres_config['host']}:{self.postgres_config['port']}/{self.postgres_config['database']}"
-
 class DatabaseManager:
     def __init__(self):
-        # Use the existing configuration and sessions
+        # ✅ Nutze existierende Konfiguration und Engines (mit pool_pre_ping!)
         self.database_config = database_config
         self.AsyncSessionLocal = AsyncSessionLocal
         self.SessionLocal = SessionLocal
-        self.engine = None
+        self.engine = engine              # ✅ GEÄNDERT: Nutze gepatchte Engine
+        self.async_engine = async_engine  # ✅ GEÄNDERT: Nutze gepatchte Async Engine
         
     async def initialize(self):
         """Initializes the database connection and creates tables"""
         try:
-            # Get the engine from the AsyncSessionLocal
-            self.engine = self.AsyncSessionLocal.kw['bind']
+            # ✅ Engine ist schon initialisiert, keine neue erstellen!
             
             # Create schema and tables
-            async with self.engine.begin() as conn:
+            async with self.async_engine.begin() as conn:
                 # Create schema if it doesn't exist (only for PostgreSQL)
                 if hasattr(self.database_config, 'schema_name'):
                     await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {self.database_config.schema_name}"))
@@ -111,8 +97,8 @@ class DatabaseManager:
     
     async def close(self):
         """Closes the database connection"""
-        if self.engine:
-            await self.engine.dispose()
+        if self.async_engine:
+            await self.async_engine.dispose()
             logger.info("Database connection closed.")
     
     # Token-Methoden
@@ -168,13 +154,11 @@ class DatabaseManager:
         """Speichert oder aktualisiert ein Token"""
         async with self.get_async_session() as session:
             try:
-                # Prüfen, ob das Token bereits existiert
                 existing_token = session.query(Token).filter(
                     and_(Token.address == token_data['address'], Token.chain == token_data['chain'])
                 ).first()
                 
                 if existing_token:
-                    # Token aktualisieren
                     for key, value in token_data.items():
                         if hasattr(existing_token, key):
                             setattr(existing_token, key, value)
@@ -183,7 +167,6 @@ class DatabaseManager:
                     await session.flush()
                     result = existing_token
                 else:
-                    # Neues Token erstellen
                     token = Token(**token_data)
                     session.add(token)
                     await session.flush()
@@ -216,7 +199,6 @@ class DatabaseManager:
                 logger.error(f"Database error updating token price: {e}")
                 raise DatabaseException(f"Failed to update token price: {str(e)}")
     
-    # Custom Analysis Methoden
     async def save_custom_analysis(self, analysis_data: Dict) -> int:
         """Speichert eine benutzerdefinierte Token-Analyse"""
         async with self.get_async_session() as session:
@@ -284,7 +266,6 @@ class DatabaseManager:
         """Holt Statistiken für verschiedene Chains"""
         async with self.get_async_session() as session:
             try:
-                # Statistiken pro Chain
                 stats = await session.execute(
                     session.query(
                         CustomAnalysis.chain,
@@ -313,17 +294,14 @@ class DatabaseManager:
         """Speichert eine vollständige Token-Analyse"""
         async with self.get_async_session() as session:
             try:
-                # Token-Daten speichern/aktualisieren
                 token_data = analysis_result.get('token_data', {})
                 if hasattr(token_data, '__dict__'):
                     token_dict = token_data.__dict__
                 else:
                     token_dict = token_data
                 
-                # Token speichern oder aktualisieren
                 token = await self.save_token(token_dict)
                 
-                # Scan-Ergebnis speichern
                 scan_result = ScanResult(
                     token_id=token['id'],
                     score=analysis_result.get('token_score', 0),
@@ -333,7 +311,6 @@ class DatabaseManager:
                 
                 session.add(scan_result)
                 
-                # Wallet-Analysen speichern
                 wallet_analyses = analysis_result.get('wallet_analyses', [])
                 for wallet_analysis in wallet_analyses:
                     if hasattr(wallet_analysis, '__dict__'):
@@ -341,10 +318,7 @@ class DatabaseManager:
                     else:
                         wallet_dict = wallet_analysis
                     
-                    # Token-ID hinzufügen
                     wallet_dict['token_id'] = token['id']
-                    
-                    # Wallet-Analyse erstellen
                     wallet_analysis_obj = WalletAnalysis(**wallet_dict)
                     session.add(wallet_analysis_obj)
                 
@@ -360,7 +334,6 @@ class DatabaseManager:
         """Bereinigt alte Daten aus der Datenbank"""
         async with self.get_async_session() as session:
             try:
-                # Alte Scan-Ergebnisse löschen
                 deleted_scan_results = await session.execute(
                     session.query(ScanResult).filter(ScanResult.analysis_date < cutoff_date)
                 )
@@ -371,7 +344,6 @@ class DatabaseManager:
                         session.query(ScanResult).filter(ScanResult.analysis_date < cutoff_date).delete()
                     )
                 
-                # Alte Custom-Analysen löschen
                 deleted_custom_analyses = await session.execute(
                     session.query(CustomAnalysis).filter(CustomAnalysis.analysis_date < cutoff_date)
                 )
@@ -394,18 +366,15 @@ class DatabaseManager:
         """Speichert einen Scan-Job in der Datenbank"""
         async with self.get_async_session() as session:
             try:
-                # Prüfen, ob der Scan-Job bereits existiert
                 existing_job = session.query(ScanJob).filter(ScanJob.id == scan_job.id).first()
                 
                 if existing_job:
-                    # Scan-Job aktualisieren
                     for key, value in scan_job.__dict__.items():
                         if hasattr(existing_job, key):
                             setattr(existing_job, key, value)
                     await session.flush()
                     result = existing_job
                 else:
-                    # Neuen Scan-Job erstellen
                     session.add(scan_job)
                     await session.flush()
                     result = scan_job
