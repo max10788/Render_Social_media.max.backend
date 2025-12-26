@@ -179,45 +179,26 @@ async def lifespan(app: FastAPI):
     
     logger.info("Starting Low-Cap Token Analyzer")
     
-    # Initialisiere die Datenbank
-    try:
-        db_manager = DatabaseManager()
-        await db_manager.initialize()
-        logger.info("Database initialized successfully")
-    except Exception as e:
-        logger.error(f"Database initialization failed: {e}")
-        logger.info("Continuing without database...")
-        db_manager = None
+    # ✅ Skip DatabaseManager - OTC nutzt database.py direkt
+    db_manager = None
+    logger.info("✅ Skipping DatabaseManager (OTC uses database.py directly)")
     
     yield
     
     logger.info("Shutting down Low-Cap Token Analyzer")
     
-    # Schließe die Datenbankverbindung
-    if db_manager:
-        try:
-            await db_manager.close()
-            logger.info("Database connection closed successfully")
-        except Exception as e:
-            logger.error(f"Error closing database connection: {e}")
-    
-    # Warte auf alle ausstehenden Aufgaben
+    # ✅ Rest bleibt gleich
     try:
-        # Gib anderen Coroutines Zeit, sich ordnungsgemäß zu beenden
         await asyncio.sleep(1)
-        
-        # Schließe alle verbleibenden Aufgaben
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         if tasks:
             logger.info(f"Cancelling {len(tasks)} outstanding tasks")
             for task in tasks:
                 task.cancel()
-            
-            # Warte, bis alle Aufgaben abgebrochen sind
             await asyncio.gather(*tasks, return_exceptions=True)
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
-
+        
 # ------------------------------------------------------------------
 # FastAPI-Instanz
 # ------------------------------------------------------------------
