@@ -330,3 +330,156 @@ class WalletProfiler:
             score += 0.20
         
         return min(1.0, score)
+
+
+class WalletDetailsService:
+    """Service for fetching and calculating wallet details with live data."""
+    
+    @staticmethod
+    async def get_wallet_details(
+        address: str,
+        wallet,  # OTCWallet model
+        db  # Database session
+    ) -> Dict:
+        """
+        Get comprehensive wallet details with live Etherscan data.
+        
+        Args:
+            address: Wallet address
+            wallet: OTCWallet model from database
+            db: Database session
+        
+        Returns:
+            Dict with all wallet details
+        """
+        from ..blockchain.etherscan import EtherscanAPI
+        from ..utils.calculations import (
+            calculate_wallet_metrics,
+            generate_activity_chart,
+            generate_transfer_size_chart
+        )
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
+        is_verified = (wallet.confidence_score or 0) >= 80
+        
+        logger.info(f"🔍 Wallet verified: {is_verified} (confidence: {wallet.confidence_score}%)")
+        
+        # Initialize Etherscan client
+        etherscan = EtherscanAPI(chain_id=1)
+        
+        # Fetch live data
+        balance_data = etherscan.get_balance(address)
+        transactions = etherscan.get_recent_transactions(address, limit=100)
+        
+        if not balance_data or not transactions:
+            logger.warning(f"⚠️ Etherscan failed, using DB data only")
+            return WalletDetailsService._create_fallback_response(wallet)
+        
+        # Calculate metrics
+        metrics = calculate_wallet_metrics(
+            balance_eth=balance_data["balance_eth"],
+            transactions=transactions
+        )
+        
+        # Update DB if verified
+        if is_verified:
+            logger.info(f"💾 VERIFIED wallet - Updating DB with live data")
+            
+            wallet.total_volume = metrics["balance_usd"]
+            wallet.transaction_count = metrics["transaction_count"]
+            wallet.last_active = datetime.fromtimestamp(metrics["last_tx_timestamp"])
+            wallet.is_active = metrics["is_active"]
+            
+            if not isinstance(wallet.tags, list):
+                wallet.tags = []
+            if "verified_live" not in wallet.tags:
+                wallet.tags.append("verified_live")
+            
+            db.commit()
+            db.refresh(wallet)
+            
+            logger.info(f"✅ DB updated: ${wallet.total_volume:,.2f}, {wallet.transaction_count} txs")
+        else:
+            logger.info(f"⚠️ UNVERIFIED wallet - Only showing data, NOT updating DB")
+        
+        # Generate chart data
+        activity_data = generate_activity_chart(
+            total_volume=metrics["total_volume"],
+            transaction_count=metrics["transaction_count"],
+            transactions=transactions
+        )
+        
+        transfer_size_data = generate_transfer_size_chart(
+            avg_transfer=metrics["avg_transfer_size"],
+            transactions=transactions
+        )
+        
+        # Return complete response
+        return {
+            "address": wallet.address,
+            "label": wallet.label,
+            "entity_type": wallet.entity_type,
+            "entity_name": wallet.entity_name,
+            "confidence_score": float(wallet.confidence_score or 0),
+            "is_active": bool(metrics["is_active"]),
+            "is_verified": bool(is_verified),
+            
+            "balance_eth": float(metrics["balance_eth"]),
+            "balance_usd": float(metrics["balance_usd"]),
+            "lifetime_volume": float(metrics["balance_usd"]),
+            "volume_30d": float(metrics["recent_volume_30d"]),
+            "volume_7d": float(metrics["recent_volume_7d"]),
+            "avg_transfer": float(metrics["avg_transfer_size"]),
+            "transaction_count": int(metrics["transaction_count"]),
+            "last_activity": str(metrics["last_activity_text"]),
+            
+            "activity_data": activity_data,
+            "transfer_size_data": transfer_size_data,
+            "tags": wallet.tags if isinstance(wallet.tags, list) else [],
+            
+            "data_source": "etherscan_live" if is_verified else "etherscan_display",
+            "last_updated": datetime.now().isoformat()
+        }
+    
+    @staticmethod
+    def _create_fallback_response(wallet) -> Dict:
+        """Create fallback response when Etherscan unavailable."""
+        from ..utils.calculations import (
+            generate_activity_chart,
+            generate_transfer_size_chart
+        )
+        
+        activity_data = generate_activity_chart(
+            total_volume=wallet.total_volume or 0,
+            transaction_count=wallet.transaction_count or 0
+        )
+        
+        transfer_size_data = generate_transfer_size_chart(
+            avg_transfer=(wallet.total_volume or 0) / max(1, wallet.transaction_count or 1)
+        )
+        
+        return {
+            "address": wallet.address,
+            "label": wallet.label,
+            "entity_type": wallet.entity_type,
+            "entity_name": wallet.entity_name,
+            "confidence_score": float(wallet.confidence_score or 0),
+            "is_active": bool(wallet.is_active),
+            "is_verified": False,
+            
+            "lifetime_volume": float(wallet.total_volume or 0),
+            "volume_30d": float(wallet.total_volume or 0) * 0.6,
+            "volume_7d": float(wallet.total_volume or 0) * 0.2,
+            "avg_transfer": float(wallet.total_volume or 0) / max(1, wallet.transaction_count or 1),
+            "transaction_count": wallet.transaction_count or 0,
+            "last_activity": "Unknown",
+            
+            "activity_data": activity_data,
+            "transfer_size_data": transfer_size_data,
+            "tags": wallet.tags if isinstance(wallet.tags, list) else [],
+            
+            "data_source": "database",
+            "last_updated": datetime.now().isoformat()
+        }
