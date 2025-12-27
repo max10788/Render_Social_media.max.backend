@@ -35,6 +35,7 @@ from app.core.price_movers.api.routes_dex_chart import router as dex_chart_route
 from app.core.orderbook_heatmap.api.endpoints import router as orderbook_heatmap_router
 from app.core.iceberg_orders.api.endpoints import router as iceberg_orders_router
 from app.core.otc_analysis.api.endpoints import router as otc_analysis_router
+from scripts.init_otc_db import init_database
 
 # Konfiguration und Datenbank
 from app.core.backend_crypto_tracker.config.database import database_config
