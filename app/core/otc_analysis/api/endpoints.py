@@ -4,7 +4,7 @@ Combines Phase 1 and Phase 2 endpoints into a single file.
 
 ✅ FIXED: Now uses REAL PostgreSQL Database instead of Mock DB
 """
-
+import os
 from fastapi import APIRouter, HTTPException, Query, Depends, Header
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -114,6 +114,8 @@ def get_current_user():
 class WatchlistAddRequest(BaseModel):
     address: str
     label: Optional[str] = None
+
+ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY")
 
 # ============================================================================
 # PHASE 1 ENDPOINTS - CORE OTC DETECTION
