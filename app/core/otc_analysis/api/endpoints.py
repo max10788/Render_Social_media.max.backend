@@ -546,17 +546,9 @@ async def get_statistics(
     db: Session = Depends(get_db)
 ):
     """
-    Get OTC statistics for OTCMetricsOverview component.
+    Get OTC statistics with 24h change calculations.
     
     GET /api/otc/statistics?start_date=2024-11-21&end_date=2024-12-21
-    
-    Returns:
-    {
-        "total_volume": 450000000,
-        "active_wallets": 234,
-        "total_transactions": 5234,
-        "avg_transfer_size": 1200000
-    }
     """
     try:
         # Parse dates
@@ -572,24 +564,69 @@ async def get_statistics(
         
         logger.info(f"📊 GET /statistics: {start.date()} to {end.date()}")
         
-        # Query wallets in date range
-        wallets = db.query(OTCWallet).filter(
+        # Current period wallets
+        current_wallets = db.query(OTCWallet).filter(
             OTCWallet.last_active >= start,
             OTCWallet.last_active <= end
         ).all()
         
-        # Calculate statistics
-        total_volume = sum(w.total_volume or 0 for w in wallets)
-        total_count = sum(w.transaction_count or 0 for w in wallets)
-        avg_size = total_volume / total_count if total_count > 0 else 0
+        # 24h ago period (for comparison)
+        start_24h = start - timedelta(days=1)
+        end_24h = end - timedelta(days=1)
         
-        logger.info(f"✅ Statistics: {len(wallets)} wallets, ${total_volume:,.0f}")
+        previous_wallets = db.query(OTCWallet).filter(
+            OTCWallet.last_active >= start_24h,
+            OTCWallet.last_active <= end_24h
+        ).all()
+        
+        # Calculate current statistics
+        current_volume = sum(w.total_volume or 0 for w in current_wallets)
+        current_count = sum(w.transaction_count or 0 for w in current_wallets)
+        current_avg_size = current_volume / current_count if current_count > 0 else 0
+        current_avg_confidence = (
+            sum(w.confidence_score or 0 for w in current_wallets) / len(current_wallets)
+            if current_wallets else 0
+        )
+        
+        # Calculate previous statistics
+        previous_volume = sum(w.total_volume or 0 for w in previous_wallets)
+        previous_count = sum(w.transaction_count or 0 for w in previous_wallets)
+        previous_avg_size = previous_volume / previous_count if previous_count > 0 else 0
+        previous_avg_confidence = (
+            sum(w.confidence_score or 0 for w in previous_wallets) / len(previous_wallets)
+            if previous_wallets else 0
+        )
+        
+        # Calculate percentage changes
+        def calculate_change(current, previous):
+            if previous == 0:
+                return 0 if current == 0 else 100
+            return ((current - previous) / previous) * 100
+        
+        volume_change = calculate_change(current_volume, previous_volume)
+        wallets_change = calculate_change(len(current_wallets), len(previous_wallets))
+        avg_size_change = calculate_change(current_avg_size, previous_avg_size)
+        confidence_change = calculate_change(current_avg_confidence, previous_avg_confidence)
+        
+        logger.info(f"✅ Statistics: {len(current_wallets)} wallets, ${current_volume:,.0f}")
+        logger.info(f"📈 Changes: volume={volume_change:.1f}%, wallets={wallets_change:.1f}%")
         
         return {
-            "total_volume": total_volume,
-            "active_wallets": len(wallets),
-            "total_transactions": total_count,
-            "avg_transfer_size": avg_size,
+            "total_volume_usd": current_volume,
+            "active_wallets": len(current_wallets),
+            "total_transactions": current_count,
+            "avg_transfer_size": current_avg_size,
+            
+            # ✅ NEW: 24h change percentages
+            "volume_change_24h": round(volume_change, 2),
+            "wallets_change_24h": round(wallets_change, 2),
+            "avg_size_change_24h": round(avg_size_change, 2),
+            "avg_confidence_score": round(current_avg_confidence, 1),
+            "confidence_change_24h": round(confidence_change, 2),
+            
+            # ✅ NEW: Timestamp
+            "last_updated": datetime.now().isoformat(),
+            
             "period": {
                 "start": start.isoformat(),
                 "end": end.isoformat()
@@ -597,9 +634,8 @@ async def get_statistics(
         }
         
     except Exception as e:
-        logger.error(f"❌ Error in /statistics: {e}")
+        logger.error(f"❌ Error in /statistics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/network/graph")
 async def get_network_graph(
