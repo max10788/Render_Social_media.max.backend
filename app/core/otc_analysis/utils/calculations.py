@@ -261,3 +261,235 @@ def weighted_average(scores: Dict[str, float], weights: Dict[str, float]) -> flo
     
     weighted_sum = sum(scores.get(key, 0) * weight for key, weight in weights.items())
     return weighted_sum / total_weight
+
+def calculate_wallet_metrics(
+    balance_eth: float,
+    transactions: List[Dict],
+    eth_price: float = 2921.68
+) -> Dict:
+    """
+    Calculate wallet metrics from balance and transactions.
+    
+    Args:
+        balance_eth: Current ETH balance
+        transactions: List of transaction dicts from Etherscan
+        eth_price: Current ETH price in USD
+    
+    Returns:
+        Dict with metrics: balance_usd, volumes, activity, etc.
+    """
+    try:
+        balance_usd = balance_eth * eth_price
+        
+        # Initialize metrics
+        now = datetime.now()
+        thirty_days_ago = now - timedelta(days=30)
+        seven_days_ago = now - timedelta(days=7)
+        
+        recent_30d = []
+        recent_7d = []
+        total_volume = 0
+        tx_count = len(transactions)
+        
+        # Process transactions
+        for tx in transactions:
+            try:
+                # Safe Wei-to-ETH conversion
+                tx_value_wei = int(tx.get("value", 0))
+                tx_value_eth = tx_value_wei / 1e18
+                tx_value_usd = tx_value_eth * eth_price
+                
+                # Sanity check
+                if tx_value_eth > 100_000:
+                    continue
+                
+                tx_time = datetime.fromtimestamp(int(tx.get("timeStamp", 0)))
+                
+                total_volume += tx_value_usd
+                
+                if tx_time >= thirty_days_ago:
+                    recent_30d.append(tx_value_usd)
+                if tx_time >= seven_days_ago:
+                    recent_7d.append(tx_value_usd)
+                    
+            except (ValueError, OverflowError):
+                continue
+        
+        # Calculate averages
+        avg_transfer_size = total_volume / tx_count if tx_count > 0 else 0
+        
+        # Final sanity check
+        if total_volume > 1_000_000_000_000:
+            total_volume = 0
+            avg_transfer_size = 0
+        
+        # Calculate last activity
+        last_activity_text = "Unknown"
+        last_tx_timestamp = 0
+        is_active = False
+        
+        if transactions:
+            try:
+                last_tx_timestamp = int(transactions[0].get("timeStamp", 0))
+                time_diff = now.timestamp() - last_tx_timestamp
+                
+                if time_diff < 3600:
+                    last_activity_text = f"{int(time_diff / 60)}m ago"
+                    is_active = True
+                elif time_diff < 86400:
+                    last_activity_text = f"{int(time_diff / 3600)}h ago"
+                    is_active = True
+                elif time_diff < 604800:
+                    last_activity_text = f"{int(time_diff / 86400)}d ago"
+                    is_active = True
+                else:
+                    last_activity_text = f"{int(time_diff / 86400)}d ago"
+                    is_active = False
+            except (ValueError, OverflowError):
+                pass
+        
+        return {
+            "balance_eth": float(balance_eth),
+            "balance_usd": float(balance_usd),
+            "transaction_count": tx_count,
+            "total_volume": float(total_volume),
+            "recent_volume_30d": float(sum(recent_30d)),
+            "recent_volume_7d": float(sum(recent_7d)),
+            "avg_transfer_size": float(avg_transfer_size),
+            "last_activity_text": last_activity_text,
+            "last_tx_timestamp": last_tx_timestamp,
+            "is_active": is_active
+        }
+        
+    except Exception as e:
+        return {
+            "balance_eth": 0,
+            "balance_usd": 0,
+            "transaction_count": 0,
+            "total_volume": 0,
+            "recent_volume_30d": 0,
+            "recent_volume_7d": 0,
+            "avg_transfer_size": 0,
+            "last_activity_text": "Unknown",
+            "last_tx_timestamp": 0,
+            "is_active": False
+        }
+
+
+def generate_activity_chart(
+    total_volume: float,
+    transaction_count: int,
+    transactions: Optional[List[Dict]] = None,
+    days: int = 7
+) -> List[Dict]:
+    """
+    Generate activity chart data for last N days.
+    
+    Args:
+        total_volume: Total transaction volume
+        transaction_count: Total number of transactions
+        transactions: Optional list of transactions for accurate data
+        days: Number of days to generate
+    
+    Returns:
+        List of {date, volume} dicts
+    """
+    from datetime import datetime, timedelta
+    
+    activity_data = []
+    
+    if transactions and len(transactions) > 0:
+        # Use real transaction data
+        daily_volumes = {}
+        eth_price = 2921.68  # TODO: Use price oracle
+        
+        for tx in transactions:
+            try:
+                tx_date = datetime.fromtimestamp(int(tx["timeStamp"])).strftime('%m/%d')
+                tx_value = int(tx.get("value", 0)) / 1e18 * eth_price
+                
+                if tx_value > 100_000:  # Skip suspicious
+                    continue
+                
+                if tx_date not in daily_volumes:
+                    daily_volumes[tx_date] = 0
+                daily_volumes[tx_date] += tx_value
+            except:
+                continue
+        
+        # Create chart data
+        for i in range(days):
+            date = (datetime.now() - timedelta(days=days-1-i)).strftime('%m/%d')
+            volume = daily_volumes.get(date, 0)
+            activity_data.append({"date": date, "volume": round(volume, 2)})
+    else:
+        # Fallback: Estimate from total
+        base_daily_volume = total_volume / 30 if total_volume else 0
+        
+        for i in range(days):
+            date = (datetime.now() - timedelta(days=days-1-i)).strftime('%m/%d')
+            variation = 0.7 + (i % 3) * 0.3
+            volume = base_daily_volume * variation
+            activity_data.append({"date": date, "volume": round(volume, 2)})
+    
+    return activity_data
+
+
+def generate_transfer_size_chart(
+    avg_transfer: float,
+    transactions: Optional[List[Dict]] = None,
+    days: int = 7
+) -> List[Dict]:
+    """
+    Generate transfer size trend chart.
+    
+    Args:
+        avg_transfer: Average transfer size
+        transactions: Optional list of transactions
+        days: Number of days
+    
+    Returns:
+        List of {date, size} dicts
+    """
+    from datetime import datetime, timedelta
+    
+    transfer_size_data = []
+    
+    if transactions and len(transactions) > 0:
+        # Use real data
+        daily_sizes = {}
+        daily_counts = {}
+        eth_price = 2921.68
+        
+        for tx in transactions:
+            try:
+                tx_date = datetime.fromtimestamp(int(tx["timeStamp"])).strftime('%m/%d')
+                tx_value = int(tx.get("value", 0)) / 1e18 * eth_price
+                
+                if tx_value > 100_000:
+                    continue
+                
+                if tx_date not in daily_sizes:
+                    daily_sizes[tx_date] = 0
+                    daily_counts[tx_date] = 0
+                
+                daily_sizes[tx_date] += tx_value
+                daily_counts[tx_date] += 1
+            except:
+                continue
+        
+        # Create chart data
+        for i in range(days):
+            date = (datetime.now() - timedelta(days=days-1-i)).strftime('%m/%d')
+            count = daily_counts.get(date, 0)
+            avg_size = daily_sizes.get(date, 0) / count if count > 0 else 0
+            transfer_size_data.append({"date": date, "size": round(avg_size, 2)})
+    else:
+        # Fallback: Estimate
+        for i in range(days):
+            date = (datetime.now() - timedelta(days=days-1-i)).strftime('%m/%d')
+            size_variation = 0.8 + (i % 4) * 0.2
+            size = avg_transfer * size_variation
+            transfer_size_data.append({"date": date, "size": round(size, 2)})
+    
+    return transfer_size_data
