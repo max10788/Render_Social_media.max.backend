@@ -608,11 +608,7 @@ async def get_network_graph(
     max_nodes: int = Query(500, le=1000),
     db: Session = Depends(get_db)
 ):
-    """
-    Get network graph data.
-    
-    Returns nodes (wallets) with empty edges array until real transaction data is implemented.
-    """
+    """Get network graph data for both NetworkGraph AND SankeyFlow components"""
     try:
         if start_date:
             start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
@@ -632,33 +628,51 @@ async def get_network_graph(
             OTCWallet.last_active <= end
         ).order_by(OTCWallet.total_volume.desc()).limit(max_nodes).all()
         
-        # Create nodes with proper structure for NetworkGraph.jsx
-        nodes = [
+        # ✅ Format for NetworkGraph (Cytoscape)
+        cytoscape_nodes = [
             {
                 "address": w.address,
                 "label": w.label or f"{w.address[:6]}...{w.address[-4:]}",
                 "entity_type": w.entity_type or "unknown",
-                "entity_name": w.entity_name,
+                "entity_name": w.entity_name or "",
                 "total_volume_usd": float(w.total_volume or 0),
                 "transaction_count": w.transaction_count or 0,
                 "confidence_score": float(w.confidence_score or 0),
-                "is_active": w.is_active or False,
+                "is_active": w.is_active if w.is_active is not None else False,
                 "tags": w.tags or []
             }
             for w in wallets
         ]
         
-        # ✅ NO MOCK DATA - Empty edges until real transaction data is available
-        edges = []
+        # ✅ Format for SankeyFlow (D3-Sankey)
+        sankey_nodes = [
+            {
+                "name": w.label or f"{w.address[:8]}...",
+                "category": (w.entity_type or "unknown").replace('_', ' ').title(),
+                "value": float(w.total_volume or 0),
+                "address": w.address
+            }
+            for w in wallets
+        ]
         
-        logger.info(f"✅ Graph: {len(nodes)} nodes, {len(edges)} edges")
+        # ✅ NO MOCK DATA - Empty edges/links
+        cytoscape_edges = []
+        sankey_links = []
+        
+        logger.info(f"✅ Graph: {len(cytoscape_nodes)} nodes, 0 edges (no transaction data yet)")
         
         return {
-            "nodes": nodes,
-            "edges": edges,  # ✅ Empty - no mock data
+            # For NetworkGraph component
+            "nodes": cytoscape_nodes,
+            "edges": cytoscape_edges,
+            
+            # For SankeyFlow component  
+            "sankeyNodes": sankey_nodes,
+            "sankeyLinks": sankey_links,
+            
             "metadata": {
-                "node_count": len(nodes),
-                "edge_count": len(edges),
+                "node_count": len(cytoscape_nodes),
+                "edge_count": len(cytoscape_edges),
                 "period": {
                     "start": start.isoformat(),
                     "end": end.isoformat()
@@ -667,7 +681,7 @@ async def get_network_graph(
         }
         
     except Exception as e:
-        logger.error(f"❌ Error in /network/graph: {e}")
+        logger.error(f"❌ Error in /network/graph: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
