@@ -226,3 +226,78 @@ class EtherscanAPI:
         }
         
         return self._make_request(params)
+
+    def get_balance(self, address: str) -> Optional[Dict]:
+        """
+        Get ETH balance for an address.
+        
+        Returns dict with balance_wei, balance_eth
+        """
+        params = {
+            'module': 'account',
+            'action': 'balance',
+            'address': address,
+            'tag': 'latest'
+        }
+        
+        result = self._make_request(params)
+        
+        if result is None:
+            return None
+        
+        try:
+            balance_wei = int(result)
+            balance_eth = balance_wei / 1e18
+            
+            # Sanity check
+            if balance_eth > 1_000_000:
+                logger.warning(f"⚠️ Suspicious balance: {balance_eth} ETH")
+                return None
+            
+            logger.info(f"💰 Balance: {balance_eth:.4f} ETH")
+            
+            return {
+                "balance_wei": balance_wei,
+                "balance_eth": balance_eth
+            }
+        except (ValueError, TypeError) as e:
+            logger.error(f"❌ Error parsing balance: {e}")
+            return None
+    
+    def get_recent_transactions(
+        self, 
+        address: str, 
+        limit: int = 100
+    ) -> List[Dict]:
+        """
+        Get recent normal transactions for an address.
+        Wrapper around get_normal_transactions with sensible defaults.
+        
+        Returns list of transaction dicts
+        """
+        return self.get_normal_transactions(
+            address=address,
+            page=1,
+            offset=limit
+        )
+    
+    def get_transaction_count_simple(self, address: str) -> int:
+        """Get total transaction count for address (proxy method)."""
+        params = {
+            'module': 'proxy',
+            'action': 'eth_getTransactionCount',
+            'address': address,
+            'tag': 'latest'
+        }
+        
+        result = self._make_request(params)
+        
+        if result is None:
+            return 0
+        
+        try:
+            # Result is hex string
+            count = int(result, 16)
+            return count
+        except (ValueError, TypeError):
+            return 0
