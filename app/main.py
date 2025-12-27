@@ -16,7 +16,9 @@ import time
 import signal
 import sys
 
-# Router-Imports
+# ✅ NEU: Socket.IO Import
+import socketio
+
 # Router-Imports
 from app.core.backend_crypto_tracker.api.routes.custom_analysis_routes import (
     router as custom_analysis_router,
@@ -28,7 +30,7 @@ from app.core.backend_crypto_tracker.api.routes import scanner_routes
 from app.core.backend_crypto_tracker.api.routes.frontend_routes import router as frontend_router
 from app.core.backend_crypto_tracker.api.routes.wallet_routes import router as wallet_router
 from app.core.price_movers.api.routes import router as price_movers_router
-from app.core.price_movers.api.analyze_routes import router as analyze_router  # ← DIESE ZEILE HINZUFÜGEN
+from app.core.price_movers.api.analyze_routes import router as analyze_router
 from app.core.price_movers.api.wallet_detail_routes import router as wallet_detail_router
 from app.core.price_movers.api.hybrid_routes import router as hybrid_router
 from app.core.price_movers.api.routes_dex_chart import router as dex_chart_router
@@ -46,10 +48,10 @@ logger = get_logger(__name__)
 
 # Frontend-Verzeichnisse konfigurieren
 BASE_DIR = Path(__file__).resolve().parent  # app/
-FRONTEND_DIR = BASE_DIR / "crypto-token-analysis-dashboard"  # app/crypto-token-analysis-dashboard
-BUILD_DIR = FRONTEND_DIR / ".next" / "standalone"  # Next.js standalone build
-STATIC_DIR = FRONTEND_DIR / ".next" / "static"     # Next.js static files
-PUBLIC_DIR = FRONTEND_DIR / "public"               # Next.js public files
+FRONTEND_DIR = BASE_DIR / "crypto-token-analysis-dashboard"
+BUILD_DIR = FRONTEND_DIR / ".next" / "standalone"
+STATIC_DIR = FRONTEND_DIR / ".next" / "static"
+PUBLIC_DIR = FRONTEND_DIR / "public"
 
 # Pydantic-Modelle für die neuen Endpunkte
 class AssetInfo(BaseModel):
@@ -222,6 +224,74 @@ app.add_middleware(
 )
 
 # ------------------------------------------------------------------
+# ✅ NEU: Socket.IO Setup für OTC Live-Stream
+# ------------------------------------------------------------------
+# Create Socket.IO server
+sio = socketio.AsyncServer(
+    async_mode='asgi',
+    cors_allowed_origins='*',  # In Produktion spezifische Origins verwenden!
+    logger=True,
+    engineio_logger=False  # Reduziert Logging-Spam
+)
+
+# Socket.IO Event Handlers
+@sio.event
+async def connect(sid, environ):
+    """Handle client connection"""
+    logger.info(f"✅ Socket.IO client connected: {sid}")
+    await sio.emit('connection', {
+        'status': 'connected',
+        'message': 'Connected to OTC live stream',
+        'timestamp': time.time()
+    }, room=sid)
+
+@sio.event
+async def disconnect(sid):
+    """Handle client disconnection"""
+    logger.info(f"❌ Socket.IO client disconnected: {sid}")
+
+@sio.event
+async def subscribe(sid, data):
+    """Handle subscription to OTC events"""
+    event_types = data.get('events', [])
+    logger.info(f"📡 Client {sid} subscribed to: {event_types}")
+    
+    # Join rooms for each event type
+    for event_type in event_types:
+        await sio.enter_room(sid, event_type)
+    
+    await sio.emit('subscription_confirmed', {
+        'events': event_types,
+        'timestamp': time.time()
+    }, room=sid)
+
+@sio.event
+async def unsubscribe(sid, data):
+    """Handle unsubscription from OTC events"""
+    event_types = data.get('events', [])
+    logger.info(f"📴 Client {sid} unsubscribed from: {event_types}")
+    
+    # Leave rooms
+    for event_type in event_types:
+        await sio.leave_room(sid, event_type)
+    
+    await sio.emit('unsubscription_confirmed', {
+        'events': event_types,
+        'timestamp': time.time()
+    }, room=sid)
+
+@sio.event
+async def ping(sid, data):
+    """Handle ping"""
+    await sio.emit('pong', {'timestamp': time.time()}, room=sid)
+
+# Helper function to broadcast OTC events
+async def broadcast_otc_event(event_type: str, data: dict):
+    """Broadcast OTC event to all subscribed clients"""
+    logger.info(f"📢 Broadcasting {event_type} event")
+    await sio.emit(event_type, data, room=event_type)
+
+# ------------------------------------------------------------------
 # API Routes (mount first to prevent conflicts)
 # ------------------------------------------------------------------
 app.include_router(custom_analysis_router)
@@ -232,16 +302,16 @@ app.include_router(contracts_router, prefix="/api/v1")
 app.include_router(wallet_router)
 app.include_router(frontend_router)
 app.include_router(price_movers_router)
-app.include_router(analyze_router)  # ← DIESE ZEILE HINZUFÜGEN
+app.include_router(analyze_router)
 app.include_router(wallet_detail_router)
 app.include_router(hybrid_router)
 app.include_router(dex_chart_router, prefix="/api/v1")
 app.include_router(orderbook_heatmap_router)
-app.include_router(iceberg_orders_router)  # ← Prefix hinzufügen!
+app.include_router(iceberg_orders_router)
 app.include_router(otc_analysis_router)  # OTC Analysis Router
 
 # ------------------------------------------------------------------
-# WebSocket Endpoint
+# WebSocket Endpoint (behält den nativen /ws Endpoint)
 # ------------------------------------------------------------------
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -309,7 +379,8 @@ async def health_check():
         "services": {
             "token_analyzer": "active",
             "blockchain_tracking": "active",
-            "websocket": "active"
+            "websocket": "active",
+            "socketio": "active"  # ✅ NEU
         },
         "database": {
             "host": database_config.db_host,
@@ -328,7 +399,8 @@ async def api_health_check():
         "services": {
             "token_analyzer": "active",
             "blockchain_tracking": "active",
-            "websocket": "active"
+            "websocket": "active",
+            "socketio": "active"  # ✅ NEU
         },
         "database": {
             "host": database_config.db_host,
@@ -933,3 +1005,17 @@ if os.environ.get("RENDER"):
     database_config.db_name = os.environ.get("DATABASE_NAME", database_config.db_name)
     database_config.db_user = os.environ.get("DATABASE_USER", database_config.db_user)
     database_config.db_password = os.environ.get("DATABASE_PASSWORD", database_config.db_password)
+
+# ------------------------------------------------------------------
+# ✅ NEU: Wrap FastAPI app with Socket.IO
+# ------------------------------------------------------------------
+# Create ASGI app that combines FastAPI and Socket.IO
+socket_app = socketio.ASGIApp(
+    socketio_server=sio,
+    other_asgi_app=app,
+    socketio_path='/socket.io'
+)
+
+# ✅ WICHTIG: Export socket_app für Uvicorn
+# In Render verwende: uvicorn app.main:socket_app
+# Lokaler Test: uvicorn app.main:socket_app --reload
