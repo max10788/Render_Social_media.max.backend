@@ -726,9 +726,10 @@ async def get_wallet_details(
     db: Session = Depends(get_db)
 ):
     """
-    Get detailed wallet information with activity charts.
+    Get detailed wallet information with LIVE Etherscan data.
     
-    GET /api/otc/wallet/0x.../details
+    ✅ IF confidence_score >= 80%: Update DB with real data
+    ⚠️ IF confidence_score < 80%: Only show, don't update DB
     """
     try:
         logger.info(f"👤 GET /wallet/{address[:10]}.../details")
@@ -741,77 +742,76 @@ async def get_wallet_details(
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found")
         
-        # ✅ Generate realistic activity chart (last 7 days)
-        # Based on total_volume, distribute across 7 days with variation
-        base_daily_volume = (wallet.total_volume or 0) / 30  # Avg per day
-        activity_data = []
+        # ✅ CHECK: Is this a VERIFIED OTC wallet?
+        is_verified = (wallet.confidence_score or 0) >= 80
         
-        for i in range(7):
-            date = (datetime.now() - timedelta(days=6-i)).strftime('%m/%d')
-            # Add realistic variation (±30%)
-            variation = 0.7 + (i % 3) * 0.3  # Creates pattern
-            volume = base_daily_volume * variation
-            activity_data.append({
-                "date": date,
-                "volume": round(volume, 2)
-            })
+        logger.info(f"🔍 Wallet verified: {is_verified} (confidence: {wallet.confidence_score}%)")
         
-        # ✅ Generate realistic transfer size chart
-        base_transfer = (wallet.total_volume or 0) / (wallet.transaction_count or 1)
-        transfer_size_data = []
+        # ✅ ALWAYS fetch live data from Etherscan
+        live_data = await fetch_etherscan_data(address)
         
-        for i in range(7):
-            date = (datetime.now() - timedelta(days=6-i)).strftime('%m/%d')
-            # Add variation
-            variation = 0.8 + (i % 4) * 0.2
-            size = base_transfer * variation
-            transfer_size_data.append({
-                "date": date,
-                "size": round(size, 2)
-            })
+        if not live_data:
+            # Etherscan failed, use DB data only
+            logger.warning(f"⚠️ Etherscan failed, using DB data only")
+            return format_wallet_response(wallet, source="database")
         
-        # ✅ Calculate time-based metrics
-        now = datetime.now()
-        time_since_active = (now - wallet.last_active).total_seconds() / 3600 if wallet.last_active else 999
-        
-        if time_since_active < 1:
-            last_activity = f"{int(time_since_active * 60)}m ago"
-        elif time_since_active < 24:
-            last_activity = f"{int(time_since_active)}h ago"
+        # ✅ IF VERIFIED: Update DB with real data
+        if is_verified:
+            logger.info(f"💾 VERIFIED wallet - Updating DB with live data")
+            
+            # Update wallet with live Etherscan data
+            wallet.total_volume = live_data["balance_usd"]
+            wallet.transaction_count = live_data["transaction_count"]
+            wallet.last_active = datetime.fromtimestamp(live_data["last_tx_timestamp"])
+            wallet.is_active = live_data["is_active"]
+            
+            # Add metadata
+            if not wallet.tags:
+                wallet.tags = []
+            if "verified_live" not in wallet.tags:
+                wallet.tags.append("verified_live")
+            
+            # Commit to database
+            db.commit()
+            db.refresh(wallet)
+            
+            logger.info(f"✅ DB updated: ${wallet.total_volume:,.2f}, {wallet.transaction_count} txs")
         else:
-            last_activity = f"{int(time_since_active / 24)}d ago"
+            logger.info(f"⚠️ UNVERIFIED wallet - Only showing data, NOT updating DB")
         
-        # ✅ Calculate volume metrics
-        lifetime_volume = wallet.total_volume or 0
-        volume_30d = lifetime_volume * 0.6  # Assume 60% in last 30 days
-        volume_7d = lifetime_volume * 0.2   # Assume 20% in last 7 days
+        # Generate chart data based on real or calculated values
+        activity_data = generate_activity_chart(wallet, live_data)
+        transfer_size_data = generate_transfer_size_chart(wallet, live_data)
         
-        logger.info(f"✅ Wallet details: {wallet.label}, ${lifetime_volume:,.0f}")
-        
+        # Return response with live data
         return {
-            # Basic info
+            # Basic info (always from DB)
             "address": wallet.address,
             "label": wallet.label,
             "entity_type": wallet.entity_type,
             "entity_name": wallet.entity_name,
             "confidence_score": wallet.confidence_score,
             "is_active": wallet.is_active,
+            "is_verified": is_verified,  # ✅ NEW: Show if verified
             
-            # ✅ NEW: Volume metrics
-            "lifetime_volume": lifetime_volume,
-            "volume_30d": round(volume_30d, 2),
-            "volume_7d": round(volume_7d, 2),
-            "avg_transfer": round(lifetime_volume / (wallet.transaction_count or 1), 2),
-            "transaction_count": wallet.transaction_count,
-            "last_activity": last_activity,
+            # ✅ Live metrics (from Etherscan)
+            "balance_eth": live_data["balance_eth"],
+            "balance_usd": live_data["balance_usd"],
+            "lifetime_volume": live_data["balance_usd"],  # Current balance as proxy
+            "volume_30d": live_data["recent_volume_30d"],
+            "volume_7d": live_data["recent_volume_7d"],
+            "avg_transfer": live_data["avg_transfer_size"],
+            "transaction_count": live_data["transaction_count"],
+            "last_activity": live_data["last_activity_text"],
             
-            # ✅ NEW: Chart data
+            # Chart data
             "activity_data": activity_data,
             "transfer_size_data": transfer_size_data,
             
             # Metadata
-            "tags": wallet.tags or [],
-            "created_at": wallet.created_at.isoformat() if wallet.created_at else None
+            "data_source": "etherscan_live" if is_verified else "etherscan_display",
+            "last_updated": datetime.now().isoformat(),
+            "tags": wallet.tags or []
         }
         
     except HTTPException:
@@ -819,6 +819,230 @@ async def get_wallet_details(
     except Exception as e:
         logger.error(f"❌ Error in /wallet/details: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+async def fetch_etherscan_data(address: str) -> dict:
+    """
+    Fetch real wallet data from Etherscan API.
+    
+    Returns dict with balance, transactions, activity.
+    """
+    import requests
+    from datetime import datetime, timedelta
+    
+    ETHERSCAN_API_KEY = "YourApiKeyToken"  # TODO: Move to environment variable
+    BASE_URL = "https://api.etherscan.io/api"
+    
+    try:
+        # ✅ 1. Get ETH Balance
+        balance_response = requests.get(BASE_URL, params={
+            "module": "account",
+            "action": "balance",
+            "address": address,
+            "tag": "latest",
+            "apikey": ETHERSCAN_API_KEY
+        }, timeout=10)
+        
+        balance_data = balance_response.json()
+        
+        if balance_data.get("status") != "1":
+            logger.error(f"Etherscan balance error: {balance_data.get('message')}")
+            return None
+        
+        balance_wei = int(balance_data.get("result", 0))
+        balance_eth = balance_wei / 1e18
+        
+        # Get current ETH price (simplified - use price oracle in production)
+        eth_price = 2921.68  # TODO: Get from price oracle
+        balance_usd = balance_eth * eth_price
+        
+        # ✅ 2. Get Recent Transactions (last 100)
+        tx_response = requests.get(BASE_URL, params={
+            "module": "account",
+            "action": "txlist",
+            "address": address,
+            "startblock": 0,
+            "endblock": 99999999,
+            "page": 1,
+            "offset": 100,
+            "sort": "desc",
+            "apikey": ETHERSCAN_API_KEY
+        }, timeout=10)
+        
+        tx_data = tx_response.json()
+        
+        if tx_data.get("status") != "1":
+            logger.error(f"Etherscan tx error: {tx_data.get('message')}")
+            transactions = []
+        else:
+            transactions = tx_data.get("result", [])
+        
+        # ✅ 3. Calculate metrics from transactions
+        now = datetime.now()
+        thirty_days_ago = now - timedelta(days=30)
+        seven_days_ago = now - timedelta(days=7)
+        
+        recent_30d = []
+        recent_7d = []
+        total_volume = 0
+        
+        for tx in transactions:
+            tx_time = datetime.fromtimestamp(int(tx.get("timeStamp", 0)))
+            tx_value_wei = int(tx.get("value", 0))
+            tx_value_eth = tx_value_wei / 1e18
+            tx_value_usd = tx_value_eth * eth_price
+            
+            total_volume += tx_value_usd
+            
+            if tx_time >= thirty_days_ago:
+                recent_30d.append(tx_value_usd)
+            if tx_time >= seven_days_ago:
+                recent_7d.append(tx_value_usd)
+        
+        # Calculate last activity
+        last_activity_text = "Unknown"
+        last_tx_timestamp = 0
+        is_active = False
+        
+        if transactions:
+            last_tx_timestamp = int(transactions[0].get("timeStamp", 0))
+            time_diff = now.timestamp() - last_tx_timestamp
+            
+            if time_diff < 3600:
+                last_activity_text = f"{int(time_diff / 60)}m ago"
+                is_active = True
+            elif time_diff < 86400:
+                last_activity_text = f"{int(time_diff / 3600)}h ago"
+                is_active = True
+            elif time_diff < 604800:  # 7 days
+                last_activity_text = f"{int(time_diff / 86400)}d ago"
+                is_active = True
+            else:
+                last_activity_text = f"{int(time_diff / 86400)}d ago"
+                is_active = False
+        
+        # Calculate averages
+        avg_transfer_size = total_volume / len(transactions) if transactions else 0
+        
+        logger.info(f"✅ Etherscan data: {balance_eth:.4f} ETH, {len(transactions)} txs")
+        
+        return {
+            "balance_eth": balance_eth,
+            "balance_usd": balance_usd,
+            "transaction_count": len(transactions),
+            "recent_volume_30d": sum(recent_30d),
+            "recent_volume_7d": sum(recent_7d),
+            "avg_transfer_size": avg_transfer_size,
+            "last_activity_text": last_activity_text,
+            "last_tx_timestamp": last_tx_timestamp,
+            "is_active": is_active,
+            "transactions": transactions[:10]  # Last 10 for charts
+        }
+        
+    except requests.RequestException as e:
+        logger.error(f"❌ Etherscan API error: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"❌ Error fetching Etherscan data: {e}")
+        return None
+
+
+def generate_activity_chart(wallet, live_data: dict) -> list:
+    """Generate 7-day activity chart from live data or estimates."""
+    if not live_data or not live_data.get("transactions"):
+        # Fallback: Generate from DB data
+        base_daily_volume = (wallet.total_volume or 0) / 30
+        activity_data = []
+        
+        for i in range(7):
+            date = (datetime.now() - timedelta(days=6-i)).strftime('%m/%d')
+            variation = 0.7 + (i % 3) * 0.3
+            volume = base_daily_volume * variation
+            activity_data.append({"date": date, "volume": round(volume, 2)})
+        
+        return activity_data
+    
+    # Use real transaction data
+    transactions = live_data["transactions"]
+    eth_price = 2921.68  # TODO: Use price oracle
+    
+    # Group by day
+    daily_volumes = {}
+    for tx in transactions:
+        tx_date = datetime.fromtimestamp(int(tx["timeStamp"])).strftime('%m/%d')
+        tx_value = int(tx.get("value", 0)) / 1e18 * eth_price
+        
+        if tx_date not in daily_volumes:
+            daily_volumes[tx_date] = 0
+        daily_volumes[tx_date] += tx_value
+    
+    # Create chart data
+    activity_data = []
+    for i in range(7):
+        date = (datetime.now() - timedelta(days=6-i)).strftime('%m/%d')
+        volume = daily_volumes.get(date, 0)
+        activity_data.append({"date": date, "volume": round(volume, 2)})
+    
+    return activity_data
+
+
+def generate_transfer_size_chart(wallet, live_data: dict) -> list:
+    """Generate transfer size trend chart."""
+    if not live_data or not live_data.get("transactions"):
+        # Fallback
+        base_transfer = (wallet.total_volume or 0) / (wallet.transaction_count or 1)
+        transfer_size_data = []
+        
+        for i in range(7):
+            date = (datetime.now() - timedelta(days=6-i)).strftime('%m/%d')
+            variation = 0.8 + (i % 4) * 0.2
+            size = base_transfer * variation
+            transfer_size_data.append({"date": date, "size": round(size, 2)})
+        
+        return transfer_size_data
+    
+    # Use real data
+    transactions = live_data["transactions"]
+    eth_price = 2921.68
+    
+    # Group by day and calculate average
+    daily_sizes = {}
+    daily_counts = {}
+    
+    for tx in transactions:
+        tx_date = datetime.fromtimestamp(int(tx["timeStamp"])).strftime('%m/%d')
+        tx_value = int(tx.get("value", 0)) / 1e18 * eth_price
+        
+        if tx_date not in daily_sizes:
+            daily_sizes[tx_date] = 0
+            daily_counts[tx_date] = 0
+        
+        daily_sizes[tx_date] += tx_value
+        daily_counts[tx_date] += 1
+    
+    # Create chart data
+    transfer_size_data = []
+    for i in range(7):
+        date = (datetime.now() - timedelta(days=6-i)).strftime('%m/%d')
+        count = daily_counts.get(date, 0)
+        avg_size = daily_sizes.get(date, 0) / count if count > 0 else 0
+        transfer_size_data.append({"date": date, "size": round(avg_size, 2)})
+    
+    return transfer_size_data
+
+
+def format_wallet_response(wallet, source="database"):
+    """Format wallet response when Etherscan unavailable."""
+    return {
+        "address": wallet.address,
+        "label": wallet.label,
+        "entity_type": wallet.entity_type,
+        "confidence_score": wallet.confidence_score,
+        "lifetime_volume": wallet.total_volume or 0,
+        "transaction_count": wallet.transaction_count or 0,
+        "data_source": source,
+        "error": "Etherscan data unavailable"
+    }
 
 @router.get("/flow/sankey")
 async def get_sankey_flow(
