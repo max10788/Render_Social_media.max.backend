@@ -744,77 +744,16 @@ async def get_wallet_details(
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found")
         
-        # ✅ CHECK: Is this a VERIFIED OTC wallet?
-        is_verified = (wallet.confidence_score or 0) >= 80
+        # ✅ Delegate to service
+        from ..detection.wallet_profiler import WalletDetailsService
         
-        logger.info(f"🔍 Wallet verified: {is_verified} (confidence: {wallet.confidence_score}%)")
+        details = await WalletDetailsService.get_wallet_details(
+            address=address,
+            wallet=wallet,
+            db=db
+        )
         
-        # ✅ ALWAYS fetch live data from Etherscan
-        live_data = await fetch_etherscan_data(address)
-        
-        if not live_data:
-            # Etherscan failed, use DB data only
-            logger.warning(f"⚠️ Etherscan failed, using DB data only")
-            return format_wallet_response(wallet, source="database")
-        
-        # ✅ IF VERIFIED: Update DB with real data
-        if is_verified:
-            logger.info(f"💾 VERIFIED wallet - Updating DB with live data")
-            
-            # Update wallet with live Etherscan data
-            wallet.total_volume = live_data["balance_usd"]
-            wallet.transaction_count = live_data["transaction_count"]
-            wallet.last_active = datetime.fromtimestamp(live_data["last_tx_timestamp"])
-            wallet.is_active = live_data["is_active"]
-            
-            # Add metadata
-            if not wallet.tags:
-                wallet.tags = []
-            if "verified_live" not in wallet.tags:
-                wallet.tags.append("verified_live")
-            
-            # Commit to database
-            db.commit()
-            db.refresh(wallet)
-            
-            logger.info(f"✅ DB updated: ${wallet.total_volume:,.2f}, {wallet.transaction_count} txs")
-        else:
-            logger.info(f"⚠️ UNVERIFIED wallet - Only showing data, NOT updating DB")
-        
-        # Generate chart data based on real or calculated values
-        activity_data = generate_activity_chart(wallet, live_data)
-        transfer_size_data = generate_transfer_size_chart(wallet, live_data)
-        
-        # Return response with live data
-        return {
-            # Basic info (always from DB)
-            "address": wallet.address,
-            "label": wallet.label,
-            "entity_type": wallet.entity_type,
-            "entity_name": wallet.entity_name,
-            "confidence_score": wallet.confidence_score,
-            "is_active": wallet.is_active,
-            "is_verified": is_verified,  # ✅ NEW: Show if verified
-            
-            # ✅ Live metrics (from Etherscan)
-            "balance_eth": live_data["balance_eth"],
-            "balance_usd": live_data["balance_usd"],
-            "lifetime_volume": live_data["balance_usd"],  # Current balance as proxy
-            "volume_30d": live_data["recent_volume_30d"],
-            "volume_7d": live_data["recent_volume_7d"],
-            "avg_transfer": live_data["avg_transfer_size"],
-            "transaction_count": live_data["transaction_count"],
-            "last_activity": live_data["last_activity_text"],
-            
-            # Chart data
-            "activity_data": activity_data,
-            "transfer_size_data": transfer_size_data,
-            
-            # Metadata
-            "data_source": "etherscan_live" if is_verified else "etherscan_display",
-            "last_updated": datetime.now().isoformat(),
-            "tags": wallet.tags or []
-        }
+        return details
         
     except HTTPException:
         raise
