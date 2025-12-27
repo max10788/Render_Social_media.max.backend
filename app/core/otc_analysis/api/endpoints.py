@@ -820,7 +820,7 @@ async def get_activity_heatmap(
 
 @router.get("/watchlist")
 async def get_watchlist(
-    user_id: Optional[str] = Query(None),  # ← Optional, kein ... mehr!
+    user_id: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """
@@ -829,7 +829,15 @@ async def get_watchlist(
     GET /api/otc/watchlist?user_id=dev_user_123
     """
     try:
-        logger.info(f"📋 GET /watchlist for user {user_id[:20]}...")
+        # ✅ FIX: Check if user_id is None first!
+        if not user_id:
+            logger.info(f"📋 GET /watchlist: No user_id provided, returning empty list")
+            return {
+                "items": [],
+                "message": "No user authenticated"
+            }
+        
+        logger.info(f"📋 GET /watchlist for user {user_id[:20] if len(user_id) > 20 else user_id}...")
         
         items = db.query(OTCWatchlist).filter(
             OTCWatchlist.user_id == user_id
@@ -852,7 +860,7 @@ async def get_watchlist(
         }
         
     except Exception as e:
-        logger.error(f"❌ Error in /watchlist: {e}")
+        logger.error(f"❌ Error in /watchlist: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
