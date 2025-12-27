@@ -619,6 +619,132 @@ async def calculate_risk_metrics(request: RiskMetricsRequest):
         return {"var": 0.0, "expected_shortfall": 0.0, "beta": {}}
 
 # ------------------------------------------------------------------
+# Admin Endpoints - OTC Database Initialization
+# ------------------------------------------------------------------
+@app.get("/admin/init-database")
+async def initialize_otc_database():
+    """
+    🚀 Initialize OTC Analysis Database
+    
+    Creates tables and adds sample data if database is empty.
+    Safe to call multiple times - won't duplicate data.
+    
+    Returns:
+        JSON with initialization results
+    """
+    try:
+        logger.info("🔧 Admin: Database initialization requested")
+        
+        # Run initialization
+        result = init_database(verbose=False)
+        
+        if result["success"]:
+            logger.info(f"✅ Admin: Database initialized - {result['message']}")
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "success",
+                    "message": result["message"],
+                    "details": {
+                        "created": result.get("created", 0),
+                        "skipped": result.get("skipped", 0),
+                        "total_wallets": result.get("total_wallets", 0),
+                        "total_volume": result.get("total_volume", 0)
+                    }
+                }
+            )
+        else:
+            logger.error(f"❌ Admin: Database initialization failed - {result.get('error', 'Unknown error')}")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": result["message"],
+                    "error": result.get("error", "Unknown error")
+                }
+            )
+            
+    except Exception as e:
+        logger.error(f"❌ Admin: Exception during initialization: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"Database initialization failed: {str(e)}"
+            }
+        )
+
+
+@app.get("/admin/database-status")
+async def check_database_status():
+    """
+    📊 Check OTC Database Status
+    
+    Returns current wallet count and total volume.
+    """
+    try:
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from app.core.otc_analysis.models.wallet import OTCWallet
+        import os
+        
+        logger.info("🔍 Admin: Database status check requested")
+        
+        # Get database URL
+        db_url = os.getenv('DATABASE_URL')
+        if not db_url:
+            raise ValueError("DATABASE_URL not set")
+            
+        # Fix postgres:// to postgresql://
+        if db_url.startswith('postgres://'):
+            db_url = db_url.replace('postgres://', 'postgresql://', 1)
+        
+        # Create engine and session
+        engine = create_engine(db_url)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        
+        try:
+            # Query stats
+            total_wallets = session.query(OTCWallet).count()
+            all_wallets = session.query(OTCWallet).all()
+            total_volume = sum(w.total_volume or 0 for w in all_wallets)
+            
+            # Get some sample data
+            sample_wallets = session.query(OTCWallet).limit(3).all()
+            samples = [
+                {
+                    "address": w.address[:10] + "...",
+                    "label": w.label,
+                    "volume": w.total_volume
+                }
+                for w in sample_wallets
+            ]
+            
+            logger.info(f"✅ Admin: Database status - {total_wallets} wallets, ${total_volume:,.0f} volume")
+            
+            return {
+                "status": "connected",
+                "total_wallets": total_wallets,
+                "total_volume": total_volume,
+                "sample_wallets": samples,
+                "message": "Database is accessible and operational"
+            }
+            
+        finally:
+            session.close()
+        
+    except Exception as e:
+        logger.error(f"❌ Admin: Database status check failed: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"Cannot connect to database: {str(e)}"
+            }
+        )
+
+# ------------------------------------------------------------------
 # Simulation Status Endpoints
 # ------------------------------------------------------------------
 @app.get("/api/simulations", response_model=SimulationStatusResponse)
