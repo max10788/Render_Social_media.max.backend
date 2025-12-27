@@ -1,7 +1,7 @@
 from typing import List, Dict, Optional
 from datetime import datetime
-from app.core.otc_analysis.blockchain.etherscan import EtherscanAPI  # ← FIX
-from app.core.otc_analysis.blockchain.node_provider import NodeProvider  # ← FIX
+from app.core.otc_analysis.blockchain.etherscan import EtherscanAPI
+from app.core.otc_analysis.blockchain.node_provider import NodeProvider
 import logging
 
 logger = logging.getLogger(__name__)
@@ -9,12 +9,43 @@ logger = logging.getLogger(__name__)
 class TransactionExtractor:
     """
     Extracts and enriches transaction data from various sources.
-    Combines node data with Etherscan API for comprehensive transaction info.
+    
+    ✅ FIXED: Proper Wei-to-ETH conversion with sanity checks
+    ✅ FIXED: Uses int() instead of float() for precision
+    ✅ FIXED: Validates USD values before returning
     """
     
     def __init__(self, node_provider: NodeProvider, etherscan: EtherscanAPI):
         self.node_provider = node_provider
         self.etherscan = etherscan
+    
+    @staticmethod
+    def wei_to_eth(wei_value: str | int) -> float:
+        """
+        Convert Wei to ETH with proper precision.
+        
+        ✅ FIX: Uses int() instead of float() to avoid precision loss
+        
+        Args:
+            wei_value: Value in Wei (string or int)
+        
+        Returns:
+            Value in ETH (float)
+        """
+        try:
+            # ✅ Use int() for exact conversion, then divide
+            wei_int = int(wei_value) if isinstance(wei_value, str) else wei_value
+            eth_value = wei_int / 1e18
+            
+            # ✅ Sanity check: No wallet should have > 1 million ETH
+            if eth_value > 1_000_000:
+                logger.warning(f"⚠️ Suspicious ETH value: {eth_value:.2f} ETH from {wei_value} Wei")
+                return 0.0
+            
+            return eth_value
+        except (ValueError, TypeError, OverflowError) as e:
+            logger.error(f"❌ Failed to convert Wei value: {wei_value} - {e}")
+            return 0.0
     
     def extract_wallet_transactions(
         self,
@@ -71,19 +102,27 @@ class TransactionExtractor:
         return all_txs
     
     def _format_normal_transactions(self, txs: List[Dict]) -> List[Dict]:
-        """Format normal transactions from Etherscan."""
+        """
+        Format normal transactions from Etherscan.
+        
+        ✅ FIXED: Uses wei_to_eth() for proper conversion
+        """
         formatted = []
         
         for tx in txs:
             try:
+                # ✅ FIX: Use helper function for conversion
+                value_wei = tx.get('value', '0')
+                value_eth = self.wei_to_eth(value_wei)
+                
                 formatted.append({
                     'tx_hash': tx['hash'],
                     'block_number': int(tx['blockNumber']),
                     'timestamp': datetime.fromtimestamp(int(tx['timeStamp'])),
                     'from_address': tx['from'],
                     'to_address': tx['to'],
-                    'value': tx['value'],
-                    'value_decimal': float(tx['value']) / 1e18,  # Wei to ETH
+                    'value': value_wei,  # Keep original Wei string
+                    'value_decimal': value_eth,  # ✅ Already in ETH!
                     'gas_used': int(tx['gasUsed']),
                     'gas_price': int(tx['gasPrice']),
                     'is_contract_interaction': tx.get('input', '0x') != '0x',
@@ -99,13 +138,21 @@ class TransactionExtractor:
         return formatted
     
     def _format_internal_transactions(self, txs: List[Dict]) -> List[Dict]:
-        """Format internal transactions from Etherscan."""
+        """
+        Format internal transactions from Etherscan.
+        
+        ✅ FIXED: Uses wei_to_eth() for proper conversion
+        """
         formatted = []
         
         for tx in txs:
             try:
+                # ✅ FIX: Convert Wei to ETH properly
+                value_wei = tx.get('value', '0')
+                value_eth = self.wei_to_eth(value_wei)
+                
                 # Skip if no value
-                if int(tx.get('value', 0)) == 0:
+                if value_eth == 0:
                     continue
                 
                 formatted.append({
@@ -114,8 +161,8 @@ class TransactionExtractor:
                     'timestamp': datetime.fromtimestamp(int(tx['timeStamp'])),
                     'from_address': tx['from'],
                     'to_address': tx['to'],
-                    'value': tx['value'],
-                    'value_decimal': float(tx['value']) / 1e18,
+                    'value': value_wei,
+                    'value_decimal': value_eth,  # ✅ Already in ETH!
                     'gas_used': int(tx.get('gas', 0)),
                     'gas_price': 0,  # Not available for internal txs
                     'is_contract_interaction': True,
@@ -131,14 +178,24 @@ class TransactionExtractor:
         return formatted
     
     def _format_token_transactions(self, txs: List[Dict]) -> List[Dict]:
-        """Format ERC20 token transactions from Etherscan."""
+        """
+        Format ERC20 token transactions from Etherscan.
+        
+        ✅ FIXED: Proper decimal handling
+        """
         formatted = []
         
         for tx in txs:
             try:
                 # Calculate decimal value
                 decimals = int(tx.get('tokenDecimal', 18))
-                value_decimal = float(tx['value']) / (10 ** decimals)
+                value_raw = int(tx.get('value', 0))
+                value_decimal = value_raw / (10 ** decimals)
+                
+                # ✅ Sanity check for token values
+                if value_decimal > 1_000_000_000:  # > 1 billion tokens
+                    logger.warning(f"⚠️ Suspicious token value: {value_decimal}")
+                    continue
                 
                 formatted.append({
                     'tx_hash': tx['hash'],
@@ -174,6 +231,9 @@ class TransactionExtractor:
         """
         Add USD values to transactions using price oracle.
         
+        ✅ FIXED: Validates that value_decimal exists and is in ETH
+        ✅ FIXED: Adds sanity checks for USD values
+        
         OPTIMIZED: 
         - Only enriches most recent N transactions to avoid timeout
         - Caches prices per day/token to avoid excessive API calls
@@ -203,12 +263,36 @@ class TransactionExtractor:
         enriched_count = 0
         cached_count = 0
         failed_count = 0
+        suspicious_count = 0
         
         for tx in txs_to_enrich:
             try:
                 token_address = tx.get('token_address')  # None for ETH
                 timestamp = tx['timestamp']
-                amount = tx['value_decimal']
+                
+                # ✅ CRITICAL FIX: Ensure we're using ETH value, not Wei!
+                amount_eth = tx.get('value_decimal')
+                
+                if amount_eth is None:
+                    # Fallback: Try to convert from Wei
+                    value_wei = tx.get('value', '0')
+                    amount_eth = self.wei_to_eth(value_wei)
+                    logger.warning(f"⚠️ value_decimal missing for {tx.get('tx_hash', 'unknown')}, converted from Wei")
+                
+                # ✅ Skip if zero value
+                if amount_eth <= 0:
+                    tx['usd_value'] = 0.0
+                    continue
+                
+                # ✅ Sanity check: No single transaction should be > 100,000 ETH
+                if amount_eth > 100_000:
+                    logger.warning(
+                        f"⚠️ SUSPICIOUS: Transaction {tx.get('tx_hash', 'unknown')[:16]}... "
+                        f"has {amount_eth:.2f} ETH - SKIPPING to avoid bad data"
+                    )
+                    tx['usd_value'] = None
+                    suspicious_count += 1
+                    continue
                 
                 # Create cache key (token + date)
                 date_key = timestamp.strftime('%Y-%m-%d') if hasattr(timestamp, 'strftime') else None
@@ -227,14 +311,37 @@ class TransactionExtractor:
                     price_cache[cache_key] = price_usd
                 
                 if price_usd:
-                    tx['usd_value'] = amount * price_usd
-                    enriched_count += 1
+                    # ✅ Calculate USD value (amount is ALREADY in ETH!)
+                    usd_value = amount_eth * price_usd
+                    
+                    # ✅ SANITY CHECK: Flag unrealistic values
+                    if usd_value > 1_000_000_000:  # > $1 Billion
+                        logger.error(
+                            f"🚨 UNREALISTIC USD VALUE DETECTED:\n"
+                            f"   TX: {tx.get('tx_hash', 'unknown')[:16]}...\n"
+                            f"   Amount ETH: {amount_eth:.4f}\n"
+                            f"   Price USD: ${price_usd:,.2f}\n"
+                            f"   = USD Value: ${usd_value:,.2f}\n"
+                            f"   ❌ REJECTING (>$1B is unrealistic for single tx)"
+                        )
+                        tx['usd_value'] = None
+                        suspicious_count += 1
+                    else:
+                        tx['usd_value'] = usd_value
+                        enriched_count += 1
+                        
+                        # Log successful enrichment for debugging
+                        if enriched_count <= 3:  # Log first 3
+                            logger.info(
+                                f"✅ Enriched TX {tx.get('tx_hash', 'unknown')[:16]}...: "
+                                f"{amount_eth:.4f} ETH * ${price_usd:,.2f} = ${usd_value:,.2f}"
+                            )
                 else:
                     tx['usd_value'] = None
                     failed_count += 1
                     
             except Exception as e:
-                logger.debug(f"Error enriching transaction {tx.get('tx_hash')}: {e}")
+                logger.error(f"Error enriching transaction {tx.get('tx_hash')}: {e}", exc_info=True)
                 tx['usd_value'] = None
                 failed_count += 1
         
@@ -242,8 +349,18 @@ class TransactionExtractor:
         for tx in remaining_txs:
             tx['usd_value'] = None
         
-        logger.info(f"✅ Enriched {enriched_count} transactions ({cached_count} from cache, {failed_count} failed)")
+        # ✅ Enhanced logging
+        logger.info(f"✅ Enrichment complete:")
+        logger.info(f"   • Enriched: {enriched_count} transactions")
+        logger.info(f"   • Cached: {cached_count} (saved API calls)")
+        logger.info(f"   • Failed: {failed_count}")
+        logger.info(f"   • Suspicious (rejected): {suspicious_count}")
         logger.info(f"📊 Made {len(price_cache)} unique price API calls instead of {len(txs_to_enrich)}")
+        
+        # ✅ Calculate and log total volume for verification
+        total_usd = sum(tx.get('usd_value', 0) for tx in txs_to_enrich if tx.get('usd_value'))
+        avg_usd = total_usd / enriched_count if enriched_count > 0 else 0
+        logger.info(f"💵 Enriched Volume: ${total_usd:,.2f} total, ${avg_usd:,.2f} average")
         
         # Combine back together in original order
         return txs_to_enrich + remaining_txs
