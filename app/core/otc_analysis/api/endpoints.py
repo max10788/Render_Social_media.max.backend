@@ -886,6 +886,150 @@ async def get_sankey_flow(
         logger.error(f"❌ Error in /flow/sankey: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/transfers/timeline")
+async def get_transfer_timeline(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    min_confidence: float = Query(0),
+    sort_by: str = Query("timestamp"),
+    db: Session = Depends(get_db)
+):
+    """
+    Get transfer timeline data.
+    
+    GET /api/otc/transfers/timeline
+    """
+    try:
+        if start_date:
+            start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        else:
+            start = datetime.now() - timedelta(days=7)
+        
+        if end_date:
+            end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        else:
+            end = datetime.now()
+        
+        logger.info(f"📅 GET /transfers/timeline: {start.date()} to {end.date()}")
+        
+        # Get wallets in time range
+        wallets = db.query(OTCWallet).filter(
+            OTCWallet.last_active >= start,
+            OTCWallet.last_active <= end,
+            OTCWallet.confidence_score >= min_confidence
+        ).order_by(OTCWallet.last_active.desc()).limit(50).all()
+        
+        # ✅ Generate timeline events from wallet data
+        events = [
+            {
+                "timestamp": w.last_active.isoformat() if w.last_active else datetime.now().isoformat(),
+                "from_address": w.address,
+                "to_address": None,  # Unknown without transaction data
+                "amount_usd": float(w.total_volume or 0) / (w.transaction_count or 1),  # Avg transfer
+                "token": "USDT",  # Default
+                "confidence_score": float(w.confidence_score or 0),
+                "entity_type": w.entity_type,
+                "label": w.label
+            }
+            for w in wallets
+        ]
+        
+        logger.info(f"✅ Timeline: {len(events)} events")
+        
+        return {
+            "events": events,
+            "metadata": {
+                "event_count": len(events),
+                "period": {
+                    "start": start.isoformat(),
+                    "end": end.isoformat()
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error in /transfers/timeline: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/analytics/distributions")
+async def get_distributions(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Get distribution statistics.
+    
+    GET /api/otc/analytics/distributions
+    """
+    try:
+        if start_date:
+            start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        else:
+            start = datetime.now() - timedelta(days=30)
+        
+        if end_date:
+            end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        else:
+            end = datetime.now()
+        
+        logger.info(f"📊 GET /analytics/distributions: {start.date()} to {end.date()}")
+        
+        # Get wallets
+        wallets = db.query(OTCWallet).filter(
+            OTCWallet.last_active >= start,
+            OTCWallet.last_active <= end
+        ).all()
+        
+        # ✅ Calculate entity type distribution
+        entity_distribution = {}
+        for w in wallets:
+            entity_type = w.entity_type or "unknown"
+            if entity_type not in entity_distribution:
+                entity_distribution[entity_type] = {"count": 0, "volume": 0}
+            entity_distribution[entity_type]["count"] += 1
+            entity_distribution[entity_type]["volume"] += (w.total_volume or 0)
+        
+        # ✅ Calculate volume distribution (buckets)
+        volume_buckets = {
+            "0-1M": 0,
+            "1M-10M": 0,
+            "10M-100M": 0,
+            "100M-1B": 0,
+            "1B+": 0
+        }
+        
+        for w in wallets:
+            vol = w.total_volume or 0
+            if vol < 1_000_000:
+                volume_buckets["0-1M"] += 1
+            elif vol < 10_000_000:
+                volume_buckets["1M-10M"] += 1
+            elif vol < 100_000_000:
+                volume_buckets["10M-100M"] += 1
+            elif vol < 1_000_000_000:
+                volume_buckets["100M-1B"] += 1
+            else:
+                volume_buckets["1B+"] += 1
+        
+        logger.info(f"✅ Distributions: {len(entity_distribution)} entity types")
+        
+        return {
+            "entity_distribution": entity_distribution,
+            "volume_distribution": volume_buckets,
+            "metadata": {
+                "total_wallets": len(wallets),
+                "period": {
+                    "start": start.isoformat(),
+                    "end": end.isoformat()
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error in /analytics/distributions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/heatmap")
 async def get_activity_heatmap(
     start_date: Optional[str] = Query(None),
