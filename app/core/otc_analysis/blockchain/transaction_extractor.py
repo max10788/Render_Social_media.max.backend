@@ -1,19 +1,3 @@
-"""
-COMPLETE FIX - transaction_extractor.py
-
-✅ FIXED: Wei-zu-ETH conversion mit int() statt float()
-✅ FIXED: Token-specific validation thresholds
-✅ FIXED: Type-specific sanity checks (ETH vs Token)
-✅ FIXED: Proper error handling and logging
-✅ FIXED: Rejection of unrealistic values
-
-Version: 2.0 FINAL
-Date: 2024-12-27
-"""
-
-# Kopiere diesen Code komplett nach:
-# app/core/otc_analysis/blockchain/transaction_extractor.py
-
 from typing import List, Dict, Optional
 from datetime import datetime
 from app.core.otc_analysis.blockchain.etherscan import EtherscanAPI
@@ -30,6 +14,7 @@ class TransactionExtractor:
     ✅ FIXED: Uses int() instead of float() for precision
     ✅ FIXED: Token-specific validation and thresholds
     ✅ FIXED: Validates USD values before returning
+    ✅ FIXED: Shows actual token symbol (USDT, LINK) not "ERC20"
     """
     
     def __init__(self, node_provider: NodeProvider, etherscan: EtherscanAPI):
@@ -141,6 +126,7 @@ class TransactionExtractor:
                     'method_id': tx.get('input', '')[:10] if len(tx.get('input', '')) >= 10 else None,
                     'is_error': tx.get('isError', '0') == '1',
                     'token_address': None,
+                    'token_symbol': 'ETH',  # ✅ FIXED: Native ETH
                     'tx_type': 'normal'
                 })
             except Exception as e:
@@ -175,6 +161,7 @@ class TransactionExtractor:
                     'method_id': None,
                     'is_error': tx.get('isError', '0') == '1',
                     'token_address': None,
+                    'token_symbol': 'ETH',  # ✅ FIXED: Native ETH
                     'tx_type': 'internal'
                 })
             except Exception as e:
@@ -188,6 +175,7 @@ class TransactionExtractor:
         Format ERC20 token transactions from Etherscan.
         
         ✅ HOTFIX: Better validation for token amounts with token-specific thresholds
+        ✅ FIXED: Includes token_symbol for proper logging
         """
         formatted = []
         rejected_count = 0
@@ -238,7 +226,7 @@ class TransactionExtractor:
                     'is_error': False,
                     'token_address': tx['contractAddress'],
                     'token_name': tx.get('tokenName'),
-                    'token_symbol': tx.get('tokenSymbol'),
+                    'token_symbol': token_symbol,  # ✅ FIXED: Include token symbol!
                     'token_decimals': decimals,
                     'tx_type': 'erc20'
                 })
@@ -263,6 +251,7 @@ class TransactionExtractor:
         ✅ FIXED: Validates that value_decimal exists and is in correct unit
         ✅ FIXED: Type-specific sanity checks (ETH vs Token)
         ✅ FIXED: Better error handling and logging
+        ✅ FIXED: Shows actual token symbol (USDT, LINK) not "ERC20"
         """
         if not transactions:
             return []
@@ -287,6 +276,9 @@ class TransactionExtractor:
                 tx_type = tx.get('tx_type', 'normal')
                 timestamp = tx['timestamp']
                 
+                # ✅ Get token symbol for better logging
+                token_symbol = tx.get('token_symbol', 'ETH' if not token_address else 'UNKNOWN')
+                
                 # ✅ Get amount (already in correct decimals from formatting)
                 amount = tx.get('value_decimal')
                 
@@ -301,7 +293,7 @@ class TransactionExtractor:
                     else:
                         # For tokens, skip if value_decimal missing
                         logger.error(
-                            f"❌ value_decimal missing for TOKEN TX {tx.get('tx_hash', 'unknown')[:16]}..."
+                            f"❌ value_decimal missing for {token_symbol} TX {tx.get('tx_hash', 'unknown')[:16]}..."
                         )
                         tx['usd_value'] = None
                         failed_count += 1
@@ -328,7 +320,7 @@ class TransactionExtractor:
                     if amount > 1e15:  # 1 quadrillion tokens
                         logger.warning(
                             f"⚠️ SUSPICIOUS: Token TX {tx.get('tx_hash', 'unknown')[:16]}... "
-                            f"has {amount:.2e} tokens - SKIPPING"
+                            f"has {amount:.2e} {token_symbol} - SKIPPING"
                         )
                         tx['usd_value'] = None
                         suspicious_count += 1
@@ -343,9 +335,11 @@ class TransactionExtractor:
                     price_usd = price_cache[cache_key]
                     cached_count += 1
                 else:
-                    # Fetch price
+                    # ✅ CRITICAL: Pass token_address to price oracle, NOT "erc20"!
+                    # For ERC20 tokens: token_address = 0xdac17f958... (USDT contract)
+                    # For ETH: token_address = None
                     price_usd = price_oracle.get_historical_price(
-                        token_address,
+                        token_address,  # ✅ CORRECT: Specific token contract address
                         timestamp
                     )
                     price_cache[cache_key] = price_usd
@@ -359,7 +353,7 @@ class TransactionExtractor:
                         logger.error(
                             f"🚨 UNREALISTIC USD VALUE:\n"
                             f"   TX: {tx.get('tx_hash', 'unknown')[:16]}...\n"
-                            f"   Type: {tx_type}\n"
+                            f"   Token: {token_symbol}\n"
                             f"   Amount: {amount:.4f}\n"
                             f"   Price: ${price_usd:,.2f}\n"
                             f"   = USD: ${usd_value:,.2f}\n"
@@ -371,11 +365,11 @@ class TransactionExtractor:
                         tx['usd_value'] = usd_value
                         enriched_count += 1
                         
-                        # Log first few successful enrichments
+                        # ✅ FIXED: Log with actual token symbol (USDT, LINK) not "ERC20"!
                         if enriched_count <= 3:
                             logger.info(
                                 f"✅ Enriched TX {tx.get('tx_hash', 'unknown')[:16]}...: "
-                                f"{amount:.4f} {tx_type.upper()} * ${price_usd:,.2f} = ${usd_value:,.2f}"
+                                f"{amount:.4f} {token_symbol} * ${price_usd:,.2f} = ${usd_value:,.2f}"
                             )
                 else:
                     tx['usd_value'] = None
