@@ -685,6 +685,73 @@ async def get_network_graph(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/flow/sankey")
+async def get_sankey_flow(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+    min_flow_size: float = Query(100000),
+    db: Session = Depends(get_db)
+):
+    """
+    Get Sankey flow diagram data.
+    
+    GET /api/otc/flow/sankey?start_date=2024-11-21&end_date=2024-12-21&min_flow_size=100000
+    
+    Returns data specifically formatted for D3 Sankey diagram.
+    """
+    try:
+        if start_date:
+            start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        else:
+            start = datetime.now() - timedelta(days=30)
+        
+        if end_date:
+            end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        else:
+            end = datetime.now()
+        
+        logger.info(f"💱 GET /flow/sankey: {start.date()} to {end.date()}")
+        
+        # Get wallets
+        wallets = db.query(OTCWallet).filter(
+            OTCWallet.last_active >= start,
+            OTCWallet.last_active <= end,
+            OTCWallet.total_volume >= min_flow_size  # Only significant volumes
+        ).order_by(OTCWallet.total_volume.desc()).limit(50).all()
+        
+        # Format nodes for D3 Sankey
+        nodes = [
+            {
+                "name": w.label or f"{w.address[:8]}...",
+                "category": (w.entity_type or "Unknown").replace('_', ' ').title(),
+                "value": float(w.total_volume or 0),
+                "address": w.address
+            }
+            for w in wallets
+        ]
+        
+        # ✅ NO MOCK DATA - Empty links until transaction data available
+        links = []
+        
+        logger.info(f"✅ Sankey: {len(nodes)} nodes, {len(links)} links")
+        
+        return {
+            "nodes": nodes,
+            "links": links,  # Empty - no transaction relationships yet
+            "metadata": {
+                "node_count": len(nodes),
+                "link_count": len(links),
+                "min_flow_size": min_flow_size,
+                "period": {
+                    "start": start.isoformat(),
+                    "end": end.isoformat()
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error in /flow/sankey: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/heatmap")
 async def get_activity_heatmap(
