@@ -742,7 +742,7 @@ async def get_activity_heatmap(
 
 @router.get("/watchlist")
 async def get_watchlist(
-    user_id: str = Query(...),
+    user_id: Optional[str] = Query(None),  # ← Optional, kein ... mehr!
     db: Session = Depends(get_db)
 ):
     """
