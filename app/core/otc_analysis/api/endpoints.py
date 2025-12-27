@@ -609,16 +609,9 @@ async def get_network_graph(
     db: Session = Depends(get_db)
 ):
     """
-    Get network graph with ALL Phase 2 visualization data.
+    Get network graph data.
     
-    GET /api/otc/network/graph?start_date=2024-11-21&end_date=2024-12-21&max_nodes=500
-    
-    Returns:
-    {
-        "nodes": [...],
-        "edges": [...],
-        "metadata": {...}
-    }
+    Returns nodes (wallets) with empty edges array until real transaction data is implemented.
     """
     try:
         if start_date:
@@ -639,10 +632,10 @@ async def get_network_graph(
             OTCWallet.last_active <= end
         ).order_by(OTCWallet.total_volume.desc()).limit(max_nodes).all()
         
-        # ✅ Create nodes with proper structure for NetworkGraph.jsx
+        # Create nodes with proper structure for NetworkGraph.jsx
         nodes = [
             {
-                "address": w.address,  # ✅ NetworkGraph expects "address" not "id"
+                "address": w.address,
                 "label": w.label or f"{w.address[:6]}...{w.address[-4:]}",
                 "entity_type": w.entity_type or "unknown",
                 "entity_name": w.entity_name,
@@ -655,71 +648,14 @@ async def get_network_graph(
             for w in wallets
         ]
         
-        # ✅ Create mock edges between wallets for visualization
+        # ✅ NO MOCK DATA - Empty edges until real transaction data is available
         edges = []
-        if len(wallets) >= 2:
-            # Create sequential connections (wallet 0 → 1, 1 → 2, etc.)
-            for i in range(min(len(wallets) - 1, 12)):  # Max 12 edges
-                source = wallets[i]
-                target = wallets[i + 1]
-                
-                # Transfer amount = 5-15% of source volume
-                transfer_amount = (source.total_volume or 0) * (0.05 + (i % 3) * 0.05)
-                
-                edges.append({
-                    "source": source.address,
-                    "target": target.address,
-                    "transfer_amount_usd": float(transfer_amount),
-                    "transaction_count": 3 + (i % 5),
-                    "is_suspected_otc": True,
-                    "confidence_score": 0.75 + (i % 3) * 0.08,
-                    "edge_count": 1
-                })
-            
-            # Add some cross-connections for more interesting graph
-            if len(wallets) >= 3:
-                # Connect first to third
-                edges.append({
-                    "source": wallets[0].address,
-                    "target": wallets[2].address,
-                    "transfer_amount_usd": float((wallets[0].total_volume or 0) * 0.03),
-                    "transaction_count": 2,
-                    "is_suspected_otc": True,
-                    "confidence_score": 0.68,
-                    "edge_count": 1
-                })
-            
-            if len(wallets) >= 4:
-                # Connect second to fourth
-                edges.append({
-                    "source": wallets[1].address,
-                    "target": wallets[3].address,
-                    "transfer_amount_usd": float((wallets[1].total_volume or 0) * 0.07),
-                    "transaction_count": 4,
-                    "is_suspected_otc": True,
-                    "confidence_score": 0.82,
-                    "edge_count": 1
-                })
-            
-            if len(wallets) >= 5:
-                # Create a hub pattern - connect wallet 0 to others
-                for i in [2, 3, 4]:
-                    if i < len(wallets):
-                        edges.append({
-                            "source": wallets[0].address,
-                            "target": wallets[i].address,
-                            "transfer_amount_usd": float((wallets[0].total_volume or 0) * 0.02),
-                            "transaction_count": 1 + i,
-                            "is_suspected_otc": True,
-                            "confidence_score": 0.65 + (i * 0.05),
-                            "edge_count": 1
-                        })
         
         logger.info(f"✅ Graph: {len(nodes)} nodes, {len(edges)} edges")
         
         return {
             "nodes": nodes,
-            "edges": edges,
+            "edges": edges,  # ✅ Empty - no mock data
             "metadata": {
                 "node_count": len(nodes),
                 "edge_count": len(edges),
@@ -733,6 +669,7 @@ async def get_network_graph(
     except Exception as e:
         logger.error(f"❌ Error in /network/graph: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/heatmap")
