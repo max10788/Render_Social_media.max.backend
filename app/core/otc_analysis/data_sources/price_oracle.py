@@ -1,3 +1,18 @@
+"""
+COMPLETE FIX - price_oracle.py
+
+✅ FIXED: Price validation with reasonable ranges
+✅ FIXED: Fallback prices when API fails
+✅ FIXED: Better error handling
+✅ FIXED: Clear documentation
+
+Version: 2.0 FINAL
+Date: 2024-12-27
+"""
+
+# Kopiere diesen Code komplett nach:
+# app/core/otc_analysis/data_sources/price_oracle.py
+
 import requests
 import time
 from typing import Optional, Dict
@@ -9,11 +24,12 @@ logger = logging.getLogger(__name__)
 class PriceOracle:
     """
     Fetches historical and current cryptocurrency prices.
-    Uses CoinGecko and CoinMarketCap APIs.
-    Implements caching strategy (5 minute TTL).
+    Uses CoinGecko API (free, no API key needed).
+    Implements caching strategy with 5 minute TTL.
     
     ✅ FIXED: Added sanity checks for price values
     ✅ FIXED: Better error handling and logging
+    ✅ FIXED: Fallback prices when API unavailable
     """
     
     def __init__(self, cache_manager: Optional['CacheManager'] = None):
@@ -28,15 +44,20 @@ class PriceOracle:
             '0xdac17f958d2ee523a2206206994597c13d831ec7': 'tether',  # USDT
             '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'usd-coin',  # USDC
             '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599': 'wrapped-bitcoin',  # WBTC
-            # Add more as needed
+            '0x514910771af9ca656af840dff83e8264ecf986ca': 'chainlink',  # LINK
+            '0x1f9840a85d5af5bf1d1762f925bdaddc4201f984': 'uniswap',  # UNI
+            '0x7d1afa7b718fb893db30a3abc0cfc608aacfebb0': 'matic-network',  # MATIC
         }
         
         # ✅ Reasonable price ranges for validation
         self.price_ranges = {
-            'ethereum': (100, 10000),  # ETH should be between $100-$10K
-            'tether': (0.95, 1.05),    # USDT should be ~$1
-            'usd-coin': (0.95, 1.05),  # USDC should be ~$1
-            'wrapped-bitcoin': (10000, 200000),  # WBTC follows BTC
+            'ethereum': (100, 10000),        # ETH: $100-$10K
+            'tether': (0.95, 1.05),          # USDT: ~$1
+            'usd-coin': (0.95, 1.05),        # USDC: ~$1
+            'wrapped-bitcoin': (10000, 200000),  # WBTC: $10K-$200K
+            'chainlink': (5, 100),           # LINK: $5-$100
+            'uniswap': (3, 50),              # UNI: $3-$50
+            'matic-network': (0.3, 5),       # MATIC: $0.3-$5
         }
     
     def _rate_limit(self):
@@ -92,6 +113,12 @@ class PriceOracle:
         Checks cache first, fetches if not cached.
         
         ✅ FIXED: Added price validation
+        
+        Args:
+            token_address: Token contract address (None for ETH)
+            
+        Returns:
+            Current USD price
         """
         # Check cache
         if self.cache:
@@ -238,6 +265,7 @@ class PriceOracle:
             2021: 3000.0,
             2020: 600.0,
             2019: 200.0,
+            2018: 500.0,
         }
         
         if token_id == 'ethereum':
@@ -255,6 +283,15 @@ class PriceOracle:
             if year and year in eth_fallback_prices:
                 return eth_fallback_prices[year] * 15  # BTC typically ~15x ETH
             return 40000.0  # Default
+        
+        elif token_id == 'chainlink':
+            return 15.0  # LINK average
+        
+        elif token_id == 'uniswap':
+            return 10.0  # UNI average
+        
+        elif token_id == 'matic-network':
+            return 1.0  # MATIC average
         
         return None
     
