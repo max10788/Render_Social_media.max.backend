@@ -71,3 +71,6 @@ flake8==7.0.0
 mypy==1.8.0
 # Additional
 ccxt==4.4.30
+# Socket.IO Support für Live-Updates
+python-socketio>=5.11.0
+python-socketio[asyncio]>=5.11.0
