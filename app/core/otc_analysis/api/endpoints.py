@@ -664,30 +664,127 @@ async def trace_flow(request: FlowTraceRequest):
 
 
 @router.get("/desks")
-async def get_otc_desks():
+async def get_otc_desks(
+    include_discovered: bool = Query(True, description="Include auto-discovered desks"),
+    include_db_validated: bool = Query(True, description="Include validated desks from database"),
+    min_confidence: float = Query(0.7, ge=0.0, le=1.0, description="Minimum confidence score (0-1)"),
+    source: Optional[str] = Query(None, description="Filter by source: registry, database, or all"),
+    db: Session = Depends(get_db)
+):
     """
-    Get list of all known OTC desks.
+    🎯 Get list of ALL OTC desks from MULTIPLE sources.
     
-    GET /api/otc/desks
+    GET /api/otc/desks?include_discovered=true&include_db_validated=true&min_confidence=0.7
+    
+    **Sources:**
+    - **Registry**: Verified + Discovered desks (via Moralis)
+    - **Database**: Validated wallets (high confidence from profiling)
+    
+    **Query Parameters:**
+    - `include_discovered`: Include auto-discovered desks (default: true)
+    - `include_db_validated`: Include DB validated desks (default: true)
+    - `min_confidence`: Minimum confidence 0-1 (default: 0.7)
+    - `source`: Filter by 'registry', 'database', or null for all
+    
+    **Returns:**
+    Combined list with source tracking!
+    
+    **Example Response:**
+    ```json
+    {
+      "success": true,
+      "data": {
+        "desks": [
+          {
+            "name": "jump_trading",
+            "display_name": "Jump Trading",
+            "desk_category": "verified",
+            "data_source": "registry",
+            "confidence": 0.95,
+            "addresses": ["0x..."],
+            ...
+          },
+          {
+            "name": "desk_abc123",
+            "display_name": "XYZ Capital",
+            "desk_category": "db_validated",
+            "data_source": "database",
+            "confidence": 0.85,
+            "total_volume": 5000000,
+            ...
+          }
+        ],
+        "total_count": 45,
+        "sources": {
+          "registry": 25,
+          "database": 20
+        }
+      }
+    }
+    ```
     """
-    logger.info(f"🏢 Fetching OTC desk list...")
+    logger.info(f"🏢 GET /desks: discovered={include_discovered}, db={include_db_validated}, min_conf={min_confidence}")
     
     try:
-        desks = otc_registry.get_desk_list()
-        logger.info(f"✅ Loaded {len(desks)} OTC desks")
+        # ✅ AUTO-SYNC: Ensure registry wallets in DB
+        await ensure_registry_wallets_in_db(db, max_to_fetch=3)
+        
+        # ✅ Get combined desk list (Registry + Database)
+        desks = otc_registry.get_combined_desk_list(
+            include_discovered=include_discovered,
+            include_db_validated=include_db_validated,
+            min_confidence=min_confidence,
+            db_session=db
+        )
+        
+        # ✅ Filter by source if requested
+        if source:
+            source_lower = source.lower()
+            if source_lower == 'registry':
+                desks = [d for d in desks if d.get('data_source') == 'registry']
+                logger.info(f"   📋 Filtered to registry desks only")
+            elif source_lower == 'database':
+                desks = [d for d in desks if d.get('data_source') == 'database']
+                logger.info(f"   💾 Filtered to database desks only")
+        
+        # ✅ Count by source and category
+        registry_count = sum(1 for d in desks if d.get('data_source') == 'registry')
+        database_count = sum(1 for d in desks if d.get('data_source') == 'database')
+        
+        verified_count = sum(1 for d in desks if d.get('desk_category') == 'verified')
+        discovered_count = sum(1 for d in desks if d.get('desk_category') == 'discovered')
+        db_validated_count = sum(1 for d in desks if d.get('desk_category') == 'db_validated')
+        
+        logger.info(f"✅ Loaded {len(desks)} OTC desks:")
+        logger.info(f"   • Registry: {registry_count} (Verified: {verified_count}, Discovered: {discovered_count})")
+        logger.info(f"   • Database: {database_count} (Validated: {db_validated_count})")
         
         return {
             "success": True,
             "data": {
                 "desks": desks,
-                "total_count": len(desks)
+                "total_count": len(desks),
+                "sources": {
+                    "registry": registry_count,
+                    "database": database_count
+                },
+                "categories": {
+                    "verified": verified_count,
+                    "discovered": discovered_count,
+                    "db_validated": db_validated_count
+                },
+                "filters_applied": {
+                    "include_discovered": include_discovered,
+                    "include_db_validated": include_db_validated,
+                    "min_confidence": min_confidence,
+                    "source_filter": source
+                }
             }
         }
         
     except Exception as e:
         logger.error(f"❌ Failed to fetch desks: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/desks/{desk_name}")
 async def get_desk_details(desk_name: str):
