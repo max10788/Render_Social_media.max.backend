@@ -588,12 +588,12 @@ class OTCDeskRegistry:
         
         return desk_list
     
-    def refresh_desks(self, force_discovery: bool = True) -> int:
+    def refresh_desks(self, force_discovery: bool = False) -> int:  # ✅ DEFAULT False!
         """
         Force refresh registry.
         
         Args:
-            force_discovery: Run active discovery
+            force_discovery: Run active discovery (WARNING: can be slow!)
             
         Returns:
             Number of desks in registry
@@ -607,13 +607,12 @@ class OTCDeskRegistry:
         if self.cache:
             self.cache.delete('otc_desks_full', prefix='otc')
         
-        # Rebuild with discovery
-        old_state = self.discovery_enabled
-        self.discovery_enabled = force_discovery
-        
-        desks = self._get_cached_desks()
-        
-        self.discovery_enabled = old_state
+        # Rebuild - discovery only if explicitly requested
+        if force_discovery:
+            logger.warning("⚠️  Running discovery - this may take time!")
+            desks = self._validate_and_enrich_desks(include_discovery=True)
+        else:
+            desks = self._get_cached_desks()
         
         logger.info(f"✅ Refreshed {len(desks)} OTC desks")
         
