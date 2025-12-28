@@ -74,3 +74,5 @@ ccxt==4.4.30
 # Socket.IO Support für Live-Updates
 python-socketio>=5.11.0
 python-socketio[asyncio]>=5.11.0
+
+beautifulsoup4==4.12.3
