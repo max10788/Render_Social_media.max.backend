@@ -41,17 +41,17 @@ from app.core.orderbook_heatmap.api.endpoints import router as orderbook_heatmap
 from app.core.iceberg_orders.api.endpoints import router as iceberg_orders_router
 
 # otc endpoints
-from app.core.otc_analysis.api.endpoints import router as otc_analysis_router
+# ✅ NEUE IMPORTS (KORREKT):
 from app.core.otc_analysis.api.admin import router as otc_admin_router
 from app.core.otc_analysis.api.desks import router as otc_desks_router
-from app.core.otc_analysis.api.flow import router as otc_flow_router
-from app.core.otc_analysis.api.monitoring import router as otc_monitoring_router
-from app.core.otc_analysis.api.network import router as otc_network_router
-from app.core.otc_analysis.api.statistics import router as otc_statistics_router
-from app.core.otc_analysis.api.streams import router as otc_streams_router
-from app.core.otc_analysis.api.validators import router as otc_validators_router
 from app.core.otc_analysis.api.wallets import router as otc_wallets_router
-from app.core.otc_analysis.api.websocket import router as otc_websocket_router
+from app.core.otc_analysis.api.statistics import router as otc_statistics_router
+from app.core.otc_analysis.api.network import router as otc_network_router
+from app.core.otc_analysis.api.monitoring import router as otc_monitoring_router
+from app.core.otc_analysis.api.streams import router as otc_streams_router
+
+# ✅ Flow hat spezielle Router (flow_router statt router)
+from app.core.otc_analysis.api.flow import router as otc_flow_router
 from scripts.init_otc_db import init_database
 
 # Konfiguration und Datenbank
