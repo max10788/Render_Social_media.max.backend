@@ -323,7 +323,26 @@ app.include_router(hybrid_router)
 app.include_router(dex_chart_router, prefix="/api/v1")
 app.include_router(orderbook_heatmap_router)
 app.include_router(iceberg_orders_router)
-app.include_router(otc_analysis_router)  # OTC Analysis Router
+
+# ------------------------------------------------------------------
+# OTC Analysis API Routes (Modular Structure)
+# ------------------------------------------------------------------
+# ✅ WICHTIG: Alte endpoints.py Router entfernen wenn vorhanden!
+# app.include_router(otc_analysis_router)  # ← DEPRECATED - nicht mehr nutzen
+
+# ✅ NEU: Modulare OTC Router (9 Module)
+app.include_router(otc_desks_router, prefix="/api/otc")          # Desk endpoints
+app.include_router(otc_wallets_router, prefix="/api/otc")        # Wallet endpoints
+app.include_router(otc_statistics_router, prefix="/api/otc")     # Statistics endpoints
+app.include_router(otc_network_router, prefix="/api/otc")        # Network endpoints
+app.include_router(otc_flow_router, prefix="/api/otc")           # Flow endpoints
+app.include_router(otc_monitoring_router, prefix="/api/otc")     # Monitoring endpoints
+app.include_router(otc_admin_router, prefix="/api/otc")          # Admin endpoints
+app.include_router(otc_streams_router, prefix="/api/otc")        # Streams endpoints (MORALIS)
+
+# ✅ Optional: Validators & WebSocket (wenn du sie nutzt)
+# app.include_router(otc_validators_router, prefix="/api/otc")
+# app.include_router(otc_websocket_router, prefix="/api/otc")
 
 # ------------------------------------------------------------------
 # WebSocket Endpoint (behält den nativen /ws Endpoint)
