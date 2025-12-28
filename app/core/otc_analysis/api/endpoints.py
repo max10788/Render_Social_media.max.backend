@@ -1604,18 +1604,22 @@ async def get_watchlist(
 
 @router.post("/watchlist")
 async def add_to_watchlist(
-    user_id: str,
-    wallet_address: str,
-    notes: Optional[str] = None,
-    alert_threshold: Optional[float] = None,
+    user_id: str = Query(...),
+    wallet_address: str = Query(...),
+    notes: Optional[str] = Query(None),
+    alert_threshold: Optional[float] = Query(None),
     db: Session = Depends(get_db)
 ):
     """
     Add wallet to watchlist.
     
-    POST /api/otc/watchlist?user_id=dev_user_123&wallet_address=0x...
+    ✅ FIXED: Verwendet Query-Parameter statt JSON Body
+    
+    POST /api/otc/watchlist?user_id=dev_user_123&wallet_address=0x...&notes=Test
     """
     try:
+        logger.info(f"➕ Adding to watchlist: {wallet_address[:10]}... for user {user_id[:20]}...")
+        
         # Check if already exists
         existing = db.query(OTCWatchlist).filter(
             OTCWatchlist.user_id == user_id,
@@ -1623,6 +1627,7 @@ async def add_to_watchlist(
         ).first()
         
         if existing:
+            logger.warning(f"⚠️  Wallet already in watchlist")
             raise HTTPException(status_code=400, detail="Wallet already in watchlist")
         
         # Create new watchlist item
@@ -1638,6 +1643,8 @@ async def add_to_watchlist(
         db.commit()
         db.refresh(item)
         
+        logger.info(f"✅ Added to watchlist: ID {item.id}")
+        
         return {
             "id": str(item.id),
             "wallet_address": item.wallet_address,
@@ -1648,9 +1655,8 @@ async def add_to_watchlist(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"❌ Error adding to watchlist: {e}")
+        logger.error(f"❌ Error adding to watchlist: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.delete("/watchlist/{item_id}")
 async def remove_from_watchlist(
