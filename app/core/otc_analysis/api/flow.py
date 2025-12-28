@@ -355,4 +355,5 @@ async def get_transfer_timeline(
 
 
 # Export routers
-__all__ = ["network_router", "flow_router"]
+router = flow_router  # ✅ Default export
+__all__ = ["network_router", "flow_router", "router"]
