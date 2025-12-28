@@ -1,10 +1,13 @@
 """
 Complete OTC Analysis API Endpoints
-Combines Phase 1 and Phase 2 endpoints into a single file.
+Combines Phase 1 and Phase 2 endpoints with Auto-Sync functionality.
 
 ✅ FIXED: Now uses REAL PostgreSQL Database instead of Mock DB
+✅ NEW: Auto-sync registry wallets on every request
+✅ NEW: Admin endpoint to clear mock data
 """
 import os
+import time
 from fastapi import APIRouter, HTTPException, Query, Depends, Header
 from typing import List, Optional
 from datetime import datetime, timedelta
@@ -116,6 +119,226 @@ class WatchlistAddRequest(BaseModel):
     label: Optional[str] = None
 
 ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY")
+
+
+# ============================================================================
+# PART 1: SIMPLE ADMIN ENDPOINT - DELETE MOCK DATA ONLY
+# ============================================================================
+
+@router.post("/admin/clear-mock-data")
+async def clear_mock_data(
+    db: Session = Depends(get_db)
+):
+    """
+    🗑️ ADMIN: Delete all mock/test wallet data
+    
+    POST /api/otc/admin/clear-mock-data
+    
+    Simple endpoint that:
+    1. Deletes ALL wallets from database
+    2. Deletes watchlist items
+    3. Deletes alerts
+    4. Returns count of deleted items
+    
+    Real wallets will be auto-fetched on next API request.
+    
+    Example:
+    curl -X POST "http://localhost:8000/api/otc/admin/clear-mock-data"
+    """
+    logger.info(f"🗑️  ADMIN: Clearing mock data...")
+    
+    try:
+        # Count before delete
+        wallet_count = db.query(OTCWallet).count()
+        watchlist_count = db.query(OTCWatchlist).count()
+        alert_count = db.query(OTCAlert).count()
+        
+        logger.info(f"📊 Current counts:")
+        logger.info(f"   • Wallets: {wallet_count}")
+        logger.info(f"   • Watchlist items: {watchlist_count}")
+        logger.info(f"   • Alerts: {alert_count}")
+        
+        # Delete all
+        db.query(OTCWallet).delete()
+        db.query(OTCWatchlist).delete()
+        db.query(OTCAlert).delete()
+        
+        db.commit()
+        
+        logger.info(f"✅ Deleted all mock data:")
+        logger.info(f"   • Wallets: {wallet_count} → 0")
+        logger.info(f"   • Watchlist: {watchlist_count} → 0")
+        logger.info(f"   • Alerts: {alert_count} → 0")
+        
+        return {
+            "success": True,
+            "message": "Mock data cleared",
+            "deleted": {
+                "wallets": wallet_count,
+                "watchlist_items": watchlist_count,
+                "alerts": alert_count
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to clear mock data: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# PART 2: AUTO-SYNC HELPER - FETCH MISSING WALLETS
+# ============================================================================
+
+async def ensure_registry_wallets_in_db(
+    db: Session,
+    max_to_fetch: int = 5
+) -> dict:
+    """
+    🔄 Helper: Ensure registry wallets exist in DB
+    
+    Called automatically by other endpoints.
+    
+    What it does:
+    1. Get OTC desks from registry
+    2. Check which ones are NOT in DB (or have low confidence)
+    3. Fetch up to max_to_fetch wallets from Etherscan
+    4. Auto-save if confidence >= 80%
+    
+    Args:
+        db: Database session
+        max_to_fetch: Max number of wallets to fetch per call (default 5)
+        
+    Returns:
+        dict with stats: {fetched: int, kept: int, skipped: int}
+    """
+    stats = {"fetched": 0, "kept": 0, "skipped": 0}
+    
+    try:
+        # Get all OTC desk addresses from registry
+        desks = otc_registry.get_desk_list()
+        all_addresses = []
+        
+        for desk_name in desks:
+            desk_info = otc_registry.get_desk_by_name(desk_name)
+            if desk_info and 'addresses' in desk_info:
+                all_addresses.extend(desk_info['addresses'])
+        
+        # Check each address
+        addresses_to_fetch = []
+        
+        for address in all_addresses:
+            try:
+                # Validate format
+                validated = validate_ethereum_address(address)
+                
+                # Check if exists in DB with good confidence
+                wallet = db.query(OTCWallet).filter(
+                    OTCWallet.address == validated
+                ).first()
+                
+                if wallet and wallet.confidence_score >= 80.0:
+                    # Good wallet exists - skip
+                    stats["kept"] += 1
+                    continue
+                else:
+                    # Missing or low confidence - fetch it
+                    addresses_to_fetch.append(validated)
+                    
+            except Exception:
+                # Invalid address - skip
+                continue
+        
+        # Fetch missing wallets (up to max_to_fetch)
+        for address in addresses_to_fetch[:max_to_fetch]:
+            try:
+                logger.info(f"🔄 Auto-fetching {address[:10]}...")
+                
+                # Use existing profile endpoint logic
+                transactions = transaction_extractor.extract_wallet_transactions(
+                    address,
+                    include_internal=True,
+                    include_tokens=True
+                )
+                
+                if not transactions:
+                    logger.info(f"⚠️  No transactions found - skipping")
+                    stats["skipped"] += 1
+                    continue
+                
+                # Enrich with prices
+                transactions = transaction_extractor.enrich_with_usd_value(
+                    transactions,
+                    price_oracle,
+                    max_transactions=50  # Fewer for auto-fetch
+                )
+                
+                enriched = [tx for tx in transactions if tx.get('usd_value')]
+                
+                if not enriched:
+                    logger.info(f"⚠️  No enriched transactions - skipping")
+                    stats["skipped"] += 1
+                    continue
+                
+                # Calculate metrics
+                total_volume = sum(tx['usd_value'] for tx in enriched)
+                
+                # Get labels
+                labels = labeling_service.get_wallet_labels(address)
+                
+                # Create profile
+                profile = wallet_profiler.create_profile(address, transactions, labels)
+                
+                # Calculate confidence
+                otc_probability = wallet_profiler.calculate_otc_probability(profile)
+                confidence = otc_probability * 100
+                
+                logger.info(f"📊 Confidence: {confidence:.1f}%, Volume: ${total_volume:,.0f}")
+                
+                # Auto-save if high confidence
+                if confidence >= 80.0:
+                    wallet = OTCWallet(
+                        address=address,
+                        label=labels.get('entity_name') if labels else f"{address[:8]}...",
+                        entity_type=labels.get('entity_type', 'unknown') if labels else 'unknown',
+                        entity_name=labels.get('entity_name') if labels else None,
+                        confidence_score=confidence,
+                        total_volume=total_volume,
+                        transaction_count=len(transactions),
+                        first_seen=datetime.now() - timedelta(days=365),
+                        last_active=datetime.now(),
+                        is_active=True,
+                        tags=labels.get('labels', []) if labels else [],
+                        created_at=datetime.now(),
+                        updated_at=datetime.now()
+                    )
+                    db.add(wallet)
+                    db.commit()
+                    
+                    logger.info(f"✅ Auto-saved {address[:10]}... to DB")
+                    stats["fetched"] += 1
+                else:
+                    logger.info(f"⚠️  Low confidence ({confidence:.1f}%) - not saving")
+                    stats["skipped"] += 1
+                
+                # Small delay
+                time.sleep(0.5)
+                
+            except Exception as e:
+                logger.error(f"❌ Error auto-fetching {address}: {e}")
+                stats["skipped"] += 1
+                continue
+        
+        if stats["fetched"] > 0:
+            logger.info(f"✅ Auto-sync: Fetched {stats['fetched']}, Kept {stats['kept']}, Skipped {stats['skipped']}")
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"❌ Auto-sync failed: {e}")
+        return stats
+
 
 # ============================================================================
 # PHASE 1 ENDPOINTS - CORE OTC DETECTION
@@ -577,7 +800,7 @@ async def get_statistics_old():
 
 
 # ============================================================================
-# PHASE 2 ENDPOINTS - VISUALIZATION & MONITORING
+# PHASE 2 ENDPOINTS - VISUALIZATION & MONITORING (WITH AUTO-SYNC)
 # ============================================================================
 
 @router.get("/statistics")
@@ -592,6 +815,9 @@ async def get_statistics(
     GET /api/otc/statistics?start_date=2024-11-21&end_date=2024-12-21
     """
     try:
+        # ✅ AUTO-SYNC: Check for missing registry wallets
+        await ensure_registry_wallets_in_db(db, max_to_fetch=3)
+        
         # Parse dates
         if start_date:
             start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
@@ -687,6 +913,9 @@ async def get_network_graph(
 ):
     """Get network graph data for both NetworkGraph AND SankeyFlow components"""
     try:
+        # ✅ AUTO-SYNC: Check for missing registry wallets
+        await ensure_registry_wallets_in_db(db, max_to_fetch=5)
+        
         if start_date:
             start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
         else:
@@ -1037,6 +1266,9 @@ async def get_sankey_flow(
     GET /api/otc/flow/sankey
     """
     try:
+        # ✅ AUTO-SYNC: Check for missing registry wallets
+        await ensure_registry_wallets_in_db(db, max_to_fetch=3)
+        
         if start_date:
             start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
         else:
