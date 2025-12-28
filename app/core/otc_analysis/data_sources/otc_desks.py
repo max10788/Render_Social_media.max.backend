@@ -208,7 +208,7 @@ class OTCDeskRegistry:
                 'desk_category': 'verified'
             },
             {
-                'address': '0xc098b2a3aa256d2140208c3de6543aaef5cd3a94',
+                'address': '0xC333E80eF2deC2805F239E3f1e810612D294F771',
                 'name': 'B2C2',
                 'type': 'liquidity_provider',
                 'desk_category': 'verified'
