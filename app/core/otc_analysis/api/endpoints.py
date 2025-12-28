@@ -198,20 +198,7 @@ async def ensure_registry_wallets_in_db(
     """
     🔄 Helper: Ensure registry wallets exist in DB
     
-    Called automatically by other endpoints.
-    
-    What it does:
-    1. Get OTC desks from registry
-    2. Check which ones are NOT in DB (or have low confidence)
-    3. Fetch up to max_to_fetch wallets from Etherscan
-    4. Auto-save if confidence >= 80%
-    
-    Args:
-        db: Database session
-        max_to_fetch: Max number of wallets to fetch per call (default 5)
-        
-    Returns:
-        dict with stats: {fetched: int, kept: int, skipped: int}
+    ✅ FIXED: Besseres Error Handling für Registry-Daten
     """
     stats = {"fetched": 0, "kept": 0, "skipped": 0}
     
@@ -220,18 +207,52 @@ async def ensure_registry_wallets_in_db(
         desks = otc_registry.get_desk_list()
         all_addresses = []
         
+        logger.info(f"🔄 Auto-sync: Checking {len(desks)} OTC desks...")
+        
         for desk_name in desks:
-            desk_info = otc_registry.get_desk_by_name(desk_name)
-            if desk_info and 'addresses' in desk_info:
-                all_addresses.extend(desk_info['addresses'])
+            try:
+                desk_info = otc_registry.get_desk_by_name(desk_name)
+                
+                # ✅ FIX: Robuste Extraktion der Adressen
+                if desk_info:
+                    # Prüfe ob 'addresses' vorhanden ist
+                    if 'addresses' in desk_info:
+                        addresses = desk_info['addresses']
+                        
+                        # ✅ FIX: Stelle sicher, dass es eine Liste ist
+                        if isinstance(addresses, list):
+                            all_addresses.extend(addresses)
+                        elif isinstance(addresses, str):
+                            all_addresses.append(addresses)
+                        else:
+                            logger.warning(f"⚠️  Desk {desk_name}: Unexpected address format: {type(addresses)}")
+                    else:
+                        logger.warning(f"⚠️  Desk {desk_name}: No 'addresses' field found")
+            except Exception as e:
+                logger.error(f"❌ Error processing desk {desk_name}: {e}")
+                continue
+        
+        logger.info(f"📊 Found {len(all_addresses)} total addresses across all desks")
         
         # Check each address
         addresses_to_fetch = []
         
         for address in all_addresses:
             try:
+                # ✅ FIX: Konvertiere zu String falls nötig
+                if isinstance(address, dict):
+                    logger.warning(f"⚠️  Address is dict, skipping: {address}")
+                    continue
+                
+                address_str = str(address).strip()
+                
+                # ✅ FIX: Validiere nur wenn es wie eine Adresse aussieht
+                if not address_str.startswith('0x'):
+                    logger.warning(f"⚠️  Invalid address format: {address_str}")
+                    continue
+                
                 # Validate format
-                validated = validate_ethereum_address(address)
+                validated = validate_ethereum_address(address_str)
                 
                 # Check if exists in DB with good confidence
                 wallet = db.query(OTCWallet).filter(
@@ -246,9 +267,11 @@ async def ensure_registry_wallets_in_db(
                     # Missing or low confidence - fetch it
                     addresses_to_fetch.append(validated)
                     
-            except Exception:
-                # Invalid address - skip
+            except Exception as e:
+                logger.error(f"❌ Error validating address {address}: {e}")
                 continue
+        
+        logger.info(f"🎯 Need to fetch: {len(addresses_to_fetch)} wallets")
         
         # Fetch missing wallets (up to max_to_fetch)
         for address in addresses_to_fetch[:max_to_fetch]:
@@ -326,17 +349,19 @@ async def ensure_registry_wallets_in_db(
                 time.sleep(0.5)
                 
             except Exception as e:
-                logger.error(f"❌ Error auto-fetching {address}: {e}")
+                logger.error(f"❌ Error auto-fetching {address}: {e}", exc_info=True)
                 stats["skipped"] += 1
                 continue
         
         if stats["fetched"] > 0:
             logger.info(f"✅ Auto-sync: Fetched {stats['fetched']}, Kept {stats['kept']}, Skipped {stats['skipped']}")
+        else:
+            logger.info(f"ℹ️  Auto-sync: No new wallets fetched (Kept {stats['kept']}, Skipped {stats['skipped']})")
         
         return stats
         
     except Exception as e:
-        logger.error(f"❌ Auto-sync failed: {e}")
+        logger.error(f"❌ Auto-sync failed: {e}", exc_info=True)
         return stats
 
 
