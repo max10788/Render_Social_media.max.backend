@@ -389,6 +389,20 @@ async def get_stream_status():
     GET /api/otc/streams/status
     """
     try:
+        # ✅ Check if MORALIS_API_KEY is set
+        import os
+        api_key = os.getenv('MORALIS_API_KEY')
+        
+        if not api_key:
+            logger.warning("⚠️  MORALIS_API_KEY not set")
+            return {
+                "success": False,
+                "message": "Moralis API key not configured",
+                "total_streams": 0,
+                "streams": [],
+                "note": "Set MORALIS_API_KEY environment variable to use Moralis Streams"
+            }
+        
         from app.core.otc_analysis.blockchain.moralis_streams import MoralisStreamsManager
         
         manager = MoralisStreamsManager()
@@ -411,8 +425,16 @@ async def get_stream_status():
         
     except Exception as e:
         logger.error(f"❌ Failed to get stream status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
+        
+        # ✅ Return graceful error instead of 500
+        return {
+            "success": False,
+            "message": "Moralis Streams not available",
+            "error": str(e),
+            "total_streams": 0,
+            "streams": [],
+            "note": "Check MORALIS_API_KEY and network connectivity"
+        }
 
 @router.post("/test")
 async def test_webhook_delivery():
