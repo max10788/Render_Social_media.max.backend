@@ -786,28 +786,319 @@ async def get_otc_desks(
         logger.error(f"❌ Failed to fetch desks: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+@router.get("/desks")
+async def get_otc_desks(
+    include_discovered: bool = Query(True, description="Include auto-discovered desks"),
+    include_db_validated: bool = Query(True, description="Include validated desks from database"),
+    min_confidence: float = Query(0.7, ge=0.0, le=1.0, description="Minimum confidence score (0-1)"),
+    source: Optional[str] = Query(None, description="Filter by source: registry, database, or all"),
+    db: Session = Depends(get_db)
+):
+    """
+    🎯 Get list of ALL OTC desks from MULTIPLE sources.
+    
+    GET /api/otc/desks?include_discovered=true&include_db_validated=true&min_confidence=0.7
+    
+    **Sources:**
+    - **Registry**: Verified + Discovered desks (via Moralis)
+    - **Database**: Validated wallets (high confidence from profiling)
+    
+    **Query Parameters:**
+    - `include_discovered`: Include auto-discovered desks (default: true)
+    - `include_db_validated`: Include DB validated desks (default: true)
+    - `min_confidence`: Minimum confidence 0-1 (default: 0.7)
+    - `source`: Filter by 'registry', 'database', or null for all
+    
+    **Returns:**
+    Combined list with source tracking!
+    
+    **Example Response:**
+    ```json
+    {
+      "success": true,
+      "data": {
+        "desks": [
+          {
+            "name": "jump_trading",
+            "display_name": "Jump Trading",
+            "desk_category": "verified",
+            "data_source": "registry",
+            "confidence": 0.95,
+            "addresses": ["0x..."],
+            ...
+          },
+          {
+            "name": "desk_abc123",
+            "display_name": "XYZ Capital",
+            "desk_category": "db_validated",
+            "data_source": "database",
+            "confidence": 0.85,
+            "total_volume": 5000000,
+            ...
+          }
+        ],
+        "total_count": 45,
+        "sources": {
+          "registry": 25,
+          "database": 20
+        }
+      }
+    }
+    ```
+    """
+    logger.info(f"🏢 GET /desks: discovered={include_discovered}, db={include_db_validated}, min_conf={min_confidence}")
+    
+    try:
+        # ✅ AUTO-SYNC: Ensure registry wallets in DB
+        await ensure_registry_wallets_in_db(db, max_to_fetch=3)
+        
+        # ✅ Get combined desk list (Registry + Database)
+        desks = otc_registry.get_combined_desk_list(
+            include_discovered=include_discovered,
+            include_db_validated=include_db_validated,
+            min_confidence=min_confidence,
+            db_session=db
+        )
+        
+        # ✅ Filter by source if requested
+        if source:
+            source_lower = source.lower()
+            if source_lower == 'registry':
+                desks = [d for d in desks if d.get('data_source') == 'registry']
+                logger.info(f"   📋 Filtered to registry desks only")
+            elif source_lower == 'database':
+                desks = [d for d in desks if d.get('data_source') == 'database']
+                logger.info(f"   💾 Filtered to database desks only")
+        
+        # ✅ Count by source and category
+        registry_count = sum(1 for d in desks if d.get('data_source') == 'registry')
+        database_count = sum(1 for d in desks if d.get('data_source') == 'database')
+        
+        verified_count = sum(1 for d in desks if d.get('desk_category') == 'verified')
+        discovered_count = sum(1 for d in desks if d.get('desk_category') == 'discovered')
+        db_validated_count = sum(1 for d in desks if d.get('desk_category') == 'db_validated')
+        
+        logger.info(f"✅ Loaded {len(desks)} OTC desks:")
+        logger.info(f"   • Registry: {registry_count} (Verified: {verified_count}, Discovered: {discovered_count})")
+        logger.info(f"   • Database: {database_count} (Validated: {db_validated_count})")
+        
+        return {
+            "success": True,
+            "data": {
+                "desks": desks,
+                "total_count": len(desks),
+                "sources": {
+                    "registry": registry_count,
+                    "database": database_count
+                },
+                "categories": {
+                    "verified": verified_count,
+                    "discovered": discovered_count,
+                    "db_validated": db_validated_count
+                },
+                "filters_applied": {
+                    "include_discovered": include_discovered,
+                    "include_db_validated": include_db_validated,
+                    "min_confidence": min_confidence,
+                    "source_filter": source
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch desks: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# NEW /DESKS/DISCOVER ENDPOINT - Time-Based Discovery
+# ============================================================================
+
+@router.post("/desks/discover")
+async def discover_otc_desks(
+    hours_back: int = Query(1, ge=1, le=168, description="Hours to look back (1-168)"),
+    volume_threshold: float = Query(100000, ge=1000, description="Min transaction value ($)"),
+    max_new_desks: int = Query(20, ge=1, le=50, description="Max desks to discover"),
+    db: Session = Depends(get_db)
+):
+    """
+    🚀 Discover OTC desks active in a specific time period.
+    
+    POST /api/otc/desks/discover?hours_back=1&volume_threshold=100000&max_new_desks=20
+    
+    **Time Period Options:**
+    - `hours_back=1` → Last hour (real-time discovery)
+    - `hours_back=6` → Last 6 hours
+    - `hours_back=24` → Last day
+    - `hours_back=168` → Last week
+    
+    **How It Works:**
+    1. Scans verified desks for large transactions in time period
+    2. Extracts counterparty addresses with high volume
+    3. Validates via Moralis entity labels
+    4. Returns newly discovered OTC desks
+    
+    **Query Parameters:**
+    - `hours_back`: Hours to look back (1-168, default: 1)
+    - `volume_threshold`: Min transaction value in USD (default: 100k)
+    - `max_new_desks`: Max desks to discover (1-50, default: 20)
+    
+    **Example Response:**
+    ```json
+    {
+      "success": true,
+      "data": {
+        "discovered_desks": [
+          {
+            "name": "XYZ Capital",
+            "address": "0x...",
+            "confidence": 0.85,
+            "discovery_volume": 500000,
+            "discovery_tx_count": 5,
+            "discovered_at": "2024-12-28T18:30:00"
+          }
+        ],
+        "count": 3,
+        "time_period": {
+          "hours_back": 1,
+          "start_time": "2024-12-28T17:30:00",
+          "end_time": "2024-12-28T18:30:00"
+        }
+      }
+    }
+    ```
+    """
+    logger.info(f"🚀 POST /desks/discover: hours_back={hours_back}, threshold=${volume_threshold/1000:.0f}k")
+    
+    try:
+        # Run time-based discovery
+        result = otc_registry.discover_desks_by_time_period(
+            hours_back=hours_back,
+            volume_threshold=volume_threshold,
+            max_new_desks=max_new_desks
+        )
+        
+        logger.info(f"✅ Discovery complete: {result['count']} new desks found")
+        
+        # ✅ Auto-save discovered desks to database if high confidence
+        if result['discovered_desks']:
+            from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
+            
+            saved_count = 0
+            for desk in result['discovered_desks']:
+                if desk.get('confidence', 0) >= 0.8:  # 80% threshold
+                    try:
+                        # Check if already exists
+                        existing = db.query(OTCWallet).filter(
+                            OTCWallet.address == desk['address']
+                        ).first()
+                        
+                        if not existing:
+                            wallet = OTCWallet(
+                                address=desk['address'],
+                                label=desk['name'],
+                                entity_type='discovered',
+                                entity_name=desk['name'],
+                                confidence_score=desk['confidence'] * 100,  # Convert to 0-100
+                                total_volume=desk.get('discovery_volume', 0),
+                                transaction_count=desk.get('discovery_tx_count', 0),
+                                first_seen=datetime.now(),
+                                last_active=datetime.now(),
+                                is_active=True,
+                                tags=['discovered', 'active_discovery'],
+                                created_at=datetime.now(),
+                                updated_at=datetime.now()
+                            )
+                            db.add(wallet)
+                            saved_count += 1
+                    except Exception as e:
+                        logger.error(f"❌ Error saving discovered desk: {e}")
+                        continue
+            
+            if saved_count > 0:
+                db.commit()
+                logger.info(f"💾 Auto-saved {saved_count} high-confidence desks to DB")
+        
+        return {
+            "success": True,
+            "data": result,
+            "metadata": {
+                "saved_to_db": saved_count if result['discovered_desks'] else 0
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Discovery failed: {str(e)}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# UPDATED /DESKS/{NAME} ENDPOINT
+# ============================================================================
+
 @router.get("/desks/{desk_name}")
-async def get_desk_details(desk_name: str):
+async def get_desk_details(
+    desk_name: str,
+    db: Session = Depends(get_db)
+):
     """
     Get detailed information about a specific OTC desk.
     
     GET /api/otc/desks/wintermute
+    GET /api/otc/desks/jump_trading
+    
+    Searches BOTH registry and database!
     """
-    logger.info(f"🏢 Fetching details for desk: {desk_name}")
+    logger.info(f"🏢 GET /desks/{desk_name}")
     
     try:
+        # Try registry first
         desk_info = otc_registry.get_desk_by_name(desk_name)
         
-        if not desk_info:
-            logger.warning(f"⚠️  Desk not found: {desk_name}")
-            raise HTTPException(status_code=404, detail=f"OTC desk '{desk_name}' not found")
+        if desk_info:
+            desk_info['data_source'] = 'registry'
+            logger.info(f"✅ Found in registry: {desk_info['name']}")
+            return {
+                "success": True,
+                "data": desk_info
+            }
         
-        logger.info(f"✅ Found desk with {len(desk_info['addresses'])} addresses")
+        # Try database
+        from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
         
-        return {
-            "success": True,
-            "data": desk_info
-        }
+        # Search by label or address
+        wallet = db.query(OTCWallet).filter(
+            (OTCWallet.label.ilike(f"%{desk_name}%")) |
+            (OTCWallet.entity_name.ilike(f"%{desk_name}%")) |
+            (OTCWallet.address == desk_name)
+        ).first()
+        
+        if wallet:
+            logger.info(f"✅ Found in database: {wallet.label}")
+            return {
+                "success": True,
+                "data": {
+                    "name": wallet.label,
+                    "display_name": wallet.entity_name or wallet.label,
+                    "type": wallet.entity_type,
+                    "desk_category": "db_validated",
+                    "addresses": [wallet.address],
+                    "confidence": wallet.confidence_score / 100,
+                    "total_volume": wallet.total_volume,
+                    "transaction_count": wallet.transaction_count,
+                    "active": wallet.is_active,
+                    "data_source": "database",
+                    "last_updated": wallet.updated_at.isoformat() if wallet.updated_at else None,
+                    "last_activity": wallet.last_active.isoformat() if wallet.last_active else None
+                }
+            }
+        
+        # Not found
+        logger.warning(f"⚠️  Desk not found: {desk_name}")
+        raise HTTPException(status_code=404, detail=f"OTC desk '{desk_name}' not found")
         
     except HTTPException:
         raise
