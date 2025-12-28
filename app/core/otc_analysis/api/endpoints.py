@@ -244,15 +244,45 @@ async def get_wallet_profile(
         )
         
         enriched_txs = [tx for tx in transactions if tx.get('usd_value') is not None]
+        
+        # ✅ Initialize metrics with safe defaults
+        total_value = 0
+        avg_value = 0
+        max_tx_value = 0
+        volume_30d = 0
+        volume_7d = 0
+        
         if enriched_txs:
             total_value = sum(tx['usd_value'] for tx in enriched_txs)
             avg_value = total_value / len(enriched_txs)
             max_tx = max(enriched_txs, key=lambda x: x['usd_value'])
+            max_tx_value = max_tx['usd_value']
+            
+            # ✅ Calculate 30-day and 7-day volumes
+            from datetime import datetime, timedelta
+            now = datetime.now()
+            thirty_days_ago = now - timedelta(days=30)
+            seven_days_ago = now - timedelta(days=7)
+            
+            # Filter transactions by date
+            recent_30d_txs = [
+                tx for tx in enriched_txs 
+                if tx.get('timestamp') and tx['timestamp'] >= thirty_days_ago
+            ]
+            recent_7d_txs = [
+                tx for tx in enriched_txs 
+                if tx.get('timestamp') and tx['timestamp'] >= seven_days_ago
+            ]
+            
+            volume_30d = sum(tx['usd_value'] for tx in recent_30d_txs)
+            volume_7d = sum(tx['usd_value'] for tx in recent_7d_txs)
             
             logger.info(f"💵 Transaction Values:")
             logger.info(f"   • Total Volume: ${total_value:,.2f}")
             logger.info(f"   • Average Value: ${avg_value:,.2f}")
-            logger.info(f"   • Largest Tx: ${max_tx['usd_value']:,.2f}")
+            logger.info(f"   • Largest Tx: ${max_tx_value:,.2f}")
+            logger.info(f"   • 30-Day Volume: ${volume_30d:,.2f}")
+            logger.info(f"   • 7-Day Volume: ${volume_7d:,.2f}")
             logger.info(f"   • Enriched: {len(enriched_txs)}/{len(transactions)}")
         
         labels = None
@@ -268,6 +298,15 @@ async def get_wallet_profile(
         
         logger.info(f"📊 Building wallet profile...")
         profile = wallet_profiler.create_profile(address, transactions, labels)
+        
+        # ✅ CRITICAL FIX: Add calculated USD values to profile dict!
+        profile['lifetime_volume'] = total_value
+        profile['volume_30d'] = volume_30d
+        profile['volume_7d'] = volume_7d
+        profile['avg_transfer'] = avg_value
+        profile['max_transfer'] = max_tx_value
+        profile['enriched_transaction_count'] = len(enriched_txs)
+        profile['total_transaction_count'] = len(transactions)
         
         logger.info(f"👤 Wallet Profile Metrics:")
         logger.info(f"   • Total Transactions: {profile.get('total_transactions', 0)}")
