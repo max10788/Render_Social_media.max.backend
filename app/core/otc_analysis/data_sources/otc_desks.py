@@ -247,22 +247,6 @@ class OTCDeskRegistry:
     ) -> List[Dict]:
         """
         🚀 ACTIVE DISCOVERY: Find new OTC desks from large transactions.
-        
-        This is the BREAKTHROUGH method!
-        
-        Process:
-        1. Scan verified desks for large transactions
-        2. Extract counterparty addresses
-        3. Validate via Moralis entity labels
-        4. Add as "discovered" desks if OTC keywords found
-        
-        Args:
-            volume_threshold: Min transaction value ($)
-            max_new_desks: Max new desks to discover per run
-            hours_back: Look back N hours (1, 6, 24, 168, etc.)
-            
-        Returns:
-            List of newly discovered desks
         """
         if not self.scanner:
             logger.warning("⚠️  Active discovery disabled (Etherscan not available)")
@@ -279,7 +263,6 @@ class OTCDeskRegistry:
         logger.info(f"   ⏰ Time window: Last {hours_back} hours")
         
         # Step 2: Scan for large transactions
-        # TODO: Filter by time (requires transaction timestamp filtering)
         large_tx_addresses = self.scanner.scan_large_transactions(
             addresses_to_scan=seed_addresses,
             min_value_usd=volume_threshold,
@@ -294,12 +277,15 @@ class OTCDeskRegistry:
         logger.info(f"   🔍 Validating {len(large_tx_addresses)} candidates via Moralis...")
         
         discovered_desks = []
+        
+        # ✅ FIX: Don't call _get_cached_desks() - it causes infinite loop!
+        # Just use verified seeds for existing addresses
         existing_addresses = set(s['address'].lower() for s in verified_seeds)
         
-        # Load existing discovered desks
-        cached_desks = self._get_cached_desks()
-        for desk in cached_desks.values():
-            existing_addresses.update(addr.lower() for addr in desk.get('addresses', []))
+        # ❌ OLD CODE (CAUSES LOOP):
+        # cached_desks = self._get_cached_desks()  # ← THIS CALLS _validate_and_enrich_desks() → LOOP!
+        # for desk in cached_desks.values():
+        #     existing_addresses.update(addr.lower() for addr in desk.get('addresses', []))
         
         for address, stats in list(large_tx_addresses.items())[:max_new_desks]:
             # Skip if already known
@@ -341,6 +327,10 @@ class OTCDeskRegistry:
             except Exception as e:
                 logger.error(f"❌ Error validating {address[:10]}: {e}")
                 continue
+        
+        logger.info(f"🎉 Discovery complete: {len(discovered_desks)} new OTC desks found!")
+        
+        return discovered_desks
         
         logger.info(f"🎉 Discovery complete: {len(discovered_desks)} new OTC desks found!")
         
