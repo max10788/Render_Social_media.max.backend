@@ -336,12 +336,12 @@ class OTCDeskRegistry:
         
         return discovered_desks
     
-    def _validate_and_enrich_desks(self, include_discovery: bool = True) -> Dict[str, Dict]:
+    def _validate_and_enrich_desks(self, include_discovery: bool = False) -> Dict[str, Dict]:  # ✅ DEFAULT = False!
         """
         Validate and enrich all desks (verified + discovered).
         
         Args:
-            include_discovery: Whether to run active discovery
+            include_discovery: Whether to run active discovery (DEFAULT: False to prevent loops)
             
         Returns:
             Dict of all desks with metadata
@@ -356,17 +356,16 @@ class OTCDeskRegistry:
         verified_seeds = self._get_verified_seeds()
         
         for seed in verified_seeds:
-            address = seed.get('address')  # ✅ Use .get() instead of direct access
+            address = seed.get('address')
             expected_name = seed.get('name', 'Unknown')
             
-            # ✅ VALIDATION: Skip if address is None or empty
+            # Validation...
             if not address or not isinstance(address, str):
-                logger.warning(f"      ⚠️  {expected_name}: Invalid or missing address - skipping")
+                logger.warning(f"      ⚠️  {expected_name}: Invalid address - skipping")
                 continue
             
-            # ✅ VALIDATION: Check address format
             if not address.startswith('0x') or len(address) != 42:
-                logger.warning(f"      ⚠️  {expected_name}: Invalid address format '{address}' - skipping")
+                logger.warning(f"      ⚠️  {expected_name}: Invalid address format - skipping")
                 continue
             
             try:
@@ -377,7 +376,7 @@ class OTCDeskRegistry:
                     logger.warning(f"      ⚠️  {expected_name}: No Moralis response")
                     continue
                 
-                # Build desk entry with LIVE Moralis data
+                # Build desk entry
                 desk_name = validation.get('entity_name') or expected_name
                 desk_key = desk_name.lower().replace(' ', '_').replace(':', '').replace('-', '_')
                 
@@ -404,41 +403,17 @@ class OTCDeskRegistry:
                 logger.error(f"❌ Error validating {expected_name}: {e}")
                 continue
         
-        # Step 2: Active discovery
+        # ✅ Step 2: SKIP discovery in cache build to prevent infinite loop!
         if include_discovery and self.discovery_enabled:
             logger.info("   Step 2: Running active discovery...")
+            logger.warning("⚠️  Discovery in cache build - this may cause loops!")
             
-            discovered = self.discover_active_desks()
-            
-            for desk in discovered:
-                desk_name = desk.get('name')
-                if not desk_name:
-                    continue
-                    
-                desk_key = desk_name.lower().replace(' ', '_').replace(':', '').replace('-', '_')
-                
-                if desk_key not in all_desks:
-                    all_desks[desk_key] = {
-                        'name': desk_name,
-                        'addresses': [desk['address']],
-                        'type': desk.get('type', 'discovered'),
-                        'desk_category': 'discovered',
-                        'entity_label': desk.get('entity_label'),
-                        'logo_url': desk.get('logo_url'),
-                        'confidence': desk.get('confidence', 0.75),
-                        'matched_keywords': desk.get('matched_keywords', []),
-                        'discovery_volume': desk.get('discovery_volume'),
-                        'discovery_tx_count': desk.get('discovery_tx_count'),
-                        'is_otc': True,
-                        'active': True,
-                        'source': 'discovered_moralis',
-                        'discovered_at': desk.get('discovered_at'),
-                        'last_updated': datetime.now().isoformat()
-                    }
+            # Don't run discovery here - it causes infinite loop!
+            # Discovery should be triggered manually via API endpoints
+        else:
+            logger.info("   Step 2: Skipping discovery (prevent loops)")
         
-        logger.info(f"✅ Registry built: {len(all_desks)} OTC desks")
-        logger.info(f"   • Verified: {sum(1 for d in all_desks.values() if d.get('desk_category') == 'verified')}")
-        logger.info(f"   • Discovered: {sum(1 for d in all_desks.values() if d.get('desk_category') == 'discovered')}")
+        logger.info(f"✅ Registry built: {len(all_desks)} OTC desks (verified only)")
         
         return all_desks
     
