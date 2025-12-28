@@ -366,8 +366,18 @@ class OTCDeskRegistry:
         verified_seeds = self._get_verified_seeds()
         
         for seed in verified_seeds:
-            address = seed['address']
-            expected_name = seed['name']
+            address = seed.get('address')  # ✅ Use .get() instead of direct access
+            expected_name = seed.get('name', 'Unknown')
+            
+            # ✅ VALIDATION: Skip if address is None or empty
+            if not address or not isinstance(address, str):
+                logger.warning(f"      ⚠️  {expected_name}: Invalid or missing address - skipping")
+                continue
+            
+            # ✅ VALIDATION: Check address format
+            if not address.startswith('0x') or len(address) != 42:
+                logger.warning(f"      ⚠️  {expected_name}: Invalid address format '{address}' - skipping")
+                continue
             
             try:
                 # Validate with Moralis
@@ -384,11 +394,11 @@ class OTCDeskRegistry:
                 desk_data = {
                     'name': desk_name,
                     'addresses': [address],
-                    'type': seed['type'],
+                    'type': seed.get('type', 'unknown'),
                     'desk_category': 'verified',
                     'entity_label': validation.get('entity_label'),
                     'logo_url': validation.get('entity_logo'),
-                    'confidence': max(validation.get('confidence', 0.75), 0.9),  # Verified = high confidence
+                    'confidence': max(validation.get('confidence', 0.75), 0.9),
                     'matched_keywords': validation.get('matched_keywords', []),
                     'is_otc': validation.get('is_otc', True),
                     'active': True,
@@ -411,14 +421,17 @@ class OTCDeskRegistry:
             discovered = self.discover_active_desks()
             
             for desk in discovered:
-                desk_name = desk['name']
+                desk_name = desk.get('name')
+                if not desk_name:
+                    continue
+                    
                 desk_key = desk_name.lower().replace(' ', '_').replace(':', '').replace('-', '_')
                 
                 if desk_key not in all_desks:
                     all_desks[desk_key] = {
                         'name': desk_name,
                         'addresses': [desk['address']],
-                        'type': desk['type'],
+                        'type': desk.get('type', 'discovered'),
                         'desk_category': 'discovered',
                         'entity_label': desk.get('entity_label'),
                         'logo_url': desk.get('logo_url'),
