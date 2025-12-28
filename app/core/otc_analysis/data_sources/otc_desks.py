@@ -438,6 +438,21 @@ class OTCDeskRegistry:
         # Build fresh registry
         logger.info("🔄 Cache expired, building registry...")
         
+        # ✅ CRITICAL: NEVER enable discovery here - causes infinite loop!
+        desks = self._validate_and_enrich_desks(include_discovery=False)  # ← FALSE!
+        
+        # Update caches
+        self._desks_cache = desks
+        self._cache_timestamp = datetime.now()
+        
+        if self.cache:
+            self.cache.set('otc_desks_full', desks, ttl=self._cache_ttl, prefix='otc')
+        
+        return desks
+        
+        # Build fresh registry
+        logger.info("🔄 Cache expired, building registry...")
+        
         desks = self._validate_and_enrich_desks(include_discovery=self.discovery_enabled)
         
         # Update caches
