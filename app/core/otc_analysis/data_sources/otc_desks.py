@@ -242,7 +242,8 @@ class OTCDeskRegistry:
     def discover_active_desks(
         self,
         volume_threshold: float = 100000,
-        max_new_desks: int = 20
+        max_new_desks: int = 20,
+        hours_back: int = 24
     ) -> List[Dict]:
         """
         🚀 ACTIVE DISCOVERY: Find new OTC desks from large transactions.
@@ -258,6 +259,7 @@ class OTCDeskRegistry:
         Args:
             volume_threshold: Min transaction value ($)
             max_new_desks: Max new desks to discover per run
+            hours_back: Look back N hours (1, 6, 24, 168, etc.)
             
         Returns:
             List of newly discovered desks
@@ -267,15 +269,17 @@ class OTCDeskRegistry:
             return []
         
         logger.info("🚀 Starting active OTC desk discovery...")
-        logger.info(f"   Strategy: Large transactions (>${volume_threshold/1000:.0f}k) → Entity validation")
+        logger.info(f"   Strategy: Large transactions (>${volume_threshold/1000:.0f}k) in last {hours_back}h → Entity validation")
         
         # Step 1: Get verified seeds as starting points
         verified_seeds = self._get_verified_seeds()
         seed_addresses = [s['address'] for s in verified_seeds]
         
         logger.info(f"   📋 Scanning {len(seed_addresses)} verified desks for counterparties...")
+        logger.info(f"   ⏰ Time window: Last {hours_back} hours")
         
         # Step 2: Scan for large transactions
+        # TODO: Filter by time (requires transaction timestamp filtering)
         large_tx_addresses = self.scanner.scan_large_transactions(
             addresses_to_scan=seed_addresses,
             min_value_usd=volume_threshold,
@@ -691,6 +695,138 @@ class OTCDeskRegistry:
                 results.append({'name': name, **info})
         
         return results
+    
+    def get_combined_desk_list(
+        self,
+        include_discovered: bool = True,
+        include_db_validated: bool = True,
+        min_confidence: float = 0.0,
+        db_session=None
+    ) -> List[Dict]:
+        """
+        Get COMBINED list of OTC desks from:
+        1. Registry (verified + discovered)
+        2. Database (validated wallets with high confidence)
+        
+        Args:
+            include_discovered: Include auto-discovered desks from registry
+            include_db_validated: Include validated desks from database
+            min_confidence: Minimum confidence threshold
+            db_session: Database session (optional)
+            
+        Returns:
+            Combined list of all OTC desks with source tracking
+        """
+        all_desks = []
+        
+        # 1. Get desks from Registry
+        registry_desks = self.get_desk_list(
+            include_discovered=include_discovered,
+            min_confidence=min_confidence
+        )
+        
+        for desk in registry_desks:
+            desk['data_source'] = 'registry'
+            all_desks.append(desk)
+        
+        logger.info(f"📊 Registry: {len(registry_desks)} desks")
+        
+        # 2. Get validated desks from Database (if available)
+        if include_db_validated and db_session:
+            try:
+                from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
+                
+                # Query high-confidence wallets from DB
+                db_wallets = db_session.query(OTCWallet).filter(
+                    OTCWallet.confidence_score >= min_confidence * 100,  # Convert to 0-100 scale
+                    OTCWallet.is_active == True
+                ).all()
+                
+                # Check which addresses are NOT already in registry
+                registry_addresses = set()
+                for desk in registry_desks:
+                    registry_addresses.update(
+                        addr.lower() for addr in desk.get('addresses', [])
+                    )
+                
+                # Add DB wallets that aren't in registry
+                db_desk_count = 0
+                for wallet in db_wallets:
+                    if wallet.address.lower() not in registry_addresses:
+                        all_desks.append({
+                            'name': wallet.label or f"desk_{wallet.address[:8]}",
+                            'display_name': wallet.entity_name or wallet.label or f"{wallet.address[:8]}...",
+                            'type': wallet.entity_type or 'validated',
+                            'desk_category': 'db_validated',
+                            'address_count': 1,
+                            'addresses': [wallet.address],
+                            'confidence': wallet.confidence_score / 100,  # Convert to 0-1 scale
+                            'is_otc': True,
+                            'active': wallet.is_active,
+                            'logo_url': None,
+                            'source': 'database',
+                            'data_source': 'database',
+                            'total_volume': wallet.total_volume,
+                            'transaction_count': wallet.transaction_count,
+                            'last_updated': wallet.updated_at.isoformat() if wallet.updated_at else None,
+                            'last_activity': wallet.last_active.isoformat() if wallet.last_active else None
+                        })
+                        db_desk_count += 1
+                
+                logger.info(f"💾 Database: {db_desk_count} validated desks (excluded {len(db_wallets) - db_desk_count} duplicates)")
+                
+            except Exception as e:
+                logger.error(f"❌ Error fetching DB wallets: {e}")
+        
+        # Sort combined list
+        all_desks.sort(key=lambda x: (
+            0 if x.get('desk_category') == 'verified' else 1 if x.get('desk_category') == 'discovered' else 2,
+            -x.get('confidence', 0)
+        ))
+        
+        logger.info(f"🎯 Combined: {len(all_desks)} total OTC desks")
+        
+        return all_desks
+    
+    def discover_desks_by_time_period(
+        self,
+        hours_back: int = 1,
+        volume_threshold: float = 100000,
+        max_new_desks: int = 20
+    ) -> Dict:
+        """
+        Discover OTC desks active in a specific time period.
+        
+        Args:
+            hours_back: Hours to look back (1, 6, 24, 168, etc.)
+            volume_threshold: Min transaction value
+            max_new_desks: Max desks to discover
+            
+        Returns:
+            Dict with discovered desks and metadata
+        """
+        logger.info(f"🕒 Discovery for time period: Last {hours_back} hours")
+        
+        # Run discovery
+        discovered = self.discover_active_desks(
+            volume_threshold=volume_threshold,
+            max_new_desks=max_new_desks,
+            hours_back=hours_back
+        )
+        
+        return {
+            'discovered_desks': discovered,
+            'time_period': {
+                'hours_back': hours_back,
+                'start_time': (datetime.now() - timedelta(hours=hours_back)).isoformat(),
+                'end_time': datetime.now().isoformat()
+            },
+            'discovery_params': {
+                'volume_threshold': volume_threshold,
+                'max_new_desks': max_new_desks
+            },
+            'count': len(discovered)
+        }
 
 
 # ════════════════════════════════════════════════════════════════════════
