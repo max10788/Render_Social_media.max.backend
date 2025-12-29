@@ -1,3 +1,10 @@
+"""
+Etherscan API Client
+====================
+
+Interface to Etherscan API V2 with live ETH price support.
+"""
+
 import requests
 import time
 from typing import List, Dict, Optional
@@ -6,10 +13,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class EtherscanAPI:
     """
     Interface to Etherscan API V2 (and BSCScan, Polygonscan, etc.)
-    Used for fetching transaction history, token transfers, contract info.
+    
+    ✨ NEW: Added live ETH price fetching
     """
     
     def __init__(self, chain_id: int = 1):
@@ -18,6 +27,7 @@ class EtherscanAPI:
         self.base_url = self._get_base_url()
         self.rate_limit_delay = 0.2  # 5 requests per second max
         self.last_request_time = 0
+        self.session = requests.Session()  # ✅ Add session for reuse
     
     def _get_api_key(self) -> str:
         """Get appropriate API key based on chain."""
@@ -69,7 +79,7 @@ class EtherscanAPI:
         try:
             logger.info(f"🔍 Etherscan request: {params.get('action')} for {params.get('address', 'N/A')[:10]}...")
             
-            response = requests.get(self.base_url, params=params, timeout=10)
+            response = self.session.get(self.base_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             
@@ -105,16 +115,7 @@ class EtherscanAPI:
         page: int = 1,
         offset: int = 1000
     ) -> List[Dict]:
-        """
-        Get normal transactions for an address.
-        
-        Args:
-            address: Wallet address
-            start_block: Starting block number
-            end_block: Ending block number
-            page: Page number
-            offset: Number of transactions per page (max 10000)
-        """
+        """Get normal transactions for an address."""
         params = {
             'module': 'account',
             'action': 'txlist',
@@ -157,11 +158,7 @@ class EtherscanAPI:
         page: int = 1,
         offset: int = 1000
     ) -> List[Dict]:
-        """
-        Get ERC20 token transfers.
-        
-        Can filter by address or contract address.
-        """
+        """Get ERC20 token transfers."""
         params = {
             'module': 'account',
             'action': 'tokentx',
@@ -181,13 +178,7 @@ class EtherscanAPI:
         return result if result else []
     
     def get_block_by_timestamp(self, timestamp: int, closest: str = 'before') -> Optional[int]:
-        """
-        Get block number by timestamp.
-        
-        Args:
-            timestamp: Unix timestamp
-            closest: 'before' or 'after'
-        """
+        """Get block number by timestamp."""
         params = {
             'module': 'block',
             'action': 'getblocknobytime',
@@ -272,8 +263,6 @@ class EtherscanAPI:
         """
         Get recent normal transactions for an address.
         Wrapper around get_normal_transactions with sensible defaults.
-        
-        Returns list of transaction dicts
         """
         return self.get_normal_transactions(
             address=address,
@@ -302,6 +291,10 @@ class EtherscanAPI:
         except (ValueError, TypeError):
             return 0
 
+    # ========================================================================
+    # ✨ NEW: ETH PRICE METHODS
+    # ========================================================================
+
     def get_eth_price_usd(self) -> Optional[float]:
         """
         Get current ETH price in USD from Etherscan.
@@ -310,6 +303,18 @@ class EtherscanAPI:
         
         Returns:
             Current ETH price in USD or None
+        
+        Example Response:
+        {
+          "status": "1",
+          "message": "OK",
+          "result": {
+            "ethbtc": "0.05297",
+            "ethbtc_timestamp": "1703875234",
+            "ethusd": "3421.42",
+            "ethusd_timestamp": "1703875234"
+          }
+        }
         """
         try:
             params = {
@@ -318,22 +323,33 @@ class EtherscanAPI:
                 'apikey': self.api_key
             }
             
-            response = self.session.get(self.base_url, params=params, timeout=10)
+            # Don't use _make_request because price endpoint has different structure
+            self._rate_limit()
+            
+            # Use V1 endpoint for price (not V2)
+            price_url = "https://api.etherscan.io/api"  # V1 endpoint
+            
+            response = self.session.get(price_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             
             if data.get('status') == '1' and data.get('result'):
                 eth_price = float(data['result']['ethusd'])
-                logger.info(f"💰 Current ETH price: ${eth_price:,.2f}")
-                return eth_price
+                
+                # Sanity check
+                if 100 <= eth_price <= 10000:  # Reasonable ETH price range
+                    logger.info(f"💰 Current ETH price: ${eth_price:,.2f}")
+                    return eth_price
+                else:
+                    logger.warning(f"⚠️ Suspicious ETH price: ${eth_price:,.2f}")
+                    return None
             else:
-                logger.warning(f"⚠️  Etherscan price API failed: {data.get('message')}")
+                logger.warning(f"⚠️ Etherscan price API failed: {data.get('message')}")
                 return None
                 
         except Exception as e:
             logger.error(f"❌ Failed to fetch ETH price: {e}")
             return None
-    
     
     def get_historical_eth_price(self, timestamp: int) -> Optional[float]:
         """
@@ -343,6 +359,8 @@ class EtherscanAPI:
         This would require an external service like CoinGecko or CryptoCompare.
         
         For now, returns current price as approximation.
+        
+        TODO: Implement with CryptoCompare or CoinGecko historical API
         """
-        # TODO: Implement with CryptoCompare or CoinGecko historical API
+        logger.warning(f"⚠️ Historical ETH price not available, using current price")
         return self.get_eth_price_usd()
