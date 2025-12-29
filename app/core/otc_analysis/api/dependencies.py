@@ -148,6 +148,7 @@ async def ensure_registry_wallets_in_db(
     """
     Ensures registry wallets are in database.
     
+    ✅ FIXED: Now properly uses registry labels for OTC desk detection
     ✅ OPTIMIZATION: Skip if data is recent
     """
     from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
@@ -170,6 +171,9 @@ async def ensure_registry_wallets_in_db(
         desks = otc_registry.get_desk_list()
         all_addresses = []
         
+        # ✅ NEW: Build address-to-desk mapping
+        address_to_desk = {}  # Maps address -> desk info
+        
         logger.info(f"🔄 Auto-sync: Checking {len(desks)} OTC desks...")
         
         for desk in desks:
@@ -181,10 +185,13 @@ async def ensure_registry_wallets_in_db(
                     addresses = desk_info['addresses']
                     
                     if isinstance(addresses, list):
-                        all_addresses.extend(addresses)
+                        for addr in addresses:
+                            all_addresses.append(addr)
+                            address_to_desk[addr.lower()] = desk_info  # ✅ Store mapping
                         logger.info(f"   ✅ {desk_name}: {len(addresses)} addresses")
                     elif isinstance(addresses, str):
                         all_addresses.append(addresses)
+                        address_to_desk[addresses.lower()] = desk_info  # ✅ Store mapping
                         logger.info(f"   ✅ {desk_name}: 1 address")
                 else:
                     logger.warning(f"   ⚠️  {desk_name}: No addresses found")
@@ -217,7 +224,7 @@ async def ensure_registry_wallets_in_db(
                     OTCWallet.address == validated
                 ).first()
                 
-                if wallet and wallet.confidence_score >= 60.0:  # ✅ LOWERED from 80
+                if wallet and wallet.confidence_score >= 50.0:  # ✅ Lowered threshold
                     stats["kept"] += 1
                     continue
                 else:
@@ -258,10 +265,43 @@ async def ensure_registry_wallets_in_db(
                 # ✅ Continue even without enrichment
                 # (WalletProfiler will use live ETH price)
                 
-                # Get labels
-                labels = labeling_service.get_wallet_labels(address)
+                # ====================================================================
+                # ✅ NEW: Get labels from REGISTRY FIRST, then merge with external
+                # ====================================================================
                 
+                # 1. Check if address is in registry
+                desk_info = address_to_desk.get(address.lower())
+                
+                if desk_info:
+                    # ✅ PRIORITY: Use registry labels
+                    labels = {
+                        'entity_type': 'otc_desk',  # ✅ Mark as OTC desk!
+                        'entity_name': desk_info.get('name'),
+                        'labels': ['verified_otc_desk', 'registry', desk_info.get('type', 'otc')],
+                        'source': 'registry',
+                        'confidence': 1.0  # 100% confidence from registry
+                    }
+                    logger.info(f"   ✅ Registry labels: {desk_info.get('name')} (otc_desk)")
+                else:
+                    # 2. Try external labels (Moralis, etc.)
+                    external_labels = labeling_service.get_wallet_labels(address)
+                    
+                    if external_labels and external_labels.get('entity_type') != 'unknown':
+                        labels = external_labels
+                        logger.info(f"   🏷️ External labels: {external_labels.get('entity_name')} ({external_labels.get('entity_type')})")
+                    else:
+                        # 3. No labels found
+                        labels = {
+                            'entity_type': 'unknown',
+                            'entity_name': None,
+                            'labels': [],
+                            'source': 'none'
+                        }
+                        logger.info(f"   ⚠️  No labels found for {address[:10]}...")
+                
+                # ====================================================================
                 # Create profile (works with or without enrichment)
+                # ====================================================================
                 profile = wallet_profiler.create_profile(address, transactions, labels)
                 
                 # Calculate confidence
@@ -270,36 +310,55 @@ async def ensure_registry_wallets_in_db(
                 
                 # Get volume (might be from live ETH price)
                 total_volume = profile.get('total_volume_usd', 0)
+                data_quality = profile.get('data_quality', 'unknown')
                 
                 logger.info(f"📊 Profile complete:")
+                logger.info(f"   • Entity: {labels.get('entity_type')} / {labels.get('entity_name')}")
                 logger.info(f"   • Confidence: {confidence:.1f}%")
                 logger.info(f"   • Volume: ${total_volume:,.0f}")
-                logger.info(f"   • Data quality: {profile.get('data_quality')}")
+                logger.info(f"   • Data quality: {data_quality}")
                 
-                # ✅ LOWERED threshold: 60% instead of 80%
-                if confidence >= 60.0:
+                # ====================================================================
+                # ✅ IMPROVED: Save logic with different thresholds
+                # ====================================================================
+                
+                # Lower threshold for registry wallets
+                if labels.get('source') == 'registry':
+                    min_confidence = 40.0  # ✅ Registry wallets: 40% threshold
+                    logger.info(f"   ℹ️  Registry wallet - using 40% threshold")
+                else:
+                    min_confidence = 60.0  # Non-registry: 60% threshold
+                
+                # Save if meets threshold
+                if confidence >= min_confidence:
+                    # ✅ Determine entity_type priority
+                    if labels.get('source') == 'registry':
+                        entity_type = 'otc_desk'  # Force OTC desk for registry
+                    else:
+                        entity_type = labels.get('entity_type', 'unknown')
+                    
                     wallet = OTCWallet(
                         address=address,
-                        label=labels.get('entity_name') if labels else f"{address[:8]}...",
-                        entity_type=labels.get('entity_type', 'unknown') if labels else 'unknown',
-                        entity_name=labels.get('entity_name') if labels else None,
+                        label=labels.get('entity_name') or f"{address[:8]}...",
+                        entity_type=entity_type,
+                        entity_name=labels.get('entity_name'),
                         confidence_score=confidence,
                         total_volume=total_volume,
                         transaction_count=len(transactions),
                         first_seen=datetime.now() - timedelta(days=365),
                         last_active=datetime.now(),
                         is_active=True,
-                        tags=labels.get('labels', []) if labels else [],
+                        tags=labels.get('labels', []),
                         created_at=datetime.now(),
                         updated_at=datetime.now()
                     )
                     db.add(wallet)
                     db.commit()
                     
-                    logger.info(f"✅ Auto-saved {address[:10]}... to DB")
+                    logger.info(f"✅ Auto-saved {address[:10]}... to DB (threshold: {min_confidence}%)")
                     stats["fetched"] += 1
                 else:
-                    logger.info(f"⚠️  Low confidence ({confidence:.1f}%) - not saving")
+                    logger.info(f"⚠️  Low confidence ({confidence:.1f}% < {min_confidence}%) - not saving")
                     stats["skipped"] += 1
                 
                 time.sleep(0.5)
