@@ -206,18 +206,8 @@ class WalletProfiler:
     ) -> Dict:
         """
         ✨ IMPROVED: Multi-level volume calculation with LIVE ETH price.
-        
-        Calculation Strategy:
-        1. LEVEL 1: Try enriched USD values (best accuracy)
-        2. LEVEL 2: Calculate from ETH values × LIVE ETH price
-        3. LEVEL 3: Fallback to transaction count only
-        
-        Returns:
-            Dict with volume metrics and data quality indicators
         """
-        # ====================================================================
         # LEVEL 1: Try USD values (already enriched)
-        # ====================================================================
         usd_values = [tx.get('usd_value', 0) for tx in all_txs if tx.get('usd_value')]
         
         if usd_values:
@@ -232,17 +222,28 @@ class WalletProfiler:
                 'data_quality': 'high'
             }
         
-        # ====================================================================
         # LEVEL 2: Calculate from ETH values with LIVE price
-        # ====================================================================
         logger.info(f"   ⚠️  LEVEL 2: No USD enrichment, calculating from ETH with live price...")
         
         eth_values = []
         for tx in all_txs:
             if tx.get('value_decimal'):
                 try:
-                    eth_values.append(float(tx['value_decimal']))
-                except (ValueError, TypeError):
+                    value = float(tx['value_decimal'])
+                    
+                    # ✅ SANITY CHECK: Detect if value is in WEI instead of ETH
+                    if value > 1_000_000:  # More than 1M ETH = suspicious
+                        logger.warning(f"   ⚠️ Suspicious ETH value: {value:.2f} - might be WEI")
+                        value = value / 1e18  # Convert WEI to ETH
+                    
+                    # ✅ SANITY CHECK: Max reasonable ETH per transaction
+                    if value > 100_000:  # >100k ETH per transaction
+                        logger.warning(f"   ⚠️ Unrealistic ETH value: {value:.2f} - skipping")
+                        continue
+                    
+                    eth_values.append(value)
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"   ⚠️ Invalid value_decimal: {tx.get('value_decimal')}")
                     continue
         
         if eth_values and self.price_oracle:
@@ -253,6 +254,21 @@ class WalletProfiler:
                 if eth_price and eth_price > 0:
                     # Calculate USD values from ETH
                     estimated_usd = [eth * eth_price for eth in eth_values]
+                    
+                    # ✅ FINAL SANITY CHECK: Total volume
+                    total_usd = sum(estimated_usd)
+                    if total_usd > 1_000_000_000_000:  # >$1 Trillion
+                        logger.error(f"   🚨 UNREALISTIC TOTAL VOLUME: ${total_usd:,.2f}")
+                        logger.error(f"   🚨 This indicates data corruption - rejecting!")
+                        return {
+                            'total_volume_usd': 0,
+                            'total_volume_eth': 0,
+                            'avg_transaction_usd': 0,
+                            'median_transaction_usd': 0,
+                            'has_usd_values': False,
+                            'data_quality': 'corrupted'
+                        }
+                    
                     stats = rolling_statistics(estimated_usd)
                     
                     logger.info(f"   💎 Processed {len(eth_values)} ETH transactions")
@@ -274,10 +290,8 @@ class WalletProfiler:
             except Exception as e:
                 logger.error(f"   ❌ Live price fetch failed: {e}")
         
-        # ====================================================================
-        # LEVEL 3: Ultimate fallback - No volume data
-        # ====================================================================
-        logger.warning(f"   ❌ LEVEL 3: No volume data available (no USD, no ETH)")
+        # LEVEL 3: Ultimate fallback
+        logger.warning(f"   ❌ LEVEL 3: No volume data available")
         return {
             'total_volume_usd': 0,
             'total_volume_eth': 0,
