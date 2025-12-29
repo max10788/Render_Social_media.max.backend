@@ -301,3 +301,48 @@ class EtherscanAPI:
             return count
         except (ValueError, TypeError):
             return 0
+
+    def get_eth_price_usd(self) -> Optional[float]:
+        """
+        Get current ETH price in USD from Etherscan.
+        
+        API: https://api.etherscan.io/api?module=stats&action=ethprice
+        
+        Returns:
+            Current ETH price in USD or None
+        """
+        try:
+            params = {
+                'module': 'stats',
+                'action': 'ethprice',
+                'apikey': self.api_key
+            }
+            
+            response = self.session.get(self.base_url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get('status') == '1' and data.get('result'):
+                eth_price = float(data['result']['ethusd'])
+                logger.info(f"💰 Current ETH price: ${eth_price:,.2f}")
+                return eth_price
+            else:
+                logger.warning(f"⚠️  Etherscan price API failed: {data.get('message')}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch ETH price: {e}")
+            return None
+    
+    
+    def get_historical_eth_price(self, timestamp: int) -> Optional[float]:
+        """
+        Get historical ETH price at specific timestamp.
+        
+        Note: Etherscan doesn't provide historical prices directly.
+        This would require an external service like CoinGecko or CryptoCompare.
+        
+        For now, returns current price as approximation.
+        """
+        # TODO: Implement with CryptoCompare or CoinGecko historical API
+        return self.get_eth_price_usd()
