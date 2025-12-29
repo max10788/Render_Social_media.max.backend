@@ -441,6 +441,63 @@ class WalletProfiler:
         
         return adjusted_probability
 
+    def get_otc_score_breakdown(self, profile: Dict) -> Dict:
+        """
+        Get detailed breakdown of OTC probability calculation.
+        
+        Useful for debugging and explaining scores.
+        """
+        breakdown = {
+            'entity_labels': 0,
+            'volume_metrics': 0,
+            'transaction_patterns': 0,
+            'network_characteristics': 0,
+            'total_score': 0,
+            'probability': 0,
+            'details': []
+        }
+        
+        # Entity Labels
+        entity_type = profile.get('entity_type', 'unknown')
+        if entity_type in ['otc_desk', 'market_maker']:
+            breakdown['entity_labels'] = 40
+            breakdown['details'].append(f"Entity type: {entity_type} (+40)")
+        
+        # Volume Metrics
+        total_volume = profile.get('total_volume_usd', 0)
+        avg_transaction = profile.get('avg_transaction_usd', 0)
+        
+        if total_volume >= 1_000_000_000:
+            breakdown['volume_metrics'] += 15
+            breakdown['details'].append(f"Total volume: ${total_volume/1e9:.1f}B (+15)")
+        
+        if avg_transaction >= 10_000_000:
+            breakdown['volume_metrics'] += 15
+            breakdown['details'].append(f"Avg transaction: ${avg_transaction/1e6:.1f}M (+15)")
+        
+        # Transaction Patterns
+        tx_frequency = profile.get('transaction_frequency', 0)
+        if tx_frequency < 0.5:
+            breakdown['transaction_patterns'] += 7
+            breakdown['details'].append(f"Low frequency: {tx_frequency:.2f} tx/day (+7)")
+        
+        # Network
+        unique_counterparties = profile.get('unique_counterparties', 0)
+        if unique_counterparties >= 1000:
+            breakdown['network_characteristics'] += 5
+            breakdown['details'].append(f"Counterparties: {unique_counterparties} (+5)")
+        
+        # Calculate totals
+        breakdown['total_score'] = (
+            breakdown['entity_labels'] +
+            breakdown['volume_metrics'] +
+            breakdown['transaction_patterns'] +
+            breakdown['network_characteristics']
+        )
+        
+        breakdown['probability'] = min(1.0, breakdown['total_score'] / 100)
+        
+        return breakdown
 
 class WalletDetailsService:
     """Service for fetching and calculating wallet details with live data."""
