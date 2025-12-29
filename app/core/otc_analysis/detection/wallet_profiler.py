@@ -420,25 +420,10 @@ class WalletProfiler:
         ✨ IMPROVED: Multi-factor OTC probability calculation.
         
         Scoring System (0-100 points):
-        ================================
-        1. Entity Labels (40 points)
-           - Known OTC desk types: 40 pts
-           - Exchange/CEX: 35 pts
-           - Whale/Institutional: 30 pts
-           - Name match bonus: +10 pts
-        
-        2. Volume Metrics (30 points)
-           - Total volume (logarithmic): up to 15 pts
-           - Average transaction size: up to 15 pts
-        
-        3. Transaction Patterns (20 points)
-           - Low frequency (institutional): up to 10 pts
-           - High transaction count: up to 5 pts
-           - DeFi usage: +5 pts
-        
-        4. Network Characteristics (10 points)
-           - Many counterparties: up to 5 pts
-           - High entropy (diverse): up to 5 pts
+        - Entity Labels: 40 points
+        - Volume Metrics: 30 points  
+        - Transaction Patterns: 20 points
+        - Network Characteristics: 10 points
         
         Returns:
             OTC probability (0-1) adjusted by confidence
@@ -450,8 +435,9 @@ class WalletProfiler:
         # ====================================================================
         # 1. ENTITY LABELS (40 points max)
         # ====================================================================
-        entity_type = profile.get('entity_type', 'unknown')
-        entity_name = (profile.get('entity_name') or '').lower()
+        entity_type = profile.get('entity_type') or 'unknown'
+        entity_name = profile.get('entity_name') or ''  # ✅ FIXED: Handle None
+        entity_name_lower = entity_name.lower() if entity_name else ''  # ✅ Safe lower()
         
         # Known OTC desk types
         if entity_type in ['otc_desk', 'market_maker', 'institutional']:
@@ -475,16 +461,16 @@ class WalletProfiler:
             'circle', 'paxos', 'gemini', 'bitstamp'
         ]
         
-        if entity_name and any(kw in entity_name for kw in otc_keywords):
+        if entity_name_lower and any(kw in entity_name_lower for kw in otc_keywords):
             score += 10
             details.append(f"Known OTC name '{entity_name}' (+10)")
         
         # ====================================================================
         # 2. VOLUME METRICS (30 points max)
         # ====================================================================
-        total_volume = profile.get('total_volume_usd', 0)
-        avg_transaction = profile.get('avg_transaction_usd', 0)
-        data_quality = profile.get('data_quality', 'none')
+        total_volume = profile.get('total_volume_usd') or 0
+        avg_transaction = profile.get('avg_transaction_usd') or 0
+        data_quality = profile.get('data_quality') or 'none'
         
         # Total volume (logarithmic scale)
         if total_volume >= 1_000_000_000:  # $1B+
@@ -529,8 +515,8 @@ class WalletProfiler:
         # ====================================================================
         # 3. TRANSACTION PATTERNS (20 points max)
         # ====================================================================
-        tx_frequency = profile.get('transaction_frequency', 0)
-        total_txs = profile.get('total_transactions', 0)
+        tx_frequency = profile.get('transaction_frequency') or 0
+        total_txs = profile.get('total_transactions') or 0
         
         # Low frequency = institutional (not retail)
         if tx_frequency < 0.1:  # <1 tx per 10 days
@@ -563,8 +549,8 @@ class WalletProfiler:
         # ====================================================================
         # 4. NETWORK CHARACTERISTICS (10 points max)
         # ====================================================================
-        unique_counterparties = profile.get('unique_counterparties', 0)
-        counterparty_entropy = profile.get('counterparty_entropy', 0)
+        unique_counterparties = profile.get('unique_counterparties') or 0
+        counterparty_entropy = profile.get('counterparty_entropy') or 0
         
         # Many unique counterparties = active trading
         if unique_counterparties >= 1000:
@@ -597,7 +583,7 @@ class WalletProfiler:
         probability = min(1.0, score / max_score)
         
         # Apply confidence modifier
-        confidence = profile.get('confidence_score', 1.0)
+        confidence = profile.get('confidence_score') or 1.0
         adjusted_probability = probability * confidence
         
         logger.info(f"🎯 OTC Scoring:")
