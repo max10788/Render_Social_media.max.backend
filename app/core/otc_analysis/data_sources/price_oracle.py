@@ -1,17 +1,15 @@
 """
-COMPLETE FIX - price_oracle.py
+Price Oracle - WITH Live ETH Price Support
+===========================================
 
 ✅ FIXED: Price validation with reasonable ranges
 ✅ FIXED: Fallback prices when API fails
 ✅ FIXED: Better error handling
-✅ FIXED: Clear documentation
+✅ NEW: Etherscan ETH price integration
 
-Version: 2.0 FINAL
-Date: 2024-12-27
+Version: 3.0 with ETH Live Price
+Date: 2024-12-29
 """
-
-# Kopiere diesen Code komplett nach:
-# app/core/otc_analysis/data_sources/price_oracle.py
 
 import requests
 import time
@@ -21,22 +19,33 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class PriceOracle:
     """
     Fetches historical and current cryptocurrency prices.
-    Uses CoinGecko API (free, no API key needed).
-    Implements caching strategy with 5 minute TTL.
     
-    ✅ FIXED: Added sanity checks for price values
-    ✅ FIXED: Better error handling and logging
-    ✅ FIXED: Fallback prices when API unavailable
+    Data Sources:
+    - Etherscan (for live ETH price) - PRIORITY
+    - CoinGecko (for tokens) - FREE API
+    - Cache (5 minute TTL)
+    
+    ✨ NEW: Etherscan integration for live ETH price
     """
     
-    def __init__(self, cache_manager: Optional['CacheManager'] = None):
+    def __init__(self, cache_manager=None, etherscan=None):
+        """
+        Initialize price oracle.
+        
+        Args:
+            cache_manager: CacheManager instance for caching
+            etherscan: EtherscanAPI instance for live ETH price
+        """
         self.cache = cache_manager
+        self.etherscan = etherscan  # ✅ NEW: Etherscan client
         self.coingecko_base = "https://api.coingecko.com/api/v3"
         self.rate_limit_delay = 1.5  # 40 calls/min instead of 50
         self.last_request_time = 0
+        self.session = requests.Session()
         
         # Token address to CoinGecko ID mapping
         self.token_id_map = {
@@ -59,6 +68,15 @@ class PriceOracle:
             'uniswap': (3, 50),              # UNI: $3-$50
             'matic-network': (0.3, 5),       # MATIC: $0.3-$5
         }
+        
+        # ✅ Fallback prices by year (for historical)
+        self.fallback_prices = {
+            'ETH': 3400.0,  # Current estimate
+            'WETH': 3400.0,
+            'USDT': 1.0,
+            'USDC': 1.0,
+            'DAI': 1.0,
+        }
     
     def _rate_limit(self):
         """Enforce rate limiting for API calls."""
@@ -71,10 +89,7 @@ class PriceOracle:
         self.last_request_time = time.time()
     
     def _get_token_id(self, token_address: Optional[str]) -> str:
-        """
-        Convert token address to CoinGecko ID.
-        Falls back to ETH if unknown.
-        """
+        """Convert token address to CoinGecko ID."""
         if token_address is None:
             return 'ethereum'
         
@@ -83,7 +98,7 @@ class PriceOracle:
     
     def _validate_price(self, token_id: str, price: float) -> bool:
         """
-        ✅ NEW: Validate that price is within reasonable range.
+        Validate that price is within reasonable range.
         
         Args:
             token_id: CoinGecko token ID
@@ -107,12 +122,72 @@ class PriceOracle:
         
         return True
     
+    # ========================================================================
+    # ✨ NEW: LIVE ETH PRICE METHODS
+    # ========================================================================
+    
+    def get_eth_price_live(self) -> float:
+        """
+        Get live ETH price with multiple fallbacks.
+        
+        Priority:
+        1. Etherscan API (most accurate, real-time)
+        2. Cache (if recent < 5 minutes)
+        3. CoinGecko API (backup)
+        4. Fallback constant
+        
+        Returns:
+            Current ETH price in USD
+        """
+        # 1️⃣ Try Etherscan first (if available)
+        if self.etherscan:
+            try:
+                price = self.etherscan.get_eth_price_usd()
+                if price and price > 0:
+                    # Validate
+                    if self._validate_price('ethereum', price):
+                        # Cache for 5 minutes
+                        if self.cache:
+                            self.cache.set("eth_price_usd", price, ttl=300)
+                        self.fallback_prices['ETH'] = price
+                        self.fallback_prices['WETH'] = price
+                        logger.info(f"✅ Live ETH price from Etherscan: ${price:,.2f}")
+                        return price
+            except Exception as e:
+                logger.warning(f"⚠️ Etherscan price failed: {e}")
+        
+        # 2️⃣ Try cache
+        if self.cache:
+            cached_price = self.cache.get("eth_price_usd")
+            if cached_price:
+                logger.info(f"💾 Using cached ETH price: ${cached_price:,.2f}")
+                return cached_price
+        
+        # 3️⃣ Try CoinGecko
+        try:
+            price = self._fetch_current_price('ethereum')
+            if price and self._validate_price('ethereum', price):
+                if self.cache:
+                    self.cache.set("eth_price_usd", price, ttl=300)
+                logger.info(f"✅ ETH price from CoinGecko: ${price:,.2f}")
+                return price
+        except Exception as e:
+            logger.warning(f"⚠️ CoinGecko failed: {e}")
+        
+        # 4️⃣ Fallback
+        fallback = self.fallback_prices['ETH']
+        logger.warning(f"⚠️ Using fallback ETH price: ${fallback:,.2f}")
+        return fallback
+    
+    # ========================================================================
+    # CURRENT PRICE METHODS
+    # ========================================================================
+    
     def get_current_price(self, token_address: Optional[str] = None) -> Optional[float]:
         """
         Get current USD price for a token.
-        Checks cache first, fetches if not cached.
         
-        ✅ FIXED: Added price validation
+        ✨ NEW: Uses Etherscan for ETH, CoinGecko for others
         
         Args:
             token_address: Token contract address (None for ETH)
@@ -120,17 +195,25 @@ class PriceOracle:
         Returns:
             Current USD price
         """
-        # Check cache
+        # Special case for ETH
+        if token_address is None or token_address.lower() in [
+            '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',  # ETH placeholder
+            '0x0000000000000000000000000000000000000000',  # Zero address
+            '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'   # WETH
+        ]:
+            return self.get_eth_price_live()
+        
+        # Check cache first
         if self.cache:
             cached_price = self.cache.get_price(token_address or 'ETH')
             if cached_price is not None:
                 return cached_price
         
-        # Fetch from API
+        # Fetch from CoinGecko
         token_id = self._get_token_id(token_address)
         price = self._fetch_current_price(token_id)
         
-        # ✅ Validate price
+        # Validate price
         if price and not self._validate_price(token_id, price):
             logger.error(f"Price validation failed for {token_id}, using fallback")
             price = self._get_fallback_price(token_id)
@@ -152,7 +235,7 @@ class PriceOracle:
         }
         
         try:
-            response = requests.get(url, params=params, timeout=10)
+            response = self.session.get(url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             
@@ -169,6 +252,10 @@ class PriceOracle:
             logger.debug(f"Price fetch failed for {token_id}: {e}")
             return None
     
+    # ========================================================================
+    # HISTORICAL PRICE METHODS
+    # ========================================================================
+    
     def get_historical_price(
         self,
         token_address: Optional[str],
@@ -177,15 +264,12 @@ class PriceOracle:
         """
         Get historical USD price for a token at a specific timestamp.
         
-        ✅ IMPORTANT: This returns the PRICE PER TOKEN (e.g., $3000 per ETH)
-        ✅ NOT the total USD value! Multiply by amount separately!
-        
         Args:
             token_address: Token contract address (None for ETH)
             timestamp: DateTime of transaction
         
         Returns:
-            USD price per token at that time (e.g., $3000 for ETH)
+            USD price per token at that time
         """
         token_id = self._get_token_id(token_address)
         
@@ -203,7 +287,7 @@ class PriceOracle:
         # Fetch from API
         price = self._fetch_historical_price(token_id, date_str)
         
-        # ✅ Validate price
+        # Validate price
         if price and not self._validate_price(token_id, price):
             logger.warning(f"Historical price validation failed for {token_id} on {date_str}")
             price = self._get_fallback_price(token_id, timestamp.year)
@@ -215,11 +299,7 @@ class PriceOracle:
         return price
     
     def _fetch_historical_price(self, token_id: str, date: str) -> Optional[float]:
-        """
-        Fetch historical price from CoinGecko.
-        
-        ✅ Returns PRICE PER TOKEN, not total value!
-        """
+        """Fetch historical price from CoinGecko."""
         self._rate_limit()
         
         url = f"{self.coingecko_base}/coins/{token_id}/history"
@@ -229,7 +309,7 @@ class PriceOracle:
         }
         
         try:
-            response = requests.get(url, params=params, timeout=10)
+            response = self.session.get(url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             
@@ -246,9 +326,13 @@ class PriceOracle:
             logger.debug(f"Historical price fetch failed for {token_id} on {date}: {e}")
             return None
     
+    # ========================================================================
+    # FALLBACK METHODS
+    # ========================================================================
+    
     def _get_fallback_price(self, token_id: str, year: Optional[int] = None) -> Optional[float]:
         """
-        ✅ NEW: Get fallback price when API fails.
+        Get fallback price when API fails.
         
         Args:
             token_id: Token identifier
@@ -259,7 +343,7 @@ class PriceOracle:
         """
         # Historical average prices by year for ETH
         eth_fallback_prices = {
-            2024: 3000.0,
+            2024: 3400.0,
             2023: 1800.0,
             2022: 1500.0,
             2021: 3000.0,
@@ -273,16 +357,15 @@ class PriceOracle:
                 price = eth_fallback_prices[year]
                 logger.info(f"Using fallback ETH price for {year}: ${price:,.2f}")
                 return price
-            return 2000.0  # Default fallback
+            return 3400.0  # Default fallback
         
         elif token_id in ['tether', 'usd-coin']:
             return 1.0  # Stablecoins
         
         elif token_id == 'wrapped-bitcoin':
-            # Rough estimate based on ETH fallback
             if year and year in eth_fallback_prices:
                 return eth_fallback_prices[year] * 15  # BTC typically ~15x ETH
-            return 40000.0  # Default
+            return 60000.0  # Default
         
         elif token_id == 'chainlink':
             return 15.0  # LINK average
@@ -295,45 +378,9 @@ class PriceOracle:
         
         return None
     
-    def get_price_range(
-        self,
-        token_address: Optional[str],
-        days: int = 30
-    ) -> Optional[Dict]:
-        """
-        Get price range (min, max, avg) for last N days.
-        Useful for calculating rolling statistics.
-        """
-        token_id = self._get_token_id(token_address)
-        
-        self._rate_limit()
-        
-        url = f"{self.coingecko_base}/coins/{token_id}/market_chart"
-        params = {
-            'vs_currency': 'usd',
-            'days': days
-        }
-        
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            prices = [p[1] for p in data.get('prices', [])]
-            
-            if not prices:
-                return None
-            
-            return {
-                'min': min(prices),
-                'max': max(prices),
-                'avg': sum(prices) / len(prices),
-                'current': prices[-1],
-                'prices': prices
-            }
-        except Exception as e:
-            logger.error(f"Error fetching price range for {token_id}: {e}")
-            return None
+    # ========================================================================
+    # BATCH METHODS
+    # ========================================================================
     
     def batch_get_current_prices(self, token_addresses: list) -> Dict[str, float]:
         """
@@ -352,7 +399,7 @@ class PriceOracle:
         }
         
         try:
-            response = requests.get(url, params=params, timeout=10)
+            response = self.session.get(url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             
@@ -362,7 +409,7 @@ class PriceOracle:
                 token_id = self._get_token_id(addr)
                 price = data.get(token_id, {}).get('usd')
                 
-                # ✅ Validate before returning
+                # Validate before returning
                 if price and self._validate_price(token_id, price):
                     result[addr] = price
                 else:
