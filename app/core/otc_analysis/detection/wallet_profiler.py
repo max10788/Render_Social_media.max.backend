@@ -309,27 +309,137 @@ class WalletProfiler:
         """
         Calculate OTC probability score based on profile.
         
-        Returns: 0-1 probability
+        ✨ IMPROVED ALGORITHM - Multi-factor OTC detection:
+        
+        Scoring Categories:
+        1. Entity Labels (40 points) - Known OTC desks get high scores
+        2. Volume Metrics (30 points) - Large transaction values indicate OTC
+        3. Transaction Patterns (20 points) - Behavior analysis
+        4. Network Characteristics (10 points) - Counterparty patterns
+        
+        Returns: 0-1 probability (normalized to 100)
         """
         score = 0
+        max_score = 100  # Total possible points
         
-        # Low transaction frequency
-        if profile.get('transaction_frequency', 0) < 0.5:  # <0.5 tx/day
-            score += 0.25
+        # ============================================================================
+        # 1. ENTITY LABELS (40 points max)
+        # ============================================================================
+        entity_type = profile.get('entity_type', 'unknown')
+        entity_name = profile.get('entity_name', '').lower()
         
-        # High average value
-        if profile.get('avg_transaction_usd', 0) > 100000:
-            score += 0.30
+        # Known OTC desk types
+        if entity_type in ['otc_desk', 'market_maker', 'institutional']:
+            score += 40
+        elif entity_type in ['exchange', 'cex']:
+            score += 35
+        elif entity_type in ['whale', 'institutional_investor']:
+            score += 30
+        elif entity_type == 'dex':
+            score += 10  # DEXes can also do OTC
         
-        # No DeFi interactions
-        if not profile.get('has_defi_interactions', True):
-            score += 0.25
+        # Known OTC desk names (boost score)
+        otc_desk_keywords = [
+            'jump', 'wintermute', 'cumberland', 'b2c2', 'galaxy',
+            'coinbase', 'binance', 'kraken', 'ftx', 'alameda',
+            'flowtraders', 'dwf', 'gsr', 'falconx', 'sfox'
+        ]
         
-        # Low counterparty entropy (repeated partners)
-        if profile.get('counterparty_entropy', 10) < 2.0:
-            score += 0.20
+        if entity_name and any(keyword in entity_name for keyword in otc_desk_keywords):
+            score += 10  # Bonus for known desks
         
-        return min(1.0, score)
+        # ============================================================================
+        # 2. VOLUME METRICS (30 points max)
+        # ============================================================================
+        total_volume = profile.get('total_volume_usd', 0)
+        avg_transaction = profile.get('avg_transaction_usd', 0)
+        
+        # Total volume scoring (logarithmic scale)
+        if total_volume >= 1_000_000_000:  # $1B+
+            score += 15
+        elif total_volume >= 100_000_000:  # $100M+
+            score += 12
+        elif total_volume >= 10_000_000:   # $10M+
+            score += 10
+        elif total_volume >= 1_000_000:    # $1M+
+            score += 7
+        elif total_volume >= 100_000:      # $100K+
+            score += 5
+        
+        # Average transaction size (OTC = large transactions)
+        if avg_transaction >= 10_000_000:  # $10M+ avg
+            score += 15
+        elif avg_transaction >= 1_000_000:  # $1M+ avg
+            score += 12
+        elif avg_transaction >= 500_000:    # $500K+ avg
+            score += 10
+        elif avg_transaction >= 100_000:    # $100K+ avg
+            score += 7
+        elif avg_transaction >= 50_000:     # $50K+ avg
+            score += 5
+        
+        # ============================================================================
+        # 3. TRANSACTION PATTERNS (20 points max)
+        # ============================================================================
+        tx_frequency = profile.get('transaction_frequency', 0)
+        total_txs = profile.get('total_transactions', 0)
+        
+        # Low frequency = OTC (institutional, not retail)
+        if tx_frequency < 0.1:  # <1 tx per 10 days
+            score += 10
+        elif tx_frequency < 0.5:  # <0.5 tx/day
+            score += 7
+        elif tx_frequency < 2:    # <2 tx/day
+            score += 5
+        
+        # High transaction count = established entity
+        if total_txs >= 10000:
+            score += 5
+        elif total_txs >= 1000:
+            score += 4
+        elif total_txs >= 100:
+            score += 3
+        
+        # DeFi interactions (OTC desks DO use DeFi)
+        has_defi = profile.get('has_defi_interactions', False)
+        if has_defi:
+            score += 5  # Modern OTC desks use DeFi too
+        
+        # ============================================================================
+        # 4. NETWORK CHARACTERISTICS (10 points max)
+        # ============================================================================
+        unique_counterparties = profile.get('unique_counterparties', 0)
+        counterparty_entropy = profile.get('counterparty_entropy', 0)
+        
+        # Many unique counterparties = active trading desk
+        if unique_counterparties >= 1000:
+            score += 5
+        elif unique_counterparties >= 500:
+            score += 4
+        elif unique_counterparties >= 100:
+            score += 3
+        elif unique_counterparties >= 50:
+            score += 2
+        
+        # High entropy = diverse trading (good for OTC)
+        if counterparty_entropy >= 5.0:
+            score += 5
+        elif counterparty_entropy >= 3.0:
+            score += 3
+        elif counterparty_entropy >= 2.0:
+            score += 2
+        
+        # ============================================================================
+        # NORMALIZE & RETURN
+        # ============================================================================
+        # Normalize to 0-1 range
+        probability = min(1.0, score / max_score)
+        
+        # Apply confidence modifier
+        confidence = profile.get('confidence_score', 1.0)
+        adjusted_probability = probability * confidence
+        
+        return adjusted_probability
 
 
 class WalletDetailsService:
