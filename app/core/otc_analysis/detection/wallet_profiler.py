@@ -207,9 +207,21 @@ class WalletProfiler:
         """
         ✨ IMPROVED: Multi-level volume calculation with LIVE ETH price.
         
-        ✅ FIXED: Better token vs ETH detection
+        Calculation Strategy:
+        1. LEVEL 1: Try enriched USD values (best accuracy)
+        2. LEVEL 2: Calculate from NATIVE ETH values × LIVE ETH price
+        3. LEVEL 3: Fallback to transaction count only
+        
+        ✅ FIXED: Token decimals handling
+        ✅ FIXED: WEI → ETH conversion detection
+        ✅ FIXED: Unrealistic value filtering
+        
+        Returns:
+            Dict with volume metrics and data quality indicators
         """
+        # ====================================================================
         # LEVEL 1: Try USD values (already enriched)
+        # ====================================================================
         usd_values = [tx.get('usd_value', 0) for tx in all_txs if tx.get('usd_value')]
         
         if usd_values:
@@ -224,19 +236,26 @@ class WalletProfiler:
                 'data_quality': 'high'
             }
         
-        # LEVEL 2: Calculate from ETH values with LIVE price
+        # ====================================================================
+        # LEVEL 2: Calculate from NATIVE ETH values with LIVE price
+        # ====================================================================
         logger.info(f"   ⚠️  LEVEL 2: No USD enrichment, calculating from ETH with live price...")
         
         eth_values = []
         skipped_tokens = 0
+        skipped_unrealistic = 0
+        skipped_dust = 0
+        wei_conversions = 0
         
         for tx in all_txs:
-            # ✅ IMPORTANT: Only use NATIVE ETH transactions
-            # Skip token transfers (they have wrong decimals)
-            is_token_transfer = (
+            # ✅ CRITICAL FIX: Only use NATIVE ETH transactions
+            # Token transfers have WRONG decimals (USDT=6, WBTC=8, etc.)
+            is_token_transfer = bool(
                 tx.get('token_address') or 
-                tx.get('token_symbol') or
-                tx.get('contract_address')
+                tx.get('token_symbol') or 
+                tx.get('tokenSymbol') or
+                tx.get('contract_address') or
+                tx.get('contractAddress')
             )
             
             if is_token_transfer:
@@ -248,27 +267,40 @@ class WalletProfiler:
                 try:
                     value = float(tx['value_decimal'])
                     
-                    # ✅ SANITY CHECK 1: Detect if value might be in WEI
-                    if value > 1_000_000:  # More than 1M "ETH"
-                        logger.debug(f"   Converting WEI to ETH: {value:.2f}")
+                    # ✅ SANITY CHECK 1: Detect if value is in WEI instead of ETH
+                    # Threshold: >1M means probably WEI (nobody sends 1M ETH)
+                    if value > 1_000_000:
+                        logger.debug(f"   🔄 Converting WEI to ETH: {value:.2f}")
                         value = value / 1e18
+                        wei_conversions += 1
                     
-                    # ✅ SANITY CHECK 2: Skip unrealistic values
+                    # ✅ SANITY CHECK 2: Skip unrealistic ETH values
+                    # Even after WEI conversion, check if still too high
                     if value > 100_000:  # >100k ETH per transaction
-                        logger.warning(f"   ⚠️ Skipping unrealistic: {value:.2f} ETH")
+                        logger.debug(f"   ⚠️ Skipping unrealistic: {value:.2f} ETH")
+                        skipped_unrealistic += 1
                         continue
                     
-                    # ✅ SANITY CHECK 3: Skip dust
-                    if value < 0.001:  # <0.001 ETH
+                    # ✅ SANITY CHECK 3: Skip dust transactions
+                    # Small values don't contribute much and might be gas refunds
+                    if value < 0.001:  # <0.001 ETH (~$3)
+                        skipped_dust += 1
                         continue
                     
+                    # ✅ Value passed all checks - add it
                     eth_values.append(value)
                     
                 except (ValueError, TypeError) as e:
                     logger.warning(f"   ⚠️ Invalid value_decimal: {tx.get('value_decimal')}")
                     continue
         
-        logger.info(f"   📊 Filtered: {len(eth_values)} ETH txs, skipped {skipped_tokens} token txs")
+        # Log filtering results
+        logger.info(f"   📊 Transaction filtering:")
+        logger.info(f"      • Native ETH txs: {len(eth_values)}")
+        logger.info(f"      • Skipped tokens: {skipped_tokens}")
+        logger.info(f"      • WEI conversions: {wei_conversions}")
+        logger.info(f"      • Skipped unrealistic: {skipped_unrealistic}")
+        logger.info(f"      • Skipped dust: {skipped_dust}")
         
         if eth_values and self.price_oracle:
             try:
@@ -279,68 +311,110 @@ class WalletProfiler:
                     # Calculate USD values from ETH
                     estimated_usd = [eth * eth_price for eth in eth_values]
                     
-                    # ✅ FINAL SANITY CHECK: Total volume
+                    # ====================================================================
+                    # ✅ FINAL SANITY CHECKS: Aggregate validation
+                    # ====================================================================
                     total_usd = sum(estimated_usd)
                     total_eth = sum(eth_values)
-                    
-                    # Realistic ETH holdings check
-                    if total_eth > 1_000_000:  # >1M ETH total
-                        logger.error(f"   🚨 UNREALISTIC TOTAL ETH: {total_eth:,.2f} ETH")
-                        logger.error(f"   🚨 This indicates token decimals are wrong!")
-                        return {
-                            'total_volume_usd': 0,
-                            'total_volume_eth': 0,
-                            'avg_transaction_usd': 0,
-                            'median_transaction_usd': 0,
-                            'has_usd_values': False,
-                            'data_quality': 'corrupted_decimals'
-                        }
-                    
-                    # Check if average makes sense
                     avg_eth = total_eth / len(eth_values) if eth_values else 0
-                    if avg_eth > 10_000:  # Avg >10k ETH per tx
-                        logger.error(f"   🚨 UNREALISTIC AVG: {avg_eth:,.2f} ETH per tx")
+                    avg_usd = total_usd / len(estimated_usd) if estimated_usd else 0
+                    
+                    # Check 1: Total ETH volume
+                    if total_eth > 1_000_000:  # >1M ETH total ($3.4B+)
+                        logger.error(f"   🚨 UNREALISTIC TOTAL ETH: {total_eth:,.2f} ETH")
+                        logger.error(f"   🚨 This indicates wrong token decimals!")
+                        logger.error(f"   🚨 Likely cause: Token transfers treated as ETH")
                         return {
                             'total_volume_usd': 0,
                             'total_volume_eth': 0,
                             'avg_transaction_usd': 0,
                             'median_transaction_usd': 0,
                             'has_usd_values': False,
-                            'data_quality': 'corrupted_decimals'
+                            'data_quality': 'corrupted_decimals',
+                            'error': 'total_eth_too_high'
                         }
                     
+                    # Check 2: Average ETH per transaction
+                    if avg_eth > 10_000:  # Avg >10k ETH per tx ($34M+)
+                        logger.error(f"   🚨 UNREALISTIC AVG: {avg_eth:,.2f} ETH per tx")
+                        logger.error(f"   🚨 Average transaction should be <10k ETH")
+                        return {
+                            'total_volume_usd': 0,
+                            'total_volume_eth': 0,
+                            'avg_transaction_usd': 0,
+                            'median_transaction_usd': 0,
+                            'has_usd_values': False,
+                            'data_quality': 'corrupted_decimals',
+                            'error': 'avg_eth_too_high'
+                        }
+                    
+                    # Check 3: Total USD volume
+                    if total_usd > 1_000_000_000_000:  # >$1 Trillion
+                        logger.error(f"   🚨 UNREALISTIC USD VOLUME: ${total_usd:,.2f}")
+                        logger.error(f"   🚨 Total volume exceeds $1 trillion")
+                        return {
+                            'total_volume_usd': 0,
+                            'total_volume_eth': 0,
+                            'avg_transaction_usd': 0,
+                            'median_transaction_usd': 0,
+                            'has_usd_values': False,
+                            'data_quality': 'corrupted_decimals',
+                            'error': 'total_usd_too_high'
+                        }
+                    
+                    # ✅ All checks passed - calculate statistics
                     stats = rolling_statistics(estimated_usd)
                     
-                    logger.info(f"   💎 Processed {len(eth_values)} native ETH transactions")
-                    logger.info(f"   💰 Live ETH price: ${eth_price:,.2f}")
-                    logger.info(f"   💵 Total ETH: {total_eth:,.2f} ETH")
-                    logger.info(f"   💵 Estimated total volume: ${sum(estimated_usd):,.2f}")
-                    logger.info(f"   💵 Estimated avg transaction: ${stats['mean']:,.2f}")
+                    logger.info(f"   ✅ Volume calculation successful:")
+                    logger.info(f"      • Processed: {len(eth_values)} native ETH txs")
+                    logger.info(f"      • Live ETH price: ${eth_price:,.2f}")
+                    logger.info(f"      • Total ETH: {total_eth:,.4f} ETH")
+                    logger.info(f"      • Avg ETH: {avg_eth:,.4f} ETH per tx")
+                    logger.info(f"      • Total USD: ${total_usd:,.2f}")
+                    logger.info(f"      • Avg USD: ${avg_usd:,.2f} per tx")
                     
                     return {
-                        'total_volume_usd': sum(estimated_usd),
-                        'total_volume_eth': sum(eth_values),
+                        'total_volume_usd': total_usd,
+                        'total_volume_eth': total_eth,
                         'avg_transaction_usd': stats['mean'],
                         'median_transaction_usd': stats['median'],
                         'has_usd_values': False,
                         'eth_price_used': eth_price,
-                        'data_quality': 'medium'
+                        'data_quality': 'medium',
+                        'transactions_used': len(eth_values),
+                        'transactions_skipped': {
+                            'tokens': skipped_tokens,
+                            'unrealistic': skipped_unrealistic,
+                            'dust': skipped_dust
+                        }
                     }
                 else:
                     logger.warning(f"   ⚠️  Invalid ETH price: {eth_price}")
             except Exception as e:
                 logger.error(f"   ❌ Live price calculation failed: {e}")
         
-        # LEVEL 3: Ultimate fallback
-        logger.warning(f"   ❌ LEVEL 3: No usable volume data")
-        logger.warning(f"   Reason: No USD enrichment, no native ETH transactions")
+        # ====================================================================
+        # LEVEL 3: Ultimate fallback - No volume data
+        # ====================================================================
+        logger.warning(f"   ❌ LEVEL 3: No usable volume data available")
+        logger.warning(f"      Reason: No USD enrichment + no native ETH transactions")
+        logger.warning(f"      Total transactions: {len(all_txs)}")
+        logger.warning(f"      Token transfers: {skipped_tokens}")
+        logger.warning(f"      Native ETH txs found: {len(eth_values)}")
+        
         return {
             'total_volume_usd': 0,
             'total_volume_eth': 0,
             'avg_transaction_usd': 0,
             'median_transaction_usd': 0,
             'has_usd_values': False,
-            'data_quality': 'none'
+            'data_quality': 'none',
+            'error': 'no_usable_data',
+            'debug_info': {
+                'total_transactions': len(all_txs),
+                'token_transfers': skipped_tokens,
+                'native_eth_txs': len(eth_values)
+            }
         }
     
     # ========================================================================
