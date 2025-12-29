@@ -2,6 +2,8 @@
 Shared Dependencies & Services
 ===============================
 
+✨ UPDATED: Proper service initialization with dependency injection
+
 All shared dependencies, service initialization, and helper functions.
 """
 
@@ -51,27 +53,39 @@ from app.core.otc_analysis.api.validators import validate_ethereum_address
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# SERVICE INITIALIZATION
+# SERVICE INITIALIZATION - ✨ WITH PROPER DEPENDENCY INJECTION
 # ============================================================================
 
 # Core services
 cache_manager = CacheManager()
+
+# Blockchain services (initialize first)
+node_provider = NodeProvider(chain_id=1)  # Ethereum mainnet
+etherscan = EtherscanAPI(chain_id=1)
+
+# ✅ PriceOracle WITH Etherscan injected
+price_oracle = PriceOracle(cache_manager, etherscan)  # Pass etherscan!
+
+# ✅ WalletProfiler WITH PriceOracle injected
+wallet_profiler = WalletProfiler(price_oracle)  # Pass price_oracle!
+
+# Transaction extractor
+transaction_extractor = TransactionExtractor(node_provider, etherscan)
+
+# Other services
 otc_registry = OTCDeskRegistry(cache_manager)
 labeling_service = WalletLabelingService(cache_manager)
 otc_detector = OTCDetector(cache_manager, otc_registry, labeling_service)
-wallet_profiler = WalletProfiler()
 flow_tracer = FlowTracer()
-
-# Blockchain services
-node_provider = NodeProvider(chain_id=1)  # Ethereum mainnet
-etherscan = EtherscanAPI(chain_id=1)
-price_oracle = PriceOracle(cache_manager)
-transaction_extractor = TransactionExtractor(node_provider, etherscan)
 block_scanner = BlockScanner(node_provider, chain_id=1)
 
 # Analysis services
 statistics_service = StatisticsService(cache_manager)
 graph_builder = GraphBuilderService(cache_manager)
+
+logger.info("✅ All OTC services initialized successfully")
+logger.info(f"   • PriceOracle: {type(price_oracle).__name__} (with Etherscan)")
+logger.info(f"   • WalletProfiler: {type(wallet_profiler).__name__} (with PriceOracle)")
 
 
 # ============================================================================
@@ -82,14 +96,7 @@ def get_current_user():
     """
     Get current authenticated user.
     
-    TODO: Implement real JWT authentication in production:
-    
-    from jose import jwt
-    
-    def get_current_user(authorization: str = Header(...)):
-        token = authorization.replace("Bearer ", "")
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        return payload.get("sub")
+    TODO: Implement real JWT authentication in production
     """
     return "dev_user_123"
 
@@ -135,8 +142,8 @@ def get_otc_detector():
 
 async def ensure_registry_wallets_in_db(
     db: Session,
-    max_to_fetch: int = 3,  # ✅ Reduced von 5 auf 3
-    skip_if_recent: bool = True  # ✅ NEW Parameter
+    max_to_fetch: int = 3,
+    skip_if_recent: bool = True
 ):
     """
     Ensures registry wallets are in database.
@@ -210,7 +217,7 @@ async def ensure_registry_wallets_in_db(
                     OTCWallet.address == validated
                 ).first()
                 
-                if wallet and wallet.confidence_score >= 80.0:
+                if wallet and wallet.confidence_score >= 60.0:  # ✅ LOWERED from 80
                     stats["kept"] += 1
                     continue
                 else:
@@ -248,28 +255,29 @@ async def ensure_registry_wallets_in_db(
                 
                 enriched = [tx for tx in transactions if tx.get('usd_value')]
                 
-                if not enriched:
-                    logger.info(f"⚠️  No enriched transactions - skipping")
-                    stats["skipped"] += 1
-                    continue
-                
-                # Calculate metrics
-                total_volume = sum(tx['usd_value'] for tx in enriched)
+                # ✅ Continue even without enrichment
+                # (WalletProfiler will use live ETH price)
                 
                 # Get labels
                 labels = labeling_service.get_wallet_labels(address)
                 
-                # Create profile
+                # Create profile (works with or without enrichment)
                 profile = wallet_profiler.create_profile(address, transactions, labels)
                 
                 # Calculate confidence
                 otc_probability = wallet_profiler.calculate_otc_probability(profile)
                 confidence = otc_probability * 100
                 
-                logger.info(f"📊 Confidence: {confidence:.1f}%, Volume: ${total_volume:,.0f}")
+                # Get volume (might be from live ETH price)
+                total_volume = profile.get('total_volume_usd', 0)
                 
-                # Auto-save if high confidence
-                if confidence >= 80.0:
+                logger.info(f"📊 Profile complete:")
+                logger.info(f"   • Confidence: {confidence:.1f}%")
+                logger.info(f"   • Volume: ${total_volume:,.0f}")
+                logger.info(f"   • Data quality: {profile.get('data_quality')}")
+                
+                # ✅ LOWERED threshold: 60% instead of 80%
+                if confidence >= 60.0:
                     wallet = OTCWallet(
                         address=address,
                         label=labels.get('entity_name') if labels else f"{address[:8]}...",
