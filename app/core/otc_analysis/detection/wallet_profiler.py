@@ -206,6 +206,8 @@ class WalletProfiler:
     ) -> Dict:
         """
         ✨ IMPROVED: Multi-level volume calculation with LIVE ETH price.
+        
+        ✅ FIXED: Better token vs ETH detection
         """
         # LEVEL 1: Try USD values (already enriched)
         usd_values = [tx.get('usd_value', 0) for tx in all_txs if tx.get('usd_value')]
@@ -226,25 +228,47 @@ class WalletProfiler:
         logger.info(f"   ⚠️  LEVEL 2: No USD enrichment, calculating from ETH with live price...")
         
         eth_values = []
+        skipped_tokens = 0
+        
         for tx in all_txs:
+            # ✅ IMPORTANT: Only use NATIVE ETH transactions
+            # Skip token transfers (they have wrong decimals)
+            is_token_transfer = (
+                tx.get('token_address') or 
+                tx.get('token_symbol') or
+                tx.get('contract_address')
+            )
+            
+            if is_token_transfer:
+                skipped_tokens += 1
+                continue
+            
+            # Only process native ETH transfers
             if tx.get('value_decimal'):
                 try:
                     value = float(tx['value_decimal'])
                     
-                    # ✅ SANITY CHECK: Detect if value is in WEI instead of ETH
-                    if value > 1_000_000:  # More than 1M ETH = suspicious
-                        logger.warning(f"   ⚠️ Suspicious ETH value: {value:.2f} - might be WEI")
-                        value = value / 1e18  # Convert WEI to ETH
+                    # ✅ SANITY CHECK 1: Detect if value might be in WEI
+                    if value > 1_000_000:  # More than 1M "ETH"
+                        logger.debug(f"   Converting WEI to ETH: {value:.2f}")
+                        value = value / 1e18
                     
-                    # ✅ SANITY CHECK: Max reasonable ETH per transaction
+                    # ✅ SANITY CHECK 2: Skip unrealistic values
                     if value > 100_000:  # >100k ETH per transaction
-                        logger.warning(f"   ⚠️ Unrealistic ETH value: {value:.2f} - skipping")
+                        logger.warning(f"   ⚠️ Skipping unrealistic: {value:.2f} ETH")
+                        continue
+                    
+                    # ✅ SANITY CHECK 3: Skip dust
+                    if value < 0.001:  # <0.001 ETH
                         continue
                     
                     eth_values.append(value)
+                    
                 except (ValueError, TypeError) as e:
                     logger.warning(f"   ⚠️ Invalid value_decimal: {tx.get('value_decimal')}")
                     continue
+        
+        logger.info(f"   📊 Filtered: {len(eth_values)} ETH txs, skipped {skipped_tokens} token txs")
         
         if eth_values and self.price_oracle:
             try:
@@ -257,22 +281,39 @@ class WalletProfiler:
                     
                     # ✅ FINAL SANITY CHECK: Total volume
                     total_usd = sum(estimated_usd)
-                    if total_usd > 1_000_000_000_000:  # >$1 Trillion
-                        logger.error(f"   🚨 UNREALISTIC TOTAL VOLUME: ${total_usd:,.2f}")
-                        logger.error(f"   🚨 This indicates data corruption - rejecting!")
+                    total_eth = sum(eth_values)
+                    
+                    # Realistic ETH holdings check
+                    if total_eth > 1_000_000:  # >1M ETH total
+                        logger.error(f"   🚨 UNREALISTIC TOTAL ETH: {total_eth:,.2f} ETH")
+                        logger.error(f"   🚨 This indicates token decimals are wrong!")
                         return {
                             'total_volume_usd': 0,
                             'total_volume_eth': 0,
                             'avg_transaction_usd': 0,
                             'median_transaction_usd': 0,
                             'has_usd_values': False,
-                            'data_quality': 'corrupted'
+                            'data_quality': 'corrupted_decimals'
+                        }
+                    
+                    # Check if average makes sense
+                    avg_eth = total_eth / len(eth_values) if eth_values else 0
+                    if avg_eth > 10_000:  # Avg >10k ETH per tx
+                        logger.error(f"   🚨 UNREALISTIC AVG: {avg_eth:,.2f} ETH per tx")
+                        return {
+                            'total_volume_usd': 0,
+                            'total_volume_eth': 0,
+                            'avg_transaction_usd': 0,
+                            'median_transaction_usd': 0,
+                            'has_usd_values': False,
+                            'data_quality': 'corrupted_decimals'
                         }
                     
                     stats = rolling_statistics(estimated_usd)
                     
-                    logger.info(f"   💎 Processed {len(eth_values)} ETH transactions")
+                    logger.info(f"   💎 Processed {len(eth_values)} native ETH transactions")
                     logger.info(f"   💰 Live ETH price: ${eth_price:,.2f}")
+                    logger.info(f"   💵 Total ETH: {total_eth:,.2f} ETH")
                     logger.info(f"   💵 Estimated total volume: ${sum(estimated_usd):,.2f}")
                     logger.info(f"   💵 Estimated avg transaction: ${stats['mean']:,.2f}")
                     
@@ -288,10 +329,11 @@ class WalletProfiler:
                 else:
                     logger.warning(f"   ⚠️  Invalid ETH price: {eth_price}")
             except Exception as e:
-                logger.error(f"   ❌ Live price fetch failed: {e}")
+                logger.error(f"   ❌ Live price calculation failed: {e}")
         
         # LEVEL 3: Ultimate fallback
-        logger.warning(f"   ❌ LEVEL 3: No volume data available")
+        logger.warning(f"   ❌ LEVEL 3: No usable volume data")
+        logger.warning(f"   Reason: No USD enrichment, no native ETH transactions")
         return {
             'total_volume_usd': 0,
             'total_volume_eth': 0,
