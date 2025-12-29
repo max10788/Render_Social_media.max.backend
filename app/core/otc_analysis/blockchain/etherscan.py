@@ -296,26 +296,7 @@ class EtherscanAPI:
     # ========================================================================
 
     def get_eth_price_usd(self) -> Optional[float]:
-        """
-        Get current ETH price in USD from Etherscan.
-        
-        API: https://api.etherscan.io/api?module=stats&action=ethprice
-        
-        Returns:
-            Current ETH price in USD or None
-        
-        Example Response:
-        {
-          "status": "1",
-          "message": "OK",
-          "result": {
-            "ethbtc": "0.05297",
-            "ethbtc_timestamp": "1703875234",
-            "ethusd": "3421.42",
-            "ethusd_timestamp": "1703875234"
-          }
-        }
-        """
+        """Get current ETH price in USD from Etherscan."""
         try:
             params = {
                 'module': 'stats',
@@ -323,11 +304,10 @@ class EtherscanAPI:
                 'apikey': self.api_key
             }
             
-            # Don't use _make_request because price endpoint has different structure
-            self._rate_limit()
+            # ✅ FIX: Use V1 endpoint for price (not V2!)
+            price_url = "https://api.etherscan.io/api"  # V1, not V2!
             
-            # Use V1 endpoint for price (not V2)
-            price_url = "https://api.etherscan.io/api"  # V1 endpoint
+            self._rate_limit()
             
             response = self.session.get(price_url, params=params, timeout=10)
             response.raise_for_status()
@@ -337,7 +317,7 @@ class EtherscanAPI:
                 eth_price = float(data['result']['ethusd'])
                 
                 # Sanity check
-                if 100 <= eth_price <= 10000:  # Reasonable ETH price range
+                if 100 <= eth_price <= 10000:
                     logger.info(f"💰 Current ETH price: ${eth_price:,.2f}")
                     return eth_price
                 else:
