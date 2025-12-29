@@ -135,21 +135,28 @@ def get_otc_detector():
 
 async def ensure_registry_wallets_in_db(
     db: Session,
-    max_to_fetch: int = 5
-) -> dict:
+    max_to_fetch: int = 5,  # ✅ Reduced von 10 auf 5
+    skip_if_recent: bool = True  # ✅ NEW Parameter
+):
     """
-    🔄 AUTO-SYNC: Ensure registry wallets exist in DB.
+    Ensures registry wallets are in database.
     
-    Checks if OTC desk addresses from registry are in database.
-    Fetches and saves missing wallets with high confidence.
+    ✅ OPTIMIZATION: Skip if data is recent
+    """
+    from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
+    from app.core.otc_analysis.data_sources.otc_desks import OTCDeskRegistry
+    from datetime import datetime, timedelta
     
-    Args:
-        db: Database session
-        max_to_fetch: Maximum wallets to fetch per call
+    # ✅ Check if we have recent data
+    if skip_if_recent:
+        recent_count = db.query(OTCWallet).filter(
+            OTCWallet.updated_at >= datetime.now() - timedelta(hours=1)
+        ).count()
         
-    Returns:
-        Dict with stats: {fetched, kept, skipped}
-    """
+        if recent_count >= 5:
+            logger.info(f"⏭️  Skipping auto-sync: {recent_count} wallets updated in last hour")
+            return
+            
     stats = {"fetched": 0, "kept": 0, "skipped": 0}
     
     try:
