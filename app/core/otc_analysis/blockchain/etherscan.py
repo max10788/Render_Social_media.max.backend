@@ -296,37 +296,68 @@ class EtherscanAPI:
     # ========================================================================
 
     def get_eth_price_usd(self) -> Optional[float]:
-        """Get current ETH price in USD from Etherscan."""
+        """
+        Get current ETH price in USD from Etherscan.
+        
+        API: https://api.etherscan.io/api?module=stats&action=ethprice
+        
+        ✅ FIXED: Uses V1 endpoint (not V2) for price API
+        
+        Returns:
+            Current ETH price in USD or None
+        
+        Example Response:
+        {
+          "status": "1",
+          "message": "OK",
+          "result": {
+            "ethbtc": "0.05297",
+            "ethbtc_timestamp": "1703875234",
+            "ethusd": "3421.42",
+            "ethusd_timestamp": "1703875234"
+          }
+        }
+        """
         try:
+            # ✅ CRITICAL FIX: Price endpoint is V1, not V2!
+            price_url = "https://api.etherscan.io/api"  # V1 API
+            
             params = {
                 'module': 'stats',
                 'action': 'ethprice',
                 'apikey': self.api_key
             }
             
-            # ✅ FIX: Use V1 endpoint for price (not V2!)
-            price_url = "https://api.etherscan.io/api"  # V1, not V2!
-            
+            # Rate limit
             self._rate_limit()
             
+            # Make request
             response = self.session.get(price_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
             
+            # Parse response
             if data.get('status') == '1' and data.get('result'):
                 eth_price = float(data['result']['ethusd'])
                 
-                # Sanity check
+                # ✅ Sanity check: ETH price should be $100-$10,000
                 if 100 <= eth_price <= 10000:
-                    logger.info(f"💰 Current ETH price: ${eth_price:,.2f}")
+                    logger.info(f"💰 Current ETH price from Etherscan: ${eth_price:,.2f}")
                     return eth_price
                 else:
                     logger.warning(f"⚠️ Suspicious ETH price: ${eth_price:,.2f}")
                     return None
             else:
-                logger.warning(f"⚠️ Etherscan price API failed: {data.get('message')}")
+                error_msg = data.get('message', 'Unknown error')
+                logger.warning(f"⚠️ Etherscan price API failed: {error_msg}")
                 return None
                 
+        except requests.exceptions.Timeout:
+            logger.error(f"❌ Etherscan price API timeout")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"❌ Etherscan price request failed: {e}")
+            return None
         except Exception as e:
             logger.error(f"❌ Failed to fetch ETH price: {e}")
             return None
