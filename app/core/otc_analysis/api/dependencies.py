@@ -142,34 +142,28 @@ def get_otc_detector():
 
 async def ensure_registry_wallets_in_db(
     db: Session,
-    max_to_fetch: int = 1,  # ✅ OPTIMIZED: 1 statt 3 Wallets
+    max_to_fetch: int = 1,  # ✅ CHANGED: 1 statt 3
     skip_if_recent: bool = True
 ):
     """
     Ensures registry wallets are in database.
     
     ✅ OPTIMIZED: 12h Cache + nur 1 Wallet pro Request
-    ✅ FIXED: UPDATE existing wallets instead of INSERT
-    ✅ FIXED: Proper rollback on errors
     """
     from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
     from datetime import datetime, timedelta
     from sqlalchemy.exc import IntegrityError
     
-    # ✅ OPTIMIZED: 12h Cache statt 1h
+    # ✅ CHANGED: 12h Cache statt 1h
     if skip_if_recent:
-        cache_threshold = datetime.now() - timedelta(hours=12)  # ← 12 STUNDEN!
+        cache_threshold = datetime.now() - timedelta(hours=12)  # ← HIER!
         
         recent_count = db.query(OTCWallet).filter(
             OTCWallet.updated_at >= cache_threshold
         ).count()
         
-        # ✅ OPTIMIZED: 3 statt 5 (weniger strict)
-        if recent_count >= 3:
-            logger.info(
-                f"⚡ Fast path: {recent_count} wallets updated in last 12h - "
-                f"skipping auto-sync"
-            )
+        if recent_count >= 3:  # ✅ CHANGED: 3 statt 5
+            logger.info(f"⚡ Fast path: {recent_count} wallets cached (12h)")
             return {"cached": True, "count": recent_count}
     
     stats = {"fetched": 0, "kept": 0, "skipped": 0, "updated": 0}
@@ -460,6 +454,152 @@ async def ensure_registry_wallets_in_db(
         logger.error(f"❌ Auto-sync failed: {e}", exc_info=True)
         db.rollback()
         return stats
+
+async def discover_new_otc_desks(
+    db: Session,
+    max_discoveries: int = 5
+) -> List[Dict]:
+    """
+    🕵️ Discover new OTC desks through counterparty analysis.
+    """
+    from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
+    from app.core.otc_analysis.discovery.counterparty_analyzer import CounterpartyAnalyzer
+    
+    logger.info("🕵️ Starting OTC discovery...")
+    
+    try:
+        # Get known OTC desks
+        known_otc = db.query(OTCWallet).filter(
+            OTCWallet.entity_type == 'otc_desk',
+            OTCWallet.confidence_score >= 70.0
+        ).all()
+        
+        if len(known_otc) < 2:
+            logger.warning("⚠️ Need 2+ known OTC desks")
+            return []
+        
+        known_addresses = [w.address for w in known_otc]
+        logger.info(f"📊 Analyzing {len(known_addresses)} OTC desks...")
+        
+        # Initialize analyzer
+        analyzer = CounterpartyAnalyzer(
+            db=db,
+            transaction_extractor=transaction_extractor,
+            wallet_profiler=wallet_profiler
+        )
+        
+        # Discover candidates
+        candidates = analyzer.discover_counterparties(
+            known_otc_addresses=known_addresses,
+            min_interactions=2,
+            min_volume=1_000_000,
+            max_candidates=max_discoveries
+        )
+        
+        if not candidates:
+            logger.info("ℹ️ No candidates found")
+            return []
+        
+        logger.info(f"🎯 Found {len(candidates)} candidates")
+        
+        # Validate and save
+        discovered = []
+        
+        for candidate in candidates:
+            address = candidate['address']
+            
+            # Skip if exists
+            existing = db.query(OTCWallet).filter(
+                OTCWallet.address == address
+            ).first()
+            
+            if existing:
+                logger.info(f"   ⚠️ {address[:10]}... exists")
+                continue
+            
+            logger.info(
+                f"   🆕 {address[:10]}... - "
+                f"Score: {candidate['discovery_score']}/100, "
+                f"OTC links: {candidate['otc_interaction_count']}, "
+                f"Volume: ${candidate['total_volume']:,.0f}"
+            )
+            
+            # Full profile
+            try:
+                transactions = transaction_extractor.extract_wallet_transactions(
+                    address,
+                    include_internal=True,
+                    include_tokens=True
+                )
+                
+                if transactions:
+                    transactions = transaction_extractor.enrich_with_usd_value(
+                        transactions,
+                        price_oracle,
+                        max_transactions=30
+                    )
+                    
+                    labels = {
+                        'entity_type': 'otc_desk',
+                        'entity_name': f"Discovered {address[:8]}",
+                        'labels': ['discovered', 'counterparty_analysis'],
+                        'source': 'discovery',
+                        'confidence': candidate['discovery_score'] / 100
+                    }
+                    
+                    profile = wallet_profiler.create_profile(address, transactions, labels)
+                    otc_prob = wallet_profiler.calculate_otc_probability(profile)
+                    confidence = otc_prob * 100
+                    
+                    # Combine scores
+                    combined = (confidence + candidate['discovery_score']) / 2
+                    
+                    logger.info(f"      Profile: {combined:.1f}% confidence")
+                    
+                    # Save if good enough
+                    if combined >= 60.0:
+                        wallet = OTCWallet(
+                            address=address,
+                            label=f"Discovered {address[:8]}",
+                            entity_type='otc_desk',
+                            entity_name=f"Discovered OTC {address[:8]}",
+                            confidence_score=combined,
+                            total_volume=profile.get('total_volume_usd', 0),
+                            transaction_count=len(transactions),
+                            first_seen=candidate['first_seen'],
+                            last_active=candidate['last_seen'],
+                            is_active=True,
+                            tags=['discovered', 'counterparty'],
+                            created_at=datetime.now(),
+                            updated_at=datetime.now()
+                        )
+                        
+                        db.add(wallet)
+                        db.commit()
+                        
+                        discovered.append({
+                            'address': address,
+                            'confidence': combined,
+                            'discovery_score': candidate['discovery_score'],
+                            'otc_interactions': candidate['otc_interaction_count']
+                        })
+                        
+                        logger.info(f"      ✅ Saved to DB")
+                    else:
+                        logger.info(f"      ⚠️ Low confidence ({combined:.1f}%)")
+                
+            except Exception as e:
+                logger.error(f"❌ Error profiling {address[:10]}: {e}")
+                continue
+        
+        logger.info(f"✅ Discovery complete: {len(discovered)} new OTC desks")
+        return discovered
+        
+    except Exception as e:
+        logger.error(f"❌ Discovery failed: {e}", exc_info=True)
+        db.rollback()
+        return []
+
 # ============================================================================
 # EXPORT ALL
 # ============================================================================
