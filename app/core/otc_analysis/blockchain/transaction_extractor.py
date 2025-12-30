@@ -248,10 +248,10 @@ class TransactionExtractor:
         """
         Add USD values to transactions using price oracle.
         
-        ✅ FIXED: Validates that value_decimal exists and is in correct unit
-        ✅ FIXED: Type-specific sanity checks (ETH vs Token)
-        ✅ FIXED: Better error handling and logging
-        ✅ FIXED: Shows actual token symbol (USDT, LINK) not "ERC20"
+        ✅ ENHANCED LOGGING: Shows exactly why enrichment fails
+        ✅ Tracks API call success/failure by token
+        ✅ Identifies rate limiting issues
+        ✅ Shows which tokens are not in CoinGecko
         """
         if not transactions:
             return []
@@ -265,16 +265,29 @@ class TransactionExtractor:
         
         price_cache = {}
         
+        # ✅ NEW: Detailed tracking
         enriched_count = 0
         cached_count = 0
         failed_count = 0
         suspicious_count = 0
+        
+        # ✅ NEW: Track failures by reason
+        failure_reasons = {
+            'price_fetch_failed': [],      # API returned None
+            'rate_limited': [],             # Too many requests
+            'token_not_found': [],          # Token not in CoinGecko
+            'network_error': [],            # Connection issues
+            'amount_missing': [],           # value_decimal missing
+            'suspicious_value': [],         # Unrealistic values
+            'other': []
+        }
         
         for tx in txs_to_enrich:
             try:
                 token_address = tx.get('token_address')
                 tx_type = tx.get('tx_type', 'normal')
                 timestamp = tx['timestamp']
+                tx_hash = tx.get('tx_hash', 'unknown')[:16]
                 
                 # ✅ Get token symbol for better logging
                 token_symbol = tx.get('token_symbol', 'ETH' if not token_address else 'UNKNOWN')
@@ -287,16 +300,22 @@ class TransactionExtractor:
                     if token_address is None and tx_type in ['normal', 'internal']:
                         value_wei = tx.get('value', '0')
                         amount = self.wei_to_eth(value_wei)
-                        logger.warning(
-                            f"⚠️ value_decimal missing for ETH TX {tx.get('tx_hash', 'unknown')[:16]}..."
+                        logger.debug(
+                            f"⚠️ value_decimal missing for ETH TX {tx_hash}..."
                         )
                     else:
                         # For tokens, skip if value_decimal missing
-                        logger.error(
-                            f"❌ value_decimal missing for {token_symbol} TX {tx.get('tx_hash', 'unknown')[:16]}..."
+                        logger.warning(
+                            f"❌ value_decimal missing for {token_symbol} TX {tx_hash}... "
+                            f"(token_address: {token_address})"
                         )
                         tx['usd_value'] = None
                         failed_count += 1
+                        failure_reasons['amount_missing'].append({
+                            'tx_hash': tx_hash,
+                            'token': token_symbol,
+                            'token_address': token_address
+                        })
                         continue
                 
                 # Skip zero values
@@ -307,23 +326,34 @@ class TransactionExtractor:
                 # ✅ Type-specific sanity checks
                 if tx_type in ['normal', 'internal']:  # ETH transactions
                     if amount > 100_000:  # 100K ETH threshold
-                        logger.warning(
-                            f"⚠️ SUSPICIOUS: Transaction {tx.get('tx_hash', 'unknown')[:16]}... "
-                            f"has {amount:,.2f} ETH - SKIPPING to avoid bad data"
+                        logger.debug(
+                            f"⚠️ SUSPICIOUS: TX {tx_hash}... "
+                            f"has {amount:,.2f} ETH - SKIPPING"
                         )
                         tx['usd_value'] = None
                         suspicious_count += 1
+                        failure_reasons['suspicious_value'].append({
+                            'tx_hash': tx_hash,
+                            'token': token_symbol,
+                            'amount': amount,
+                            'reason': 'amount_too_high'
+                        })
                         continue
                 
                 elif tx_type == 'erc20':  # Token transactions
-                    # Additional safety check (should already be filtered in _format_token_transactions)
                     if amount > 1e15:  # 1 quadrillion tokens
-                        logger.warning(
-                            f"⚠️ SUSPICIOUS: Token TX {tx.get('tx_hash', 'unknown')[:16]}... "
+                        logger.debug(
+                            f"⚠️ SUSPICIOUS: Token TX {tx_hash}... "
                             f"has {amount:.2e} {token_symbol} - SKIPPING"
                         )
                         tx['usd_value'] = None
                         suspicious_count += 1
+                        failure_reasons['suspicious_value'].append({
+                            'tx_hash': tx_hash,
+                            'token': token_symbol,
+                            'amount': amount,
+                            'reason': 'amount_too_high'
+                        })
                         continue
                 
                 # Create cache key
@@ -335,14 +365,67 @@ class TransactionExtractor:
                     price_usd = price_cache[cache_key]
                     cached_count += 1
                 else:
-                    # ✅ CRITICAL: Pass token_address to price oracle, NOT "erc20"!
-                    # For ERC20 tokens: token_address = 0xdac17f958... (USDT contract)
-                    # For ETH: token_address = None
-                    price_usd = price_oracle.get_historical_price(
-                        token_address,  # ✅ CORRECT: Specific token contract address
-                        timestamp
+                    # ✅ ENHANCED: Fetch price with detailed logging
+                    logger.debug(
+                        f"🔍 Fetching price: {token_symbol} "
+                        f"(address: {token_address or 'ETH'}) "
+                        f"for date: {date_key}"
                     )
-                    price_cache[cache_key] = price_usd
+                    
+                    try:
+                        price_usd = price_oracle.get_historical_price(
+                            token_address,
+                            timestamp
+                        )
+                        
+                        if price_usd:
+                            logger.debug(f"   ✅ Got price: ${price_usd:,.2f}")
+                            price_cache[cache_key] = price_usd
+                        else:
+                            logger.debug(f"   ❌ Price API returned None")
+                            price_cache[cache_key] = None
+                            
+                            # ✅ NEW: Try to determine WHY it failed
+                            # Check if it's a known issue
+                            failure_reason = 'price_fetch_failed'
+                            
+                            # Check price oracle's last error (if available)
+                            if hasattr(price_oracle, 'last_error'):
+                                error_msg = str(price_oracle.last_error).lower()
+                                if 'rate limit' in error_msg or '429' in error_msg:
+                                    failure_reason = 'rate_limited'
+                                elif 'not found' in error_msg or '404' in error_msg:
+                                    failure_reason = 'token_not_found'
+                                elif 'timeout' in error_msg or 'connection' in error_msg:
+                                    failure_reason = 'network_error'
+                            
+                            failure_reasons[failure_reason].append({
+                                'token': token_symbol,
+                                'token_address': token_address,
+                                'date': date_key
+                            })
+                    
+                    except Exception as e:
+                        logger.debug(f"   ❌ Exception: {str(e)}")
+                        price_cache[cache_key] = None
+                        
+                        # Categorize exception
+                        error_msg = str(e).lower()
+                        if 'rate limit' in error_msg or '429' in error_msg:
+                            failure_reasons['rate_limited'].append({
+                                'token': token_symbol,
+                                'error': str(e)
+                            })
+                        elif 'timeout' in error_msg or 'connection' in error_msg:
+                            failure_reasons['network_error'].append({
+                                'token': token_symbol,
+                                'error': str(e)
+                            })
+                        else:
+                            failure_reasons['other'].append({
+                                'token': token_symbol,
+                                'error': str(e)
+                            })
                 
                 if price_usd:
                     # Calculate USD value
@@ -352,7 +435,7 @@ class TransactionExtractor:
                     if usd_value > 1_000_000_000:
                         logger.error(
                             f"🚨 UNREALISTIC USD VALUE:\n"
-                            f"   TX: {tx.get('tx_hash', 'unknown')[:16]}...\n"
+                            f"   TX: {tx_hash}...\n"
                             f"   Token: {token_symbol}\n"
                             f"   Amount: {amount:.4f}\n"
                             f"   Price: ${price_usd:,.2f}\n"
@@ -361,14 +444,22 @@ class TransactionExtractor:
                         )
                         tx['usd_value'] = None
                         suspicious_count += 1
+                        failure_reasons['suspicious_value'].append({
+                            'tx_hash': tx_hash,
+                            'token': token_symbol,
+                            'amount': amount,
+                            'price': price_usd,
+                            'usd_value': usd_value,
+                            'reason': 'usd_value_too_high'
+                        })
                     else:
                         tx['usd_value'] = usd_value
                         enriched_count += 1
                         
-                        # ✅ FIXED: Log with actual token symbol (USDT, LINK) not "ERC20"!
+                        # Log first 3 successful enrichments
                         if enriched_count <= 3:
                             logger.info(
-                                f"✅ Enriched TX {tx.get('tx_hash', 'unknown')[:16]}...: "
+                                f"✅ Enriched TX {tx_hash}...: "
                                 f"{amount:.4f} {token_symbol} * ${price_usd:,.2f} = ${usd_value:,.2f}"
                             )
                 else:
@@ -376,21 +467,71 @@ class TransactionExtractor:
                     failed_count += 1
                     
             except Exception as e:
-                logger.error(f"Error enriching transaction {tx.get('tx_hash')}: {e}")
+                logger.error(f"❌ Error enriching transaction {tx.get('tx_hash')}: {e}")
                 tx['usd_value'] = None
                 failed_count += 1
+                failure_reasons['other'].append({
+                    'tx_hash': tx.get('tx_hash', 'unknown')[:16],
+                    'error': str(e)
+                })
         
         # Set usd_value to None for remaining transactions
         for tx in remaining_txs:
             tx['usd_value'] = None
         
-        # Summary logging
+        # ====================================================================
+        # ✅ ENHANCED SUMMARY LOGGING - Shows WHY enrichments failed
+        # ====================================================================
         logger.info(f"✅ Enrichment complete:")
         logger.info(f"   • Enriched: {enriched_count} transactions")
         logger.info(f"   • Cached: {cached_count} (saved API calls)")
         logger.info(f"   • Failed: {failed_count}")
         logger.info(f"   • Suspicious (rejected): {suspicious_count}")
         logger.info(f"📊 Made {len(price_cache)} unique price API calls instead of {len(txs_to_enrich)}")
+        
+        # ✅ NEW: Detailed failure analysis
+        if failed_count > 0:
+            logger.warning(f"")
+            logger.warning(f"📊 FAILURE ANALYSIS:")
+            logger.warning(f"   Total failed: {failed_count}")
+            
+            if failure_reasons['rate_limited']:
+                logger.warning(f"   ⏱️  Rate limited: {len(failure_reasons['rate_limited'])} calls")
+                # Show first 3 examples
+                for item in failure_reasons['rate_limited'][:3]:
+                    logger.warning(f"      • {item}")
+            
+            if failure_reasons['token_not_found']:
+                logger.warning(f"   ❓ Token not found: {len(failure_reasons['token_not_found'])} tokens")
+                # Show unique tokens
+                unique_tokens = list(set(item['token'] for item in failure_reasons['token_not_found']))
+                logger.warning(f"      Tokens: {', '.join(unique_tokens[:10])}")
+            
+            if failure_reasons['price_fetch_failed']:
+                logger.warning(f"   ❌ Price fetch failed: {len(failure_reasons['price_fetch_failed'])} calls")
+                # Group by token
+                tokens = {}
+                for item in failure_reasons['price_fetch_failed']:
+                    token = item['token']
+                    tokens[token] = tokens.get(token, 0) + 1
+                logger.warning(f"      Most common failures:")
+                for token, count in sorted(tokens.items(), key=lambda x: x[1], reverse=True)[:5]:
+                    logger.warning(f"         • {token}: {count} times")
+            
+            if failure_reasons['network_error']:
+                logger.warning(f"   🌐 Network errors: {len(failure_reasons['network_error'])} calls")
+            
+            if failure_reasons['amount_missing']:
+                logger.warning(f"   📉 Amount missing: {len(failure_reasons['amount_missing'])} txs")
+            
+            if failure_reasons['suspicious_value']:
+                logger.warning(f"   ⚠️  Suspicious values: {len(failure_reasons['suspicious_value'])} txs")
+            
+            if failure_reasons['other']:
+                logger.warning(f"   ❓ Other errors: {len(failure_reasons['other'])} calls")
+                # Show first error
+                if failure_reasons['other']:
+                    logger.warning(f"      Example: {failure_reasons['other'][0]}")
         
         # Calculate and log volume
         total_usd = sum(tx.get('usd_value', 0) for tx in txs_to_enrich if tx.get('usd_value'))
