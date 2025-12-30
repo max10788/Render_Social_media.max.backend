@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from typing import List, Dict
 import logging
 
-from app.database import get_db
+from app.core.backend_crypto_tracker.config.database import get_db
 from app.core.otc_analysis.api.dependencies import discover_new_otc_desks
 
 router = APIRouter(tags=["Discovery"])
