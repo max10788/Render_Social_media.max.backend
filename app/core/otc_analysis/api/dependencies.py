@@ -149,10 +149,13 @@ async def ensure_registry_wallets_in_db(
     Ensures registry wallets are in database.
     
     ✅ FIXED: Now properly uses registry labels for OTC desk detection
+    ✅ FIXED: UPDATE existing wallets instead of INSERT
+    ✅ FIXED: Proper rollback on errors
     ✅ OPTIMIZATION: Skip if data is recent
     """
     from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
     from datetime import datetime, timedelta
+    from sqlalchemy.exc import IntegrityError
     
     # ✅ Check if we have recent data
     if skip_if_recent:
@@ -164,15 +167,15 @@ async def ensure_registry_wallets_in_db(
             logger.info(f"⏭️  Skipping auto-sync: {recent_count} wallets updated in last hour")
             return
     
-    stats = {"fetched": 0, "kept": 0, "skipped": 0}
+    stats = {"fetched": 0, "kept": 0, "skipped": 0, "updated": 0}
     
     try:
         # Get all OTC desk addresses from registry
         desks = otc_registry.get_desk_list()
         all_addresses = []
         
-        # ✅ NEW: Build address-to-desk mapping
-        address_to_desk = {}  # Maps address -> desk info
+        # ✅ Build address-to-desk mapping
+        address_to_desk = {}
         
         logger.info(f"🔄 Auto-sync: Checking {len(desks)} OTC desks...")
         
@@ -187,11 +190,11 @@ async def ensure_registry_wallets_in_db(
                     if isinstance(addresses, list):
                         for addr in addresses:
                             all_addresses.append(addr)
-                            address_to_desk[addr.lower()] = desk_info  # ✅ Store mapping
+                            address_to_desk[addr.lower()] = desk_info
                         logger.info(f"   ✅ {desk_name}: {len(addresses)} addresses")
                     elif isinstance(addresses, str):
                         all_addresses.append(addresses)
-                        address_to_desk[addresses.lower()] = desk_info  # ✅ Store mapping
+                        address_to_desk[addresses.lower()] = desk_info
                         logger.info(f"   ✅ {desk_name}: 1 address")
                 else:
                     logger.warning(f"   ⚠️  {desk_name}: No addresses found")
@@ -224,7 +227,7 @@ async def ensure_registry_wallets_in_db(
                     OTCWallet.address == validated
                 ).first()
                 
-                if wallet and wallet.confidence_score >= 50.0:  # ✅ Lowered threshold
+                if wallet and wallet.confidence_score >= 50.0:
                     stats["kept"] += 1
                     continue
                 else:
@@ -260,37 +263,27 @@ async def ensure_registry_wallets_in_db(
                     max_transactions=50
                 )
                 
-                enriched = [tx for tx in transactions if tx.get('usd_value')]
-                
-                # ✅ Continue even without enrichment
-                # (WalletProfiler will use live ETH price)
-                
                 # ====================================================================
-                # ✅ NEW: Get labels from REGISTRY FIRST, then merge with external
+                # Get labels from REGISTRY FIRST
                 # ====================================================================
-                
-                # 1. Check if address is in registry
                 desk_info = address_to_desk.get(address.lower())
                 
                 if desk_info:
-                    # ✅ PRIORITY: Use registry labels
                     labels = {
-                        'entity_type': 'otc_desk',  # ✅ Mark as OTC desk!
+                        'entity_type': 'otc_desk',
                         'entity_name': desk_info.get('name'),
                         'labels': ['verified_otc_desk', 'registry', desk_info.get('type', 'otc')],
                         'source': 'registry',
-                        'confidence': 1.0  # 100% confidence from registry
+                        'confidence': 1.0
                     }
                     logger.info(f"   ✅ Registry labels: {desk_info.get('name')} (otc_desk)")
                 else:
-                    # 2. Try external labels (Moralis, etc.)
                     external_labels = labeling_service.get_wallet_labels(address)
                     
                     if external_labels and external_labels.get('entity_type') != 'unknown':
                         labels = external_labels
                         logger.info(f"   🏷️ External labels: {external_labels.get('entity_name')} ({external_labels.get('entity_type')})")
                     else:
-                        # 3. No labels found
                         labels = {
                             'entity_type': 'unknown',
                             'entity_name': None,
@@ -300,7 +293,7 @@ async def ensure_registry_wallets_in_db(
                         logger.info(f"   ⚠️  No labels found for {address[:10]}...")
                 
                 # ====================================================================
-                # Create profile (works with or without enrichment)
+                # Create profile
                 # ====================================================================
                 profile = wallet_profiler.create_profile(address, transactions, labels)
                 
@@ -308,7 +301,7 @@ async def ensure_registry_wallets_in_db(
                 otc_probability = wallet_profiler.calculate_otc_probability(profile)
                 confidence = otc_probability * 100
                 
-                # Get volume (might be from live ETH price)
+                # Get metrics
                 total_volume = profile.get('total_volume_usd', 0)
                 data_quality = profile.get('data_quality', 'unknown')
                 
@@ -319,44 +312,97 @@ async def ensure_registry_wallets_in_db(
                 logger.info(f"   • Data quality: {data_quality}")
                 
                 # ====================================================================
-                # ✅ IMPROVED: Save logic with different thresholds
+                # ✅ FIXED: Check confidence threshold
                 # ====================================================================
-                
-                # Lower threshold for registry wallets
                 if labels.get('source') == 'registry':
-                    min_confidence = 40.0  # ✅ Registry wallets: 40% threshold
+                    min_confidence = 40.0
                     logger.info(f"   ℹ️  Registry wallet - using 40% threshold")
                 else:
-                    min_confidence = 60.0  # Non-registry: 60% threshold
+                    min_confidence = 60.0
                 
-                # Save if meets threshold
                 if confidence >= min_confidence:
-                    # ✅ Determine entity_type priority
+                    # Determine entity_type
                     if labels.get('source') == 'registry':
-                        entity_type = 'otc_desk'  # Force OTC desk for registry
+                        entity_type = 'otc_desk'
                     else:
                         entity_type = labels.get('entity_type', 'unknown')
                     
-                    wallet = OTCWallet(
-                        address=address,
-                        label=labels.get('entity_name') or f"{address[:8]}...",
-                        entity_type=entity_type,
-                        entity_name=labels.get('entity_name'),
-                        confidence_score=confidence,
-                        total_volume=total_volume,
-                        transaction_count=len(transactions),
-                        first_seen=datetime.now() - timedelta(days=365),
-                        last_active=datetime.now(),
-                        is_active=True,
-                        tags=labels.get('labels', []),
-                        created_at=datetime.now(),
-                        updated_at=datetime.now()
-                    )
-                    db.add(wallet)
-                    db.commit()
+                    # ====================================================================
+                    # ✅ CRITICAL FIX: Check if wallet exists - UPDATE instead of INSERT
+                    # ====================================================================
+                    existing_wallet = db.query(OTCWallet).filter(
+                        OTCWallet.address == address
+                    ).first()
                     
-                    logger.info(f"✅ Auto-saved {address[:10]}... to DB (threshold: {min_confidence}%)")
-                    stats["fetched"] += 1
+                    if existing_wallet:
+                        # ✅ UPDATE existing wallet
+                        logger.info(f"📝 Updating existing wallet {address[:10]}...")
+                        
+                        existing_wallet.entity_type = entity_type
+                        existing_wallet.entity_name = labels.get('entity_name')
+                        existing_wallet.label = labels.get('entity_name') or f"{address[:8]}..."
+                        existing_wallet.confidence_score = confidence
+                        existing_wallet.total_volume = total_volume
+                        existing_wallet.transaction_count = len(transactions)
+                        existing_wallet.last_active = datetime.now()
+                        existing_wallet.is_active = True
+                        existing_wallet.tags = labels.get('labels', [])
+                        existing_wallet.updated_at = datetime.now()
+                        
+                        try:
+                            db.commit()
+                            logger.info(f"✅ Updated {address[:10]}... (threshold: {min_confidence}%)")
+                            stats["updated"] += 1
+                        except Exception as commit_error:
+                            logger.error(f"❌ Commit failed for UPDATE: {commit_error}")
+                            db.rollback()
+                            stats["skipped"] += 1
+                    else:
+                        # ✅ INSERT new wallet
+                        wallet = OTCWallet(
+                            address=address,
+                            label=labels.get('entity_name') or f"{address[:8]}...",
+                            entity_type=entity_type,
+                            entity_name=labels.get('entity_name'),
+                            confidence_score=confidence,
+                            total_volume=total_volume,
+                            transaction_count=len(transactions),
+                            first_seen=datetime.now() - timedelta(days=365),
+                            last_active=datetime.now(),
+                            is_active=True,
+                            tags=labels.get('labels', []),
+                            created_at=datetime.now(),
+                            updated_at=datetime.now()
+                        )
+                        
+                        try:
+                            db.add(wallet)
+                            db.commit()
+                            logger.info(f"✅ Inserted new wallet {address[:10]}... (threshold: {min_confidence}%)")
+                            stats["fetched"] += 1
+                        except IntegrityError as ie:
+                            # ✅ Handle race condition: Another process inserted this wallet
+                            logger.warning(f"⚠️  Wallet {address[:10]}... was inserted by another process")
+                            db.rollback()
+                            
+                            # Try to update instead
+                            existing = db.query(OTCWallet).filter(
+                                OTCWallet.address == address
+                            ).first()
+                            
+                            if existing:
+                                existing.confidence_score = confidence
+                                existing.total_volume = total_volume
+                                existing.updated_at = datetime.now()
+                                db.commit()
+                                logger.info(f"✅ Updated after race condition")
+                                stats["updated"] += 1
+                            else:
+                                stats["skipped"] += 1
+                        except Exception as commit_error:
+                            logger.error(f"❌ Commit failed for INSERT: {commit_error}")
+                            db.rollback()
+                            stats["skipped"] += 1
                 else:
                     logger.info(f"⚠️  Low confidence ({confidence:.1f}% < {min_confidence}%) - not saving")
                     stats["skipped"] += 1
@@ -365,18 +411,30 @@ async def ensure_registry_wallets_in_db(
                 
             except Exception as e:
                 logger.error(f"❌ Error auto-fetching {address}: {e}", exc_info=True)
+                db.rollback()  # ✅ CRITICAL: Rollback on any error
                 stats["skipped"] += 1
                 continue
         
-        if stats["fetched"] > 0:
-            logger.info(f"✅ Auto-sync: Fetched {stats['fetched']}, Kept {stats['kept']}, Skipped {stats['skipped']}")
+        # Final summary
+        if stats["fetched"] > 0 or stats["updated"] > 0:
+            logger.info(
+                f"✅ Auto-sync: "
+                f"Fetched {stats['fetched']}, "
+                f"Updated {stats['updated']}, "
+                f"Kept {stats['kept']}, "
+                f"Skipped {stats['skipped']}"
+            )
         else:
-            logger.info(f"ℹ️  Auto-sync: No new wallets fetched (Kept {stats['kept']}, Skipped {stats['skipped']})")
+            logger.info(
+                f"ℹ️  Auto-sync: No changes "
+                f"(Kept {stats['kept']}, Skipped {stats['skipped']})"
+            )
         
         return stats
         
     except Exception as e:
         logger.error(f"❌ Auto-sync failed: {e}", exc_info=True)
+        db.rollback()  # ✅ CRITICAL: Rollback on top-level error
         return stats
 
 # ============================================================================
