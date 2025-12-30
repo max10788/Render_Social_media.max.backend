@@ -10,7 +10,7 @@ All shared dependencies, service initialization, and helper functions.
 import os
 import time
 import logging
-from typing import Optional
+from typing import Dict, Optional, Any, List, Set
 from datetime import datetime, timedelta
 from fastapi import Depends, HTTPException
 from sqlalchemy.orm import Session
