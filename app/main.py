@@ -49,6 +49,8 @@ from app.core.otc_analysis.api.statistics import router as otc_statistics_router
 from app.core.otc_analysis.api.network import router as otc_network_router
 from app.core.otc_analysis.api.monitoring import router as otc_monitoring_router
 from app.core.otc_analysis.api.streams import router as otc_streams_router
+# ✅ NEU: Discovery Router
+from app.core.otc_analysis.api.discovery import router as otc_discovery_router
 
 # ✅ Flow hat spezielle Router (flow_router statt router)
 from app.core.otc_analysis.api.flow import router as otc_flow_router
@@ -339,6 +341,9 @@ app.include_router(otc_flow_router, prefix="/api/otc")           # Flow endpoint
 app.include_router(otc_monitoring_router, prefix="/api/otc")     # Monitoring endpoints
 app.include_router(otc_admin_router, prefix="/api/otc")          # Admin endpoints
 app.include_router(otc_streams_router, prefix="/api/otc")        # Streams endpoints (MORALIS)
+
+# ✅ NEU: Discovery Router
+app.include_router(otc_discovery_router, prefix="/api/otc")
 
 # ✅ Optional: Validators & WebSocket (wenn du sie nutzt)
 # app.include_router(otc_validators_router, prefix="/api/otc")
