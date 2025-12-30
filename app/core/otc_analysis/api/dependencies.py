@@ -142,30 +142,35 @@ def get_otc_detector():
 
 async def ensure_registry_wallets_in_db(
     db: Session,
-    max_to_fetch: int = 3,
+    max_to_fetch: int = 1,  # ✅ OPTIMIZED: 1 statt 3 Wallets
     skip_if_recent: bool = True
 ):
     """
     Ensures registry wallets are in database.
     
-    ✅ FIXED: Now properly uses registry labels for OTC desk detection
+    ✅ OPTIMIZED: 12h Cache + nur 1 Wallet pro Request
     ✅ FIXED: UPDATE existing wallets instead of INSERT
     ✅ FIXED: Proper rollback on errors
-    ✅ OPTIMIZATION: Skip if data is recent
     """
     from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
     from datetime import datetime, timedelta
     from sqlalchemy.exc import IntegrityError
     
-    # ✅ Check if we have recent data
+    # ✅ OPTIMIZED: 12h Cache statt 1h
     if skip_if_recent:
+        cache_threshold = datetime.now() - timedelta(hours=12)  # ← 12 STUNDEN!
+        
         recent_count = db.query(OTCWallet).filter(
-            OTCWallet.updated_at >= datetime.now() - timedelta(hours=1)
+            OTCWallet.updated_at >= cache_threshold
         ).count()
         
-        if recent_count >= 5:
-            logger.info(f"⏭️  Skipping auto-sync: {recent_count} wallets updated in last hour")
-            return
+        # ✅ OPTIMIZED: 3 statt 5 (weniger strict)
+        if recent_count >= 3:
+            logger.info(
+                f"⚡ Fast path: {recent_count} wallets updated in last 12h - "
+                f"skipping auto-sync"
+            )
+            return {"cached": True, "count": recent_count}
     
     stats = {"fetched": 0, "kept": 0, "skipped": 0, "updated": 0}
     
@@ -212,6 +217,9 @@ async def ensure_registry_wallets_in_db(
         # Check each address
         addresses_to_fetch = []
         
+        # ✅ OPTIMIZED: Längerer Cache per Wallet (12h)
+        cache_threshold = datetime.now() - timedelta(hours=12)
+        
         for address in all_addresses:
             try:
                 address_str = str(address).strip()
@@ -222,24 +230,32 @@ async def ensure_registry_wallets_in_db(
                 
                 validated = validate_ethereum_address(address_str)
                 
-                # Check if exists in DB with good confidence
+                # Check if exists in DB with recent update
                 wallet = db.query(OTCWallet).filter(
                     OTCWallet.address == validated
                 ).first()
                 
-                if wallet and wallet.confidence_score >= 50.0:
-                    stats["kept"] += 1
-                    continue
-                else:
-                    addresses_to_fetch.append(validated)
+                if wallet and wallet.updated_at >= cache_threshold:
+                    if wallet.confidence_score >= 40.0:
+                        logger.info(
+                            f"   ⚡ {validated[:10]}... cached "
+                            f"(updated {wallet.updated_at.strftime('%H:%M')})"
+                        )
+                        stats["kept"] += 1
+                        continue
+                
+                addresses_to_fetch.append(validated)
                     
             except Exception as e:
                 logger.error(f"❌ Error validating address {address}: {e}")
                 continue
         
-        logger.info(f"🎯 Need to fetch: {len(addresses_to_fetch)} wallets (kept {stats['kept']})")
+        logger.info(
+            f"🎯 Need to fetch: {len(addresses_to_fetch)} wallets "
+            f"(kept {stats['kept']})"
+        )
         
-        # Fetch missing wallets (up to max_to_fetch)
+        # ✅ OPTIMIZED: Fetch nur max_to_fetch Wallets (default: 1)
         for address in addresses_to_fetch[:max_to_fetch]:
             try:
                 logger.info(f"🔄 Auto-fetching {address[:10]}...")
@@ -256,16 +272,14 @@ async def ensure_registry_wallets_in_db(
                     stats["skipped"] += 1
                     continue
                 
-                # Enrich with prices
+                # ✅ OPTIMIZED: Nur 30 statt 50 Transaktionen enrichen
                 transactions = transaction_extractor.enrich_with_usd_value(
                     transactions,
                     price_oracle,
-                    max_transactions=50
+                    max_transactions=30  # ← 30 statt 50!
                 )
                 
-                # ====================================================================
                 # Get labels from REGISTRY FIRST
-                # ====================================================================
                 desk_info = address_to_desk.get(address.lower())
                 
                 if desk_info:
@@ -282,7 +296,10 @@ async def ensure_registry_wallets_in_db(
                     
                     if external_labels and external_labels.get('entity_type') != 'unknown':
                         labels = external_labels
-                        logger.info(f"   🏷️ External labels: {external_labels.get('entity_name')} ({external_labels.get('entity_type')})")
+                        logger.info(
+                            f"   🏷️ External labels: {external_labels.get('entity_name')} "
+                            f"({external_labels.get('entity_type')})"
+                        )
                     else:
                         labels = {
                             'entity_type': 'unknown',
@@ -292,9 +309,7 @@ async def ensure_registry_wallets_in_db(
                         }
                         logger.info(f"   ⚠️  No labels found for {address[:10]}...")
                 
-                # ====================================================================
                 # Create profile
-                # ====================================================================
                 profile = wallet_profiler.create_profile(address, transactions, labels)
                 
                 # Calculate confidence
@@ -311,9 +326,7 @@ async def ensure_registry_wallets_in_db(
                 logger.info(f"   • Volume: ${total_volume:,.0f}")
                 logger.info(f"   • Data quality: {data_quality}")
                 
-                # ====================================================================
-                # ✅ FIXED: Check confidence threshold
-                # ====================================================================
+                # Check confidence threshold
                 if labels.get('source') == 'registry':
                     min_confidence = 40.0
                     logger.info(f"   ℹ️  Registry wallet - using 40% threshold")
@@ -327,9 +340,7 @@ async def ensure_registry_wallets_in_db(
                     else:
                         entity_type = labels.get('entity_type', 'unknown')
                     
-                    # ====================================================================
-                    # ✅ CRITICAL FIX: Check if wallet exists - UPDATE instead of INSERT
-                    # ====================================================================
+                    # ✅ Check if wallet exists - UPDATE instead of INSERT
                     existing_wallet = db.query(OTCWallet).filter(
                         OTCWallet.address == address
                     ).first()
@@ -351,7 +362,10 @@ async def ensure_registry_wallets_in_db(
                         
                         try:
                             db.commit()
-                            logger.info(f"✅ Updated {address[:10]}... (threshold: {min_confidence}%)")
+                            logger.info(
+                                f"✅ Updated {address[:10]}... "
+                                f"(threshold: {min_confidence}%)"
+                            )
                             stats["updated"] += 1
                         except Exception as commit_error:
                             logger.error(f"❌ Commit failed for UPDATE: {commit_error}")
@@ -378,11 +392,17 @@ async def ensure_registry_wallets_in_db(
                         try:
                             db.add(wallet)
                             db.commit()
-                            logger.info(f"✅ Inserted new wallet {address[:10]}... (threshold: {min_confidence}%)")
+                            logger.info(
+                                f"✅ Inserted new wallet {address[:10]}... "
+                                f"(threshold: {min_confidence}%)"
+                            )
                             stats["fetched"] += 1
                         except IntegrityError as ie:
-                            # ✅ Handle race condition: Another process inserted this wallet
-                            logger.warning(f"⚠️  Wallet {address[:10]}... was inserted by another process")
+                            # Race condition: Another process inserted this wallet
+                            logger.warning(
+                                f"⚠️  Wallet {address[:10]}... was inserted "
+                                f"by another process"
+                            )
                             db.rollback()
                             
                             # Try to update instead
@@ -404,14 +424,18 @@ async def ensure_registry_wallets_in_db(
                             db.rollback()
                             stats["skipped"] += 1
                 else:
-                    logger.info(f"⚠️  Low confidence ({confidence:.1f}% < {min_confidence}%) - not saving")
+                    logger.info(
+                        f"⚠️  Low confidence ({confidence:.1f}% < {min_confidence}%) - "
+                        f"not saving"
+                    )
                     stats["skipped"] += 1
                 
-                time.sleep(0.5)
+                # ✅ OPTIMIZED: Kurze Pause zwischen Wallets
+                time.sleep(0.3)  # 0.3s statt 0.5s
                 
             except Exception as e:
                 logger.error(f"❌ Error auto-fetching {address}: {e}", exc_info=True)
-                db.rollback()  # ✅ CRITICAL: Rollback on any error
+                db.rollback()
                 stats["skipped"] += 1
                 continue
         
@@ -434,9 +458,8 @@ async def ensure_registry_wallets_in_db(
         
     except Exception as e:
         logger.error(f"❌ Auto-sync failed: {e}", exc_info=True)
-        db.rollback()  # ✅ CRITICAL: Rollback on top-level error
+        db.rollback()
         return stats
-
 # ============================================================================
 # EXPORT ALL
 # ============================================================================
