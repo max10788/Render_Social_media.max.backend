@@ -1,14 +1,14 @@
 """
-Price Oracle - WITH Live ETH Price Support
-===========================================
+Price Oracle - WITH Enhanced Error Tracking
+============================================
 
-✅ FIXED: Price validation with reasonable ranges
-✅ FIXED: Fallback prices when API fails
-✅ FIXED: Better error handling
-✅ NEW: Etherscan ETH price integration
+✅ ENHANCED: Detailed error tracking and logging
+✅ ENHANCED: Shows exact CoinGecko API responses
+✅ ENHANCED: Tracks last_error for debugging
+✅ NEW: HTTP status codes and error messages
 
-Version: 3.0 with ETH Live Price
-Date: 2024-12-29
+Version: 3.1 with Error Tracking
+Date: 2024-12-30
 """
 
 import requests
@@ -29,7 +29,7 @@ class PriceOracle:
     - CoinGecko (for tokens) - FREE API
     - Cache (5 minute TTL)
     
-    ✨ NEW: Etherscan integration for live ETH price
+    ✨ NEW: Enhanced error tracking for debugging
     """
     
     def __init__(self, cache_manager=None, etherscan=None):
@@ -41,11 +41,16 @@ class PriceOracle:
             etherscan: EtherscanAPI instance for live ETH price
         """
         self.cache = cache_manager
-        self.etherscan = etherscan  # ✅ NEW: Etherscan client
+        self.etherscan = etherscan
         self.coingecko_base = "https://api.coingecko.com/api/v3"
         self.rate_limit_delay = 1.5  # 40 calls/min instead of 50
         self.last_request_time = 0
         self.session = requests.Session()
+        
+        # ✅ NEW: Error tracking
+        self.last_error = None
+        self.error_count = 0
+        self.success_count = 0
         
         # Token address to CoinGecko ID mapping
         self.token_id_map = {
@@ -60,18 +65,18 @@ class PriceOracle:
         
         # ✅ Reasonable price ranges for validation
         self.price_ranges = {
-            'ethereum': (100, 10000),        # ETH: $100-$10K
-            'tether': (0.95, 1.05),          # USDT: ~$1
-            'usd-coin': (0.95, 1.05),        # USDC: ~$1
-            'wrapped-bitcoin': (10000, 200000),  # WBTC: $10K-$200K
-            'chainlink': (5, 100),           # LINK: $5-$100
-            'uniswap': (3, 50),              # UNI: $3-$50
-            'matic-network': (0.3, 5),       # MATIC: $0.3-$5
+            'ethereum': (100, 10000),
+            'tether': (0.95, 1.05),
+            'usd-coin': (0.95, 1.05),
+            'wrapped-bitcoin': (10000, 200000),
+            'chainlink': (5, 100),
+            'uniswap': (3, 50),
+            'matic-network': (0.3, 5),
         }
         
-        # ✅ Fallback prices by year (for historical)
+        # ✅ Fallback prices by year
         self.fallback_prices = {
-            'ETH': 3400.0,  # Current estimate
+            'ETH': 3400.0,
             'WETH': 3400.0,
             'USDT': 1.0,
             'USDC': 1.0,
@@ -94,18 +99,18 @@ class PriceOracle:
             return 'ethereum'
         
         token_lower = token_address.lower()
-        return self.token_id_map.get(token_lower, 'ethereum')
+        token_id = self.token_id_map.get(token_lower, None)
+        
+        # ✅ NEW: Log if token not in map
+        if token_id is None:
+            logger.debug(f"⚠️ Token address {token_lower[:10]}... not in token_id_map, defaulting to 'ethereum'")
+            return 'ethereum'
+        
+        return token_id
     
     def _validate_price(self, token_id: str, price: float) -> bool:
         """
         Validate that price is within reasonable range.
-        
-        Args:
-            token_id: CoinGecko token ID
-            price: Price in USD
-        
-        Returns:
-            True if price seems reasonable
         """
         if price <= 0:
             logger.warning(f"❌ Invalid price for {token_id}: ${price}")
@@ -123,7 +128,7 @@ class PriceOracle:
         return True
     
     # ========================================================================
-    # ✨ NEW: LIVE ETH PRICE METHODS
+    # ✨ ENHANCED: LIVE ETH PRICE WITH ERROR TRACKING
     # ========================================================================
     
     def get_eth_price_live(self) -> float:
@@ -135,26 +140,23 @@ class PriceOracle:
         2. Cache (if recent < 5 minutes)
         3. CoinGecko API (backup)
         4. Fallback constant
-        
-        Returns:
-            Current ETH price in USD
         """
-        # 1️⃣ Try Etherscan first (if available)
+        # 1️⃣ Try Etherscan first
         if self.etherscan:
             try:
                 price = self.etherscan.get_eth_price_usd()
                 if price and price > 0:
-                    # Validate
                     if self._validate_price('ethereum', price):
-                        # Cache for 5 minutes
                         if self.cache:
                             self.cache.set("eth_price_usd", price, ttl=300)
                         self.fallback_prices['ETH'] = price
                         self.fallback_prices['WETH'] = price
                         logger.info(f"✅ Live ETH price from Etherscan: ${price:,.2f}")
+                        self.success_count += 1
                         return price
             except Exception as e:
                 logger.warning(f"⚠️ Etherscan price failed: {e}")
+                self.last_error = f"Etherscan: {str(e)}"
         
         # 2️⃣ Try cache
         if self.cache:
@@ -170,9 +172,11 @@ class PriceOracle:
                 if self.cache:
                     self.cache.set("eth_price_usd", price, ttl=300)
                 logger.info(f"✅ ETH price from CoinGecko: ${price:,.2f}")
+                self.success_count += 1
                 return price
         except Exception as e:
             logger.warning(f"⚠️ CoinGecko failed: {e}")
+            self.last_error = f"CoinGecko: {str(e)}"
         
         # 4️⃣ Fallback
         fallback = self.fallback_prices['ETH']
@@ -184,26 +188,16 @@ class PriceOracle:
     # ========================================================================
     
     def get_current_price(self, token_address: Optional[str] = None) -> Optional[float]:
-        """
-        Get current USD price for a token.
-        
-        ✨ NEW: Uses Etherscan for ETH, CoinGecko for others
-        
-        Args:
-            token_address: Token contract address (None for ETH)
-            
-        Returns:
-            Current USD price
-        """
+        """Get current USD price for a token."""
         # Special case for ETH
         if token_address is None or token_address.lower() in [
-            '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',  # ETH placeholder
-            '0x0000000000000000000000000000000000000000',  # Zero address
-            '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'   # WETH
+            '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+            '0x0000000000000000000000000000000000000000',
+            '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
         ]:
             return self.get_eth_price_live()
         
-        # Check cache first
+        # Check cache
         if self.cache:
             cached_price = self.cache.get_price(token_address or 'ETH')
             if cached_price is not None:
@@ -213,19 +207,19 @@ class PriceOracle:
         token_id = self._get_token_id(token_address)
         price = self._fetch_current_price(token_id)
         
-        # Validate price
         if price and not self._validate_price(token_id, price):
             logger.error(f"Price validation failed for {token_id}, using fallback")
             price = self._get_fallback_price(token_id)
         
-        # Cache the result
         if price and self.cache:
             self.cache.cache_price(token_address or 'ETH', price)
         
         return price
     
     def _fetch_current_price(self, token_id: str) -> Optional[float]:
-        """Fetch current price from CoinGecko."""
+        """
+        ✅ ENHANCED: Fetch current price with detailed error tracking.
+        """
         self._rate_limit()
         
         url = f"{self.coingecko_base}/simple/price"
@@ -235,25 +229,63 @@ class PriceOracle:
         }
         
         try:
+            logger.debug(f"🔍 CoinGecko API: GET {url}?ids={token_id}")
+            
             response = self.session.get(url, params=params, timeout=10)
+            
+            # ✅ NEW: Log HTTP status
+            logger.debug(f"   📡 HTTP {response.status_code}")
+            
             response.raise_for_status()
             data = response.json()
+            
+            # ✅ NEW: Log raw response
+            logger.debug(f"   📄 Response: {data}")
             
             price = data.get(token_id, {}).get('usd')
             
             if price:
-                logger.debug(f"✅ Fetched current price for {token_id}: ${price:,.2f}")
+                logger.debug(f"   ✅ Price: ${price:,.2f}")
+                self.success_count += 1
+                self.last_error = None
+                return price
+            else:
+                logger.debug(f"   ❌ No price found in response")
+                self.last_error = f"Token '{token_id}' not found in CoinGecko response"
+                self.error_count += 1
+                return None
             
-            return price
-        except requests.exceptions.Timeout:
-            logger.warning(f"CoinGecko timeout for {token_id}")
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response else 'unknown'
+            error_msg = f"HTTP {status_code}"
+            
+            # ✅ NEW: Parse CoinGecko error message
+            try:
+                error_data = e.response.json() if e.response else {}
+                if 'error' in error_data:
+                    error_msg = f"HTTP {status_code}: {error_data['error']}"
+            except:
+                pass
+            
+            logger.debug(f"   ❌ {error_msg}")
+            self.last_error = error_msg
+            self.error_count += 1
             return None
+            
+        except requests.exceptions.Timeout:
+            logger.debug(f"   ❌ Timeout")
+            self.last_error = "CoinGecko timeout"
+            self.error_count += 1
+            return None
+            
         except Exception as e:
-            logger.debug(f"Price fetch failed for {token_id}: {e}")
+            logger.debug(f"   ❌ Error: {str(e)}")
+            self.last_error = str(e)
+            self.error_count += 1
             return None
     
     # ========================================================================
-    # HISTORICAL PRICE METHODS
+    # ✨ ENHANCED: HISTORICAL PRICE WITH DETAILED TRACKING
     # ========================================================================
     
     def get_historical_price(
@@ -264,42 +296,42 @@ class PriceOracle:
         """
         Get historical USD price for a token at a specific timestamp.
         
-        Args:
-            token_address: Token contract address (None for ETH)
-            timestamp: DateTime of transaction
-        
-        Returns:
-            USD price per token at that time
+        ✅ ENHANCED: Detailed error tracking and logging
         """
         token_id = self._get_token_id(token_address)
         
         # CoinGecko requires date string DD-MM-YYYY
         date_str = timestamp.strftime('%d-%m-%Y')
         
-        # Check cache with date-specific key
+        # Check cache
         cache_key = f"{token_address or 'ETH'}:{date_str}"
         if self.cache:
             cached_price = self.cache.get(cache_key, prefix='historical_price')
             if cached_price is not None:
-                logger.debug(f"✅ Using cached price for {token_id} on {date_str}: ${cached_price:,.2f}")
+                logger.debug(f"💾 Cached: {token_id} @ {date_str} = ${cached_price:,.2f}")
                 return cached_price
         
         # Fetch from API
-        price = self._fetch_historical_price(token_id, date_str)
+        logger.debug(f"🔍 Fetching historical: {token_id} @ {date_str}")
+        price = self._fetch_historical_price(token_id, date_str, token_address)
         
-        # Validate price
+        # Validate
         if price and not self._validate_price(token_id, price):
-            logger.warning(f"Historical price validation failed for {token_id} on {date_str}")
+            logger.warning(f"⚠️ Validation failed: {token_id} @ {date_str}, using fallback")
             price = self._get_fallback_price(token_id, timestamp.year)
         
-        # Cache with 24h TTL (historical prices don't change)
+        # Cache
         if price and self.cache:
             self.cache.set(cache_key, price, ttl=86400, prefix='historical_price')
         
         return price
     
-    def _fetch_historical_price(self, token_id: str, date: str) -> Optional[float]:
-        """Fetch historical price from CoinGecko."""
+    def _fetch_historical_price(self, token_id: str, date: str, token_address: Optional[str] = None) -> Optional[float]:
+        """
+        ✅ ENHANCED: Fetch historical price with DETAILED error tracking.
+        
+        This is where most failures happen - we need to see WHY!
+        """
         self._rate_limit()
         
         url = f"{self.coingecko_base}/coins/{token_id}/history"
@@ -309,21 +341,108 @@ class PriceOracle:
         }
         
         try:
+            logger.debug(f"   🌐 CoinGecko API: GET {url}")
+            logger.debug(f"      • token_id: {token_id}")
+            logger.debug(f"      • date: {date}")
+            logger.debug(f"      • token_address: {token_address}")
+            
             response = self.session.get(url, params=params, timeout=10)
+            
+            # ✅ NEW: Log HTTP status
+            logger.debug(f"   📡 HTTP Status: {response.status_code}")
+            
+            # ✅ NEW: Check for rate limiting BEFORE raising
+            if response.status_code == 429:
+                logger.warning(f"   ⏱️  RATE LIMITED by CoinGecko!")
+                self.last_error = "Rate limit exceeded (HTTP 429)"
+                self.error_count += 1
+                return None
+            
             response.raise_for_status()
             data = response.json()
             
-            price = data.get('market_data', {}).get('current_price', {}).get('usd')
+            # ✅ NEW: Log response structure
+            logger.debug(f"   📄 Response keys: {list(data.keys())}")
+            
+            # Check if market_data exists
+            if 'market_data' not in data:
+                logger.debug(f"   ❌ No 'market_data' in response")
+                logger.debug(f"   📄 Full response: {data}")
+                self.last_error = f"No market_data for {token_id} on {date}"
+                self.error_count += 1
+                return None
+            
+            market_data = data.get('market_data', {})
+            logger.debug(f"   📊 market_data keys: {list(market_data.keys())}")
+            
+            # Check if current_price exists
+            if 'current_price' not in market_data:
+                logger.debug(f"   ❌ No 'current_price' in market_data")
+                self.last_error = f"No current_price for {token_id} on {date}"
+                self.error_count += 1
+                return None
+            
+            current_price = market_data.get('current_price', {})
+            logger.debug(f"   💰 current_price currencies: {list(current_price.keys())}")
+            
+            # Get USD price
+            price = current_price.get('usd')
             
             if price:
-                logger.debug(f"✅ Fetched historical price for {token_id} on {date}: ${price:,.2f}")
+                logger.debug(f"   ✅ Historical price: ${price:,.2f}")
+                self.success_count += 1
+                self.last_error = None
+                return price
+            else:
+                logger.debug(f"   ❌ No 'usd' price found")
+                self.last_error = f"No USD price for {token_id} on {date}"
+                self.error_count += 1
+                return None
             
-            return price
-        except requests.exceptions.Timeout:
-            logger.warning(f"CoinGecko timeout for {token_id} on {date}")
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response else 'unknown'
+            
+            # ✅ NEW: Detailed error parsing
+            try:
+                error_data = e.response.json() if e.response else {}
+                error_msg = error_data.get('error', str(e))
+                
+                logger.debug(f"   ❌ HTTP {status_code}: {error_msg}")
+                
+                # Special handling for common errors
+                if status_code == 404:
+                    logger.debug(f"   💡 Token '{token_id}' not found in CoinGecko")
+                    self.last_error = f"Token not found: {token_id}"
+                elif status_code == 429:
+                    logger.debug(f"   ⏱️  Rate limit exceeded")
+                    self.last_error = "Rate limit exceeded"
+                else:
+                    self.last_error = f"HTTP {status_code}: {error_msg}"
+                    
+            except:
+                logger.debug(f"   ❌ HTTP {status_code}: {str(e)}")
+                self.last_error = f"HTTP {status_code}"
+            
+            self.error_count += 1
             return None
+            
+        except requests.exceptions.Timeout:
+            logger.debug(f"   ⏱️  Request timeout")
+            self.last_error = "CoinGecko API timeout"
+            self.error_count += 1
+            return None
+            
+        except requests.exceptions.ConnectionError as e:
+            logger.debug(f"   🌐 Connection error: {str(e)}")
+            self.last_error = f"Connection error: {str(e)}"
+            self.error_count += 1
+            return None
+            
         except Exception as e:
-            logger.debug(f"Historical price fetch failed for {token_id} on {date}: {e}")
+            logger.debug(f"   ❌ Unexpected error: {str(e)}")
+            logger.debug(f"   📋 Exception type: {type(e).__name__}")
+            self.last_error = f"{type(e).__name__}: {str(e)}"
+            self.error_count += 1
             return None
     
     # ========================================================================
@@ -331,17 +450,7 @@ class PriceOracle:
     # ========================================================================
     
     def _get_fallback_price(self, token_id: str, year: Optional[int] = None) -> Optional[float]:
-        """
-        Get fallback price when API fails.
-        
-        Args:
-            token_id: Token identifier
-            year: Optional year for better estimate
-        
-        Returns:
-            Estimated price or None
-        """
-        # Historical average prices by year for ETH
+        """Get fallback price when API fails."""
         eth_fallback_prices = {
             2024: 3400.0,
             2023: 1800.0,
@@ -355,38 +464,58 @@ class PriceOracle:
         if token_id == 'ethereum':
             if year and year in eth_fallback_prices:
                 price = eth_fallback_prices[year]
-                logger.info(f"Using fallback ETH price for {year}: ${price:,.2f}")
+                logger.debug(f"Using fallback ETH price for {year}: ${price:,.2f}")
                 return price
-            return 3400.0  # Default fallback
+            return 3400.0
         
         elif token_id in ['tether', 'usd-coin']:
-            return 1.0  # Stablecoins
+            return 1.0
         
         elif token_id == 'wrapped-bitcoin':
             if year and year in eth_fallback_prices:
-                return eth_fallback_prices[year] * 15  # BTC typically ~15x ETH
-            return 60000.0  # Default
+                return eth_fallback_prices[year] * 15
+            return 60000.0
         
         elif token_id == 'chainlink':
-            return 15.0  # LINK average
+            return 15.0
         
         elif token_id == 'uniswap':
-            return 10.0  # UNI average
+            return 10.0
         
         elif token_id == 'matic-network':
-            return 1.0  # MATIC average
+            return 1.0
         
         return None
+    
+    # ========================================================================
+    # ✅ NEW: STATISTICS METHODS
+    # ========================================================================
+    
+    def get_stats(self) -> Dict:
+        """Get API call statistics."""
+        total_calls = self.success_count + self.error_count
+        success_rate = (self.success_count / total_calls * 100) if total_calls > 0 else 0
+        
+        return {
+            'total_calls': total_calls,
+            'successful': self.success_count,
+            'failed': self.error_count,
+            'success_rate': success_rate,
+            'last_error': self.last_error
+        }
+    
+    def reset_stats(self):
+        """Reset statistics counters."""
+        self.success_count = 0
+        self.error_count = 0
+        self.last_error = None
     
     # ========================================================================
     # BATCH METHODS
     # ========================================================================
     
     def batch_get_current_prices(self, token_addresses: list) -> Dict[str, float]:
-        """
-        Get current prices for multiple tokens in one call.
-        More efficient than individual calls.
-        """
+        """Get current prices for multiple tokens in one call."""
         token_ids = [self._get_token_id(addr) for addr in token_addresses]
         unique_ids = list(set(token_ids))
         
@@ -403,13 +532,11 @@ class PriceOracle:
             response.raise_for_status()
             data = response.json()
             
-            # Map back to addresses
             result = {}
             for addr in token_addresses:
                 token_id = self._get_token_id(addr)
                 price = data.get(token_id, {}).get('usd')
                 
-                # Validate before returning
                 if price and self._validate_price(token_id, price):
                     result[addr] = price
                 else:
@@ -418,4 +545,5 @@ class PriceOracle:
             return result
         except Exception as e:
             logger.error(f"Error batch fetching prices: {e}")
+            self.last_error = f"Batch fetch: {str(e)}"
             return {}
