@@ -326,27 +326,40 @@ async def cleanup_dependencies():
 
 async def startup_event():
     """Application startup handler"""
-    logger.info("🚀 Starting up application...")
+    logger.info("🚀 Starting application...")
     
     try:
+        # Initialize collector
         collector = await get_unified_collector()
         
-        # 🔍 VERIFY HELIUS
-        logger.info(f"🔍 STARTUP CHECK: Helius available? {collector.helius_collector is not None}")
+        # Verify services
+        logger.info(f"🔍 Helius: {collector.helius_collector is not None}")
         
+        # Health check
         health = await collector.health_check()
-        logger.info(f"📊 Health Check: {health}")
+        healthy = sum(1 for h in health.values() if h)
         
-        if not any(h for h in health.values()):
+        if healthy == 0:
             logger.warning("⚠️ All collectors unhealthy!")
         else:
-            healthy_count = sum(1 for h in health.values() if h)
-            logger.info(f"✅ {healthy_count}/{len(health)} collectors healthy")
+            logger.info(f"✅ {healthy}/{len(health)} collectors ready")
         
-        logger.info("✅ Application startup complete")
+        # ✅ OTC Registry sync
+        db = next(get_db())
+        try:
+            await ensure_registry_wallets_in_db(
+                db=db,
+                max_to_fetch=1,
+                skip_if_recent=True
+            )
+            logger.info("✅ OTC registry synced")
+        finally:
+            db.close()
+        
+        logger.info("✅ Startup complete")
         
     except Exception as e:
-        logger.error(f"❌ Startup error: {e}", exc_info=True)
+        logger.error(f"❌ Startup failed: {e}", exc_info=True)
         raise
 
 
