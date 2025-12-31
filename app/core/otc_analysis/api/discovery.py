@@ -133,11 +133,11 @@ async def debug_transactions(
     🐛 DEBUG: Zeige rohe Transaction-Daten
     """
     from app.core.otc_analysis.blockchain.transaction_extractor import TransactionExtractor
-    from app.core.otc_analysis.blockchain.etherscan import EtherscanClient
+    from app.core.otc_analysis.blockchain.etherscan import EtherscanAPI
     import os
     
     try:
-        etherscan = EtherscanClient(api_key=os.getenv('ETHERSCAN_API_KEY'))
+        etherscan = EtherscanAPI(api_key=os.getenv('ETHERSCAN_API_KEY'))
         extractor = TransactionExtractor(etherscan)
         
         # Hole Transaktionen
