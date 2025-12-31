@@ -601,6 +601,126 @@ async def discover_new_otc_desks(
         return []
 
 # ============================================================================
+# ✅ NEU: Simple Last-5-TX Discovery
+# ============================================================================
+
+async def discover_from_last_5_transactions(
+    db: Session,
+    otc_address: str,
+    num_transactions: int = 5
+) -> List[Dict]:
+    """
+    🔍 Analysiere Counterparties der letzten N Transaktionen.
+    
+    Simplest Discovery:
+    1. Hole letzte 5 TXs vom OTC Desk
+    2. Extrahiere Counterparty-Adressen
+    3. Analysiere jede Counterparty
+    4. Speichere wenn OTC-Score gut
+    
+    Args:
+        db: Database session
+        otc_address: Bekannter OTC Desk
+        num_transactions: Anzahl Transaktionen (default: 5)
+    
+    Returns:
+        Liste von discovered wallets
+    """
+    from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
+    from app.core.otc_analysis.discovery.simple_analyzer import SimpleLastTxAnalyzer
+    
+    logger.info(f"🔍 Simple Discovery: Last {num_transactions} TXs from {otc_address[:10]}...")
+    
+    try:
+        # Initialize analyzer
+        analyzer = SimpleLastTxAnalyzer(
+            db=db,
+            transaction_extractor=transaction_extractor,
+            wallet_profiler=wallet_profiler,
+            price_oracle=price_oracle
+        )
+        
+        # 1. Get counterparties from last N transactions
+        counterparties = analyzer.discover_from_last_transactions(
+            otc_address=otc_address,
+            num_transactions=num_transactions
+        )
+        
+        if not counterparties:
+            logger.info("ℹ️ No counterparties found")
+            return []
+        
+        # 2. Analyze each counterparty
+        discovered = []
+        
+        for cp_data in counterparties:
+            address = cp_data['address']
+            
+            # Skip if already in DB
+            existing = db.query(OTCWallet).filter(
+                OTCWallet.address == address
+            ).first()
+            
+            if existing:
+                logger.info(f"   ⚠️ {address[:10]}... already exists (score: {existing.confidence_score:.1f}%)")
+                continue
+            
+            # Analyze
+            analysis = analyzer.analyze_counterparty(address)
+            
+            if not analysis:
+                logger.info(f"   ⚠️ {address[:10]}... analysis failed")
+                continue
+            
+            logger.info(
+                f"   🆕 {address[:10]}... - "
+                f"Confidence: {analysis['confidence']:.1f}%, "
+                f"Volume: ${analysis['total_volume']:,.0f}, "
+                f"TXs: {analysis['transaction_count']}"
+            )
+            
+            # Save if confidence is good
+            if analysis['confidence'] >= 60.0:
+                wallet = OTCWallet(
+                    address=address,
+                    label=f"Discovered {address[:8]}",
+                    entity_type='otc_desk',
+                    entity_name=f"Discovered OTC {address[:8]}",
+                    confidence_score=analysis['confidence'],
+                    total_volume=analysis['total_volume'],
+                    transaction_count=analysis['transaction_count'],
+                    first_seen=analysis['first_seen'],
+                    last_active=analysis['last_seen'],
+                    is_active=True,
+                    tags=['discovered', 'last_tx_analysis'],
+                    created_at=datetime.now(),
+                    updated_at=datetime.now()
+                )
+                
+                db.add(wallet)
+                db.commit()
+                
+                discovered.append({
+                    'address': address,
+                    'confidence': analysis['confidence'],
+                    'volume': analysis['total_volume'],
+                    'tx_count': analysis['transaction_count'],
+                    'counterparty_data': cp_data
+                })
+                
+                logger.info(f"      ✅ Saved to DB")
+            else:
+                logger.info(f"      ⚠️ Low confidence ({analysis['confidence']:.1f}%) - not saving")
+        
+        logger.info(f"✅ Discovery complete: {len(discovered)} new wallets found")
+        return discovered
+        
+    except Exception as e:
+        logger.error(f"❌ Discovery failed: {e}", exc_info=True)
+        db.rollback()
+        return []
+
+# ============================================================================
 # EXPORT ALL
 # ============================================================================
 
