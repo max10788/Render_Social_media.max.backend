@@ -43,7 +43,7 @@ class SimpleLastTxAnalyzer:
             )
             
             if not transactions:
-                logger.warning(f"⚠️ No transactions found for {otc_normalized[:10]}")
+                logger.warning(f"⚠️ No transactions found")
                 return []
             
             recent_txs = sorted(
@@ -52,51 +52,64 @@ class SimpleLastTxAnalyzer:
                 reverse=True
             )[:num_transactions]
             
-            logger.info(f"📊 Found {len(recent_txs)} recent transactions")
+            logger.info(f"📊 Extracted {len(recent_txs)} recent transactions")
             
             counterparties = []
             
             for i, tx in enumerate(recent_txs, 1):
-                # ✅ RICHTIGE FELDNAMEN VERWENDEN!
                 from_addr = str(tx.get('from_address', '')).lower().strip()
                 to_addr = str(tx.get('to_address', '')).lower().strip()
                 
+                # ✅ MEHR LOGGING
+                logger.info(f"   🔎 TX {i}:")
+                logger.info(f"      From: {from_addr[:42] if from_addr else 'EMPTY'}")
+                logger.info(f"      To:   {to_addr[:42] if to_addr else 'EMPTY'}")
+                logger.info(f"      OTC:  {otc_normalized[:42]}")
+                
                 # Finde Counterparty
-                if from_addr == otc_normalized:
+                counterparty = None
+                direction = None
+                
+                if from_addr == otc_normalized and to_addr:
                     counterparty = to_addr
                     direction = "sent_to"
-                elif to_addr == otc_normalized:
+                    logger.info(f"      ✅ MATCH: OTC sent to {to_addr[:10]}...")
+                elif to_addr == otc_normalized and from_addr:
                     counterparty = from_addr
                     direction = "received_from"
+                    logger.info(f"      ✅ MATCH: OTC received from {from_addr[:10]}...")
                 else:
-                    logger.warning(f"⚠️ TX {i}: Neither from nor to matches OTC address")
+                    logger.warning(f"      ❌ NO MATCH (neither from nor to equals OTC)")
                     continue
                 
                 if not counterparty:
+                    logger.warning(f"      ⚠️ Empty counterparty")
                     continue
                 
-                # Speichere TX Info
+                # TX Info
                 tx_info = {
-                    'tx_hash': tx.get('tx_hash', ''),  # ✅ tx_hash statt hash
+                    'tx_hash': tx.get('tx_hash', ''),
                     'timestamp': tx.get('timestamp'),
                     'from': from_addr,
                     'to': to_addr,
                     'counterparty': counterparty,
                     'direction': direction,
-                    'value_eth': tx.get('value_decimal', 0),  # ✅ value_decimal statt value
+                    'value_eth': tx.get('value_decimal', 0),
                     'value_usd': tx.get('usd_value', 0),
-                    'token_symbol': tx.get('token_symbol', 'ETH'),  # ✅ token_symbol
-                    'token_address': tx.get('token_address', None)  # ✅ token_address
+                    'token_symbol': tx.get('token_symbol', 'ETH'),
+                    'token_address': tx.get('token_address', None)
                 }
                 
                 counterparties.append(tx_info)
                 
                 logger.info(
-                    f"   TX {i}: {direction.upper()} {counterparty[:10]}... "
-                    f"({tx_info['token_symbol']} ${tx_info['value_usd']:,.2f})"
+                    f"      📝 Saved: {direction.upper()} {counterparty[:10]}... "
+                    f"({tx_info['token_symbol']})"
                 )
             
-            # Dedupliziere Counterparties
+            logger.info(f"📋 Total counterparties extracted: {len(counterparties)}")
+            
+            # Dedupliziere
             unique_counterparties = {}
             for cp in counterparties:
                 addr = cp['counterparty']
@@ -117,12 +130,14 @@ class SimpleLastTxAnalyzer:
                 if cp['timestamp'] > unique_counterparties[addr]['last_seen']:
                     unique_counterparties[addr]['last_seen'] = cp['timestamp']
             
-            logger.info(f"✅ Found {len(unique_counterparties)} unique counterparties")
+            logger.info(f"✅ Found {len(unique_counterparties)} UNIQUE counterparties:")
+            for addr in unique_counterparties.keys():
+                logger.info(f"   • {addr[:10]}... ({len(unique_counterparties[addr]['transactions'])} TXs)")
             
             return list(unique_counterparties.values())
             
         except Exception as e:
-            logger.error(f"❌ Error discovering from last transactions: {e}", exc_info=True)
+            logger.error(f"❌ Error: {e}", exc_info=True)
             return []
     
     def analyze_counterparty(self, counterparty_address: str) -> Optional[Dict]:
