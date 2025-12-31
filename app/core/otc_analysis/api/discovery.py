@@ -81,3 +81,45 @@ async def get_candidates(
             "candidates": [],
             "error": str(e)
         }
+
+@router.post("/discover/simple")
+async def simple_discovery(
+    otc_address: str = Query(..., description="OTC Desk Adresse"),
+    num_transactions: int = Query(5, ge=1, le=20, description="Anzahl Transaktionen"),
+    db: Session = Depends(get_db)
+) -> Dict:
+    """
+    🔍 Simple Discovery: Analysiere letzte N Transaktionen.
+    
+    Schritte:
+    1. Hole letzte 5 Transaktionen vom OTC Desk
+    2. Extrahiere Counterparty-Adressen (from/to)
+    3. Analysiere jede Counterparty
+    4. Speichere wenn OTC-Score >= 60%
+    """
+    from app.core.otc_analysis.api.dependencies import discover_from_last_5_transactions
+    
+    logger.info(f"🔍 Simple Discovery: {otc_address[:10]}... last {num_transactions} TXs")
+    
+    try:
+        discovered = await discover_from_last_5_transactions(
+            db=db,
+            otc_address=otc_address,
+            num_transactions=num_transactions
+        )
+        
+        return {
+            "success": True,
+            "otc_address": otc_address,
+            "transactions_analyzed": num_transactions,
+            "discovered_count": len(discovered),
+            "wallets": discovered,
+            "message": f"Analyzed last {num_transactions} transactions, found {len(discovered)} new OTC desks"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Simple discovery error: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
