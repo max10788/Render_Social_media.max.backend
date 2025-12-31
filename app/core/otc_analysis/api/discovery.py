@@ -129,55 +129,66 @@ async def debug_transactions(
     otc_address: str = Query(...),
     limit: int = Query(5, ge=1, le=20)
 ) -> Dict:
-    """
-    🐛 DEBUG: Zeige rohe Transaction-Daten
-    """
-    from app.core.otc_analysis.blockchain.transaction_extractor import TransactionExtractor
-    from app.core.otc_analysis.blockchain.etherscan import EtherscanAPI
-    import os
+    """🐛 DEBUG: Show raw transaction data"""
+    from datetime import datetime
+    
+    # ✅ Import die GLOBALEN Singletons direkt
+    import app.core.otc_analysis.api.dependencies as deps
     
     try:
-        etherscan = EtherscanAPI(api_key=os.getenv('ETHERSCAN_API_KEY'))
-        extractor = TransactionExtractor(etherscan)
-        
-        # Hole Transaktionen
-        transactions = extractor.extract_wallet_transactions(
+        # ✅ Nutze das bereits initialisierte transaction_extractor Objekt
+        transactions = deps.transaction_extractor.extract_wallet_transactions(
             otc_address,
             include_internal=True,
             include_tokens=True
         )
         
+        if not transactions:
+            return {
+                "success": False,
+                "error": "No transactions found",
+                "otc_address": otc_address
+            }
+        
         # Sortiere und nimm letzte N
-        recent_txs = sorted(
-            transactions,
-            key=lambda x: x.get('timestamp', datetime.min),
+        recent = sorted(
+            transactions, 
+            key=lambda x: x.get('timestamp', datetime.min), 
             reverse=True
         )[:limit]
         
-        # Zeige rohe Daten
-        debug_data = []
-        for i, tx in enumerate(recent_txs, 1):
-            debug_data.append({
-                'tx_number': i,
-                'hash': tx.get('hash', 'N/A'),
-                'from': tx.get('from', 'N/A'),
-                'to': tx.get('to', 'N/A'),
-                'value': tx.get('value', 0),
-                'tokenSymbol': tx.get('tokenSymbol', 'ETH'),
-                'timestamp': str(tx.get('timestamp', 'N/A')),
-                'type': 'token' if 'tokenSymbol' in tx else 'normal'
-            })
+        # Normalisiere OTC Adresse
+        otc_lower = otc_address.lower().strip()
         
         return {
             "success": True,
             "otc_address": otc_address,
-            "otc_address_lower": otc_address.lower(),
+            "otc_lower": otc_lower,
             "total_transactions": len(transactions),
-            "debug_transactions": debug_data
+            "transactions": [
+                {
+                    "num": i,
+                    "hash": tx.get('hash', 'N/A')[:20] + "...",
+                    "from": tx.get('from', 'N/A'),
+                    "from_lower": str(tx.get('from', '')).lower(),
+                    "to": tx.get('to', 'N/A'),
+                    "to_lower": str(tx.get('to', '')).lower(),
+                    "contract": tx.get('contractAddress', 'N/A'),
+                    "symbol": tx.get('tokenSymbol', 'ETH'),
+                    "value": tx.get('value', 0),
+                    "usd_value": tx.get('usd_value', 0),
+                    "timestamp": str(tx.get('timestamp', 'N/A')),
+                    "matches_from": str(tx.get('from', '')).lower() == otc_lower,
+                    "matches_to": str(tx.get('to', '')).lower() == otc_lower
+                }
+                for i, tx in enumerate(recent, 1)
+            ]
         }
         
     except Exception as e:
+        import traceback
         return {
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "traceback": traceback.format_exc()
         }
