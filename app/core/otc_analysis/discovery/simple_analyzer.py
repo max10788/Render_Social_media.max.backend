@@ -29,31 +29,26 @@ class SimpleLastTxAnalyzer:
         otc_address: str,
         num_transactions: int = 5
     ) -> List[Dict]:
-        """
-        Analysiere Counterparties der letzten N Transaktionen.
+        """Analysiere Counterparties der letzten N Transaktionen."""
         
-        Args:
-            otc_address: Bekannter OTC Desk
-            num_transactions: Anzahl Transaktionen (default: 5)
-            
-        Returns:
-            Liste von analysierten Counterparties
-        """
-        logger.info(f"🔍 Analyzing last {num_transactions} transactions of {otc_address[:10]}...")
+        # ✅ NORMALISIERE ADRESSE
+        otc_normalized = otc_address.lower().strip()
+        
+        logger.info(f"🔍 Analyzing last {num_transactions} transactions of {otc_normalized[:10]}...")
         
         try:
-            # 1. Hole Transaktionen
+            # Hole Transaktionen
             transactions = self.transaction_extractor.extract_wallet_transactions(
-                otc_address,
+                otc_address,  # Original für Etherscan
                 include_internal=True,
                 include_tokens=True
             )
             
             if not transactions:
-                logger.warning(f"⚠️ No transactions found for {otc_address[:10]}")
+                logger.warning(f"⚠️ No transactions found for {otc_normalized[:10]}")
                 return []
             
-            # 2. Sortiere nach Zeit, nimm letzte N
+            # Sortiere nach Zeit
             recent_txs = sorted(
                 transactions,
                 key=lambda x: x.get('timestamp', datetime.min),
@@ -62,26 +57,36 @@ class SimpleLastTxAnalyzer:
             
             logger.info(f"📊 Found {len(recent_txs)} recent transactions")
             
-            # 3. Extrahiere Counterparties
+            # Extrahiere Counterparties
             counterparties = []
             
             for i, tx in enumerate(recent_txs, 1):
-                from_addr = tx.get('from', '').lower()
-                to_addr = tx.get('to', '').lower()
-                otc_lower = otc_address.lower()
+                # ✅ NORMALISIERE AUCH TX ADRESSEN
+                from_addr = str(tx.get('from', '')).lower().strip()
+                to_addr = str(tx.get('to', '')).lower().strip()
                 
-                # Finde die "andere" Adresse
-                if from_addr == otc_lower:
+                # ✅ DEBUG LOGGING
+                logger.info(f"   TX {i}:")
+                logger.info(f"      From: {from_addr[:20]}...")
+                logger.info(f"      To:   {to_addr[:20]}...")
+                logger.info(f"      OTC:  {otc_normalized[:20]}...")
+                
+                # Finde Counterparty
+                if from_addr == otc_normalized:
                     counterparty = to_addr
                     direction = "sent_to"
-                elif to_addr == otc_lower:
+                    logger.info(f"      ✅ MATCH: OTC sent to {to_addr[:10]}...")
+                elif to_addr == otc_normalized:
                     counterparty = from_addr
                     direction = "received_from"
+                    logger.info(f"      ✅ MATCH: OTC received from {from_addr[:10]}...")
                 else:
-                    logger.warning(f"⚠️ TX {i}: Neither from nor to matches OTC address")
-                    continue
-                
-                if not counterparty:
+                    logger.warning(
+                        f"      ⚠️ NO MATCH:"
+                        f"\n         from={from_addr}"
+                        f"\n         to={to_addr}"
+                        f"\n         otc={otc_normalized}"
+                    )
                     continue
                 
                 # Speichere TX Info
