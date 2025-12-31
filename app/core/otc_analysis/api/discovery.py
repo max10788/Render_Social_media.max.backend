@@ -123,3 +123,61 @@ async def simple_discovery(
             "success": False,
             "error": str(e)
         }
+
+@router.get("/debug/transactions")
+async def debug_transactions(
+    otc_address: str = Query(...),
+    limit: int = Query(5, ge=1, le=20)
+) -> Dict:
+    """
+    🐛 DEBUG: Zeige rohe Transaction-Daten
+    """
+    from app.core.otc_analysis.blockchain.transaction_extractor import TransactionExtractor
+    from app.core.otc_analysis.blockchain.etherscan import EtherscanClient
+    import os
+    
+    try:
+        etherscan = EtherscanClient(api_key=os.getenv('ETHERSCAN_API_KEY'))
+        extractor = TransactionExtractor(etherscan)
+        
+        # Hole Transaktionen
+        transactions = extractor.extract_wallet_transactions(
+            otc_address,
+            include_internal=True,
+            include_tokens=True
+        )
+        
+        # Sortiere und nimm letzte N
+        recent_txs = sorted(
+            transactions,
+            key=lambda x: x.get('timestamp', datetime.min),
+            reverse=True
+        )[:limit]
+        
+        # Zeige rohe Daten
+        debug_data = []
+        for i, tx in enumerate(recent_txs, 1):
+            debug_data.append({
+                'tx_number': i,
+                'hash': tx.get('hash', 'N/A'),
+                'from': tx.get('from', 'N/A'),
+                'to': tx.get('to', 'N/A'),
+                'value': tx.get('value', 0),
+                'tokenSymbol': tx.get('tokenSymbol', 'ETH'),
+                'timestamp': str(tx.get('timestamp', 'N/A')),
+                'type': 'token' if 'tokenSymbol' in tx else 'normal'
+            })
+        
+        return {
+            "success": True,
+            "otc_address": otc_address,
+            "otc_address_lower": otc_address.lower(),
+            "total_transactions": len(transactions),
+            "debug_transactions": debug_data
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
