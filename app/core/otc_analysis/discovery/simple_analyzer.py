@@ -23,7 +23,7 @@ class SimpleLastTxAnalyzer:
         self.transaction_extractor = transaction_extractor
         self.wallet_profiler = wallet_profiler
         self.price_oracle = price_oracle
-    
+
     def discover_from_last_transactions(
         self,
         otc_address: str,
@@ -31,15 +31,13 @@ class SimpleLastTxAnalyzer:
     ) -> List[Dict]:
         """Analysiere Counterparties der letzten N Transaktionen."""
         
-        # ✅ NORMALISIERE ADRESSE
         otc_normalized = otc_address.lower().strip()
         
         logger.info(f"🔍 Analyzing last {num_transactions} transactions of {otc_normalized[:10]}...")
         
         try:
-            # Hole Transaktionen
             transactions = self.transaction_extractor.extract_wallet_transactions(
-                otc_address,  # Original für Etherscan
+                otc_address,
                 include_internal=True,
                 include_tokens=True
             )
@@ -48,7 +46,6 @@ class SimpleLastTxAnalyzer:
                 logger.warning(f"⚠️ No transactions found for {otc_normalized[:10]}")
                 return []
             
-            # Sortiere nach Zeit
             recent_txs = sorted(
                 transactions,
                 key=lambda x: x.get('timestamp', datetime.min),
@@ -57,49 +54,39 @@ class SimpleLastTxAnalyzer:
             
             logger.info(f"📊 Found {len(recent_txs)} recent transactions")
             
-            # Extrahiere Counterparties
             counterparties = []
             
             for i, tx in enumerate(recent_txs, 1):
-                # ✅ NORMALISIERE AUCH TX ADRESSEN
-                from_addr = str(tx.get('from', '')).lower().strip()
-                to_addr = str(tx.get('to', '')).lower().strip()
-                
-                # ✅ DEBUG LOGGING
-                logger.info(f"   TX {i}:")
-                logger.info(f"      From: {from_addr[:20]}...")
-                logger.info(f"      To:   {to_addr[:20]}...")
-                logger.info(f"      OTC:  {otc_normalized[:20]}...")
+                # ✅ RICHTIGE FELDNAMEN VERWENDEN!
+                from_addr = str(tx.get('from_address', '')).lower().strip()
+                to_addr = str(tx.get('to_address', '')).lower().strip()
                 
                 # Finde Counterparty
                 if from_addr == otc_normalized:
                     counterparty = to_addr
                     direction = "sent_to"
-                    logger.info(f"      ✅ MATCH: OTC sent to {to_addr[:10]}...")
                 elif to_addr == otc_normalized:
                     counterparty = from_addr
                     direction = "received_from"
-                    logger.info(f"      ✅ MATCH: OTC received from {from_addr[:10]}...")
                 else:
-                    logger.warning(
-                        f"      ⚠️ NO MATCH:"
-                        f"\n         from={from_addr}"
-                        f"\n         to={to_addr}"
-                        f"\n         otc={otc_normalized}"
-                    )
+                    logger.warning(f"⚠️ TX {i}: Neither from nor to matches OTC address")
+                    continue
+                
+                if not counterparty:
                     continue
                 
                 # Speichere TX Info
                 tx_info = {
-                    'tx_hash': tx.get('hash', ''),
+                    'tx_hash': tx.get('tx_hash', ''),  # ✅ tx_hash statt hash
                     'timestamp': tx.get('timestamp'),
                     'from': from_addr,
                     'to': to_addr,
                     'counterparty': counterparty,
                     'direction': direction,
-                    'value_eth': tx.get('value', 0),
+                    'value_eth': tx.get('value_decimal', 0),  # ✅ value_decimal statt value
                     'value_usd': tx.get('usd_value', 0),
-                    'token_symbol': tx.get('tokenSymbol', 'ETH')
+                    'token_symbol': tx.get('token_symbol', 'ETH'),  # ✅ token_symbol
+                    'token_address': tx.get('token_address', None)  # ✅ token_address
                 }
                 
                 counterparties.append(tx_info)
@@ -109,7 +96,7 @@ class SimpleLastTxAnalyzer:
                     f"({tx_info['token_symbol']} ${tx_info['value_usd']:,.2f})"
                 )
             
-            # 4. Dedupliziere Counterparties
+            # Dedupliziere Counterparties
             unique_counterparties = {}
             for cp in counterparties:
                 addr = cp['counterparty']
