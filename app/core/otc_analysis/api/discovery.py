@@ -129,14 +129,11 @@ async def debug_transactions(
     otc_address: str = Query(...),
     limit: int = Query(5, ge=1, le=20)
 ) -> Dict:
-    """🐛 DEBUG: Show raw transaction data"""
+    """🐛 DEBUG: Show ALL transaction fields"""
     from datetime import datetime
-    
-    # ✅ Import die GLOBALEN Singletons direkt
     import app.core.otc_analysis.api.dependencies as deps
     
     try:
-        # ✅ Nutze das bereits initialisierte transaction_extractor Objekt
         transactions = deps.transaction_extractor.extract_wallet_transactions(
             otc_address,
             include_internal=True,
@@ -146,40 +143,35 @@ async def debug_transactions(
         if not transactions:
             return {
                 "success": False,
-                "error": "No transactions found",
-                "otc_address": otc_address
+                "error": "No transactions found"
             }
         
-        # Sortiere und nimm letzte N
         recent = sorted(
             transactions, 
             key=lambda x: x.get('timestamp', datetime.min), 
             reverse=True
         )[:limit]
         
-        # Normalisiere OTC Adresse
-        otc_lower = otc_address.lower().strip()
+        # ✅ ZEIGE ALLE KEYS der ersten Transaction
+        first_tx = recent[0] if recent else {}
         
         return {
             "success": True,
             "otc_address": otc_address,
-            "otc_lower": otc_lower,
             "total_transactions": len(transactions),
+            "first_tx_keys": list(first_tx.keys()),  # ✅ ALLE Feldnamen!
+            "first_tx_sample": {
+                key: str(value)[:100]  # Erste 100 chars von jedem Feld
+                for key, value in first_tx.items()
+            },
             "transactions": [
                 {
                     "num": i,
-                    "hash": tx.get('hash', 'N/A')[:20] + "...",
-                    "from": tx.get('from', 'N/A'),
-                    "from_lower": str(tx.get('from', '')).lower(),
-                    "to": tx.get('to', 'N/A'),
-                    "to_lower": str(tx.get('to', '')).lower(),
-                    "contract": tx.get('contractAddress', 'N/A'),
-                    "symbol": tx.get('tokenSymbol', 'ETH'),
-                    "value": tx.get('value', 0),
-                    "usd_value": tx.get('usd_value', 0),
-                    "timestamp": str(tx.get('timestamp', 'N/A')),
-                    "matches_from": str(tx.get('from', '')).lower() == otc_lower,
-                    "matches_to": str(tx.get('to', '')).lower() == otc_lower
+                    "all_keys": list(tx.keys()),  # ✅ Keys für jede TX
+                    "raw_data": {
+                        key: str(tx.get(key, 'N/A'))[:50]
+                        for key in ['from', 'to', 'hash', 'value', 'tokenSymbol', 'contractAddress']
+                    }
                 }
                 for i, tx in enumerate(recent, 1)
             ]
