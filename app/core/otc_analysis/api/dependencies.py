@@ -33,6 +33,7 @@ from app.core.otc_analysis.blockchain.etherscan import EtherscanAPI
 from app.core.otc_analysis.data_sources.price_oracle import PriceOracle
 from app.core.otc_analysis.data_sources.otc_desks import OTCDeskRegistry
 from app.core.otc_analysis.data_sources.wallet_labels import WalletLabelingService
+from app.core.otc_analysis.discovery.discovery_scorer import DiscoveryScorer
 
 # Analysis Services
 from app.core.otc_analysis.analysis.statistics_service import StatisticsService
