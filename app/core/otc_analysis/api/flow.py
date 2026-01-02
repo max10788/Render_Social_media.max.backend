@@ -35,7 +35,7 @@ flow_router = APIRouter(prefix="", tags=["Flow"])
 # NETWORK ENDPOINTS
 # ============================================================================
 
-@network_router.get("/network/graph")
+@network_router.get("/network")
 async def get_network_graph(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
