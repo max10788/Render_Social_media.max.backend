@@ -17,7 +17,7 @@ from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/network", tags=["Network"])
+network_router = APIRouter(prefix="", tags=["Network"])
 
 
 # ============================================================================
