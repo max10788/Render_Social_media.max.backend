@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 network_router = APIRouter(prefix="", tags=["Network"])
 
 # Flow router
-flow_router = APIRouter(prefix="/flow", tags=["Flow"])
+flow_router = APIRouter(prefix="", tags=["Flow"])
 
 
 # ============================================================================
