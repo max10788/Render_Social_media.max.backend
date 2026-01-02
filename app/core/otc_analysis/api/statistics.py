@@ -1,11 +1,9 @@
 """
-Statistics Endpoints
-====================
+Statistics Endpoints - Simplified URLs
+=======================================
 
-Endpoints for OTC statistics and analytics:
-- Overall statistics
-- Distributions
-- Analytics
+Endpoints for OTC statistics and analytics.
+Frontend expects: /api/otc/distributions
 """
 
 import logging
@@ -25,42 +23,13 @@ from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
 
 logger = logging.getLogger(__name__)
 
+# ✅ Simplified router - no prefix
 router = APIRouter(prefix="", tags=["Statistics"])
 
 
 # ============================================================================
-# STATISTICS ENDPOINTS
+# STATISTICS ENDPOINTS - SIMPLIFIED URLS
 # ============================================================================
-
-@router.get("/stats")
-async def get_statistics_old(
-    detector = Depends(get_otc_detector),
-    cache = Depends(get_cache_manager)
-):
-    """
-    Get overall OTC detection statistics.
-    
-    GET /api/otc/stats
-    """
-    logger.info(f"📊 Fetching OTC statistics...")
-    
-    try:
-        stats = detector.get_detection_stats()
-        cache_stats = cache.get_stats()
-        
-        return {
-            "success": True,
-            "data": {
-                "detection_stats": stats,
-                "cache_stats": cache_stats,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to fetch stats: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/statistics")
 async def get_statistics(
@@ -158,29 +127,30 @@ async def get_statistics(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/analytics/distributions")
+@router.get("/distributions")
 async def get_distributions(
-    start_date: Optional[str] = Query(None),
-    end_date: Optional[str] = Query(None),
+    startDate: Optional[str] = Query(None),
+    endDate: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
     """
     Get distribution statistics.
     
-    GET /api/otc/analytics/distributions
+    GET /api/otc/distributions?startDate=2025-12-03&endDate=2026-01-02
     """
     try:
-        if start_date:
-            start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+        # Parse dates
+        if startDate:
+            start = datetime.fromisoformat(startDate.replace('Z', '+00:00'))
         else:
             start = datetime.now() - timedelta(days=30)
         
-        if end_date:
-            end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+        if endDate:
+            end = datetime.fromisoformat(endDate.replace('Z', '+00:00'))
         else:
             end = datetime.now()
         
-        logger.info(f"📊 GET /analytics/distributions: {start.date()} to {end.date()}")
+        logger.info(f"📊 GET /distributions: {start.date()} to {end.date()}")
         
         # Get wallets
         wallets = db.query(OTCWallet).filter(
@@ -219,7 +189,7 @@ async def get_distributions(
             else:
                 volume_buckets["1B+"] += 1
         
-        logger.info(f"✅ Distributions: {len(entity_distribution)} entity types")
+        logger.info(f"✅ Distributions: {len(entity_distribution)} entity types, {len(wallets)} wallets")
         
         return {
             "entity_distribution": entity_distribution,
@@ -234,5 +204,39 @@ async def get_distributions(
         }
         
     except Exception as e:
-        logger.error(f"❌ Error in /analytics/distributions: {e}", exc_info=True)
+        logger.error(f"❌ Error in /distributions: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/stats")
+async def get_stats_old(
+    detector = Depends(get_otc_detector),
+    cache = Depends(get_cache_manager)
+):
+    """
+    Get overall OTC detection statistics (legacy endpoint).
+    
+    GET /api/otc/stats
+    """
+    logger.info(f"📊 Fetching OTC stats (legacy)...")
+    
+    try:
+        stats = detector.get_detection_stats()
+        cache_stats = cache.get_stats()
+        
+        return {
+            "success": True,
+            "data": {
+                "detection_stats": stats,
+                "cache_stats": cache_stats,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch stats: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Export
+__all__ = ["router"]
