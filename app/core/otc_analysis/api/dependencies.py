@@ -611,21 +611,7 @@ async def discover_from_last_5_transactions(
     num_transactions: int = 5
 ) -> List[Dict]:
     """
-    🔍 Analysiere Counterparties der letzten N Transaktionen.
-    
-    Simplest Discovery:
-    1. Hole letzte 5 TXs vom OTC Desk
-    2. Extrahiere Counterparty-Adressen
-    3. Analysiere jede Counterparty
-    4. Speichere wenn OTC-Score gut
-    
-    Args:
-        db: Database session
-        otc_address: Bekannter OTC Desk
-        num_transactions: Anzahl Transaktionen (default: 5)
-    
-    Returns:
-        Liste von discovered wallets
+    Analysiere Counterparties der letzten N Transaktionen.
     """
     from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
     from app.core.otc_analysis.discovery.simple_analyzer import SimpleLastTxAnalyzer
@@ -633,6 +619,14 @@ async def discover_from_last_5_transactions(
     logger.info(f"🔍 Simple Discovery: Last {num_transactions} TXs from {otc_address[:10]}...")
     
     try:
+        # Get known OTC desks
+        known_otc = db.query(OTCWallet).filter(
+            OTCWallet.entity_type == 'otc_desk',
+            OTCWallet.confidence_score >= 70.0
+        ).all()
+        
+        known_addresses = [w.address for w in known_otc]
+        
         # Initialize analyzer
         analyzer = SimpleLastTxAnalyzer(
             db=db,
@@ -641,7 +635,10 @@ async def discover_from_last_5_transactions(
             price_oracle=price_oracle
         )
         
-        # 1. Get counterparties from last N transactions
+        # Initialize scorer
+        discovery_scorer = DiscoveryScorer(known_addresses)
+        
+        # Get counterparties
         counterparties = analyzer.discover_from_last_transactions(
             otc_address=otc_address,
             num_transactions=num_transactions
@@ -651,7 +648,7 @@ async def discover_from_last_5_transactions(
             logger.info("ℹ️ No counterparties found")
             return []
         
-        # 2. Analyze each counterparty
+        # Analyze each counterparty
         discovered = []
         
         for cp_data in counterparties:
@@ -673,27 +670,48 @@ async def discover_from_last_5_transactions(
                 logger.info(f"   ⚠️ {address[:10]}... analysis failed")
                 continue
             
-            logger.info(
-                f"   🆕 {address[:10]}... - "
-                f"Confidence: {analysis['confidence']:.1f}%, "
-                f"Volume: ${analysis['total_volume']:,.0f}, "
-                f"TXs: {analysis['transaction_count']}"
+            # Get transactions for discovery scoring
+            transactions = transaction_extractor.extract_wallet_transactions(
+                address,
+                include_internal=True,
+                include_tokens=True
             )
             
-            # Save if confidence is good
-            if analysis['confidence'] >= 60.0:
+            # Calculate discovery score
+            discovery_result = discovery_scorer.score_discovered_wallet(
+                address=address,
+                transactions=transactions,
+                counterparty_data=cp_data,
+                profile=analysis.get('profile', {})
+            )
+            
+            # Combine scores (40% base + 60% discovery)
+            base_confidence = analysis['confidence']
+            discovery_score = discovery_result['score']
+            final_confidence = (base_confidence * 0.4) + (discovery_score * 0.6)
+            
+            logger.info(
+                f"   🆕 {address[:10]}... - "
+                f"Base: {base_confidence:.1f}%, "
+                f"Discovery: {discovery_score:.0f}, "
+                f"Final: {final_confidence:.1f}%"
+            )
+            logger.info(f"      Recommendation: {discovery_result['recommendation']}")
+            
+            # Save if confidence >= 50%
+            if final_confidence >= 50.0:
                 wallet = OTCWallet(
                     address=address,
                     label=f"Discovered {address[:8]}",
                     entity_type='otc_desk',
                     entity_name=f"Discovered OTC {address[:8]}",
-                    confidence_score=analysis['confidence'],
+                    confidence_score=final_confidence,
                     total_volume=analysis['total_volume'],
                     transaction_count=analysis['transaction_count'],
                     first_seen=analysis['first_seen'],
                     last_active=analysis['last_seen'],
                     is_active=True,
-                    tags=['discovered', 'last_tx_analysis'],
+                    tags=['discovered', 'last_tx_analysis', discovery_result['recommendation']],
                     created_at=datetime.now(),
                     updated_at=datetime.now()
                 )
@@ -703,15 +721,16 @@ async def discover_from_last_5_transactions(
                 
                 discovered.append({
                     'address': address,
-                    'confidence': analysis['confidence'],
+                    'confidence': final_confidence,
                     'volume': analysis['total_volume'],
                     'tx_count': analysis['transaction_count'],
-                    'counterparty_data': cp_data
+                    'counterparty_data': cp_data,
+                    'discovery_breakdown': discovery_result['breakdown']
                 })
                 
-                logger.info(f"      ✅ Saved to DB")
+                logger.info(f"      ✅ Saved to DB (threshold: 50%, confidence: {final_confidence:.1f}%)")
             else:
-                logger.info(f"      ⚠️ Low confidence ({analysis['confidence']:.1f}%) - not saving")
+                logger.info(f"      ⚠️ Below threshold (50%)")
         
         logger.info(f"✅ Discovery complete: {len(discovered)} new wallets found")
         return discovered
