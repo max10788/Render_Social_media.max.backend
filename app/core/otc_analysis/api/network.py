@@ -119,7 +119,7 @@ async def get_network_graph(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/heatmap")
+@network_router.get("/heatmap")
 async def get_activity_heatmap(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
