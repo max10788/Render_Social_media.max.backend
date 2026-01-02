@@ -1,8 +1,10 @@
 """
-Network Graph Endpoints
-========================
+Network Graph Endpoints - FIXED VERSION
+========================================
 
-Network visualization and analysis endpoints.
+Simplified URLs to match frontend expectations:
+- GET /api/otc/network     (was /network/graph)
+- GET /api/otc/heatmap     (was /network/heatmap)
 """
 
 import logging
@@ -17,11 +19,12 @@ from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
 
 logger = logging.getLogger(__name__)
 
+# ✅ No prefix - URLs are added in main.py via /api/otc
 network_router = APIRouter(prefix="", tags=["Network"])
 
 
 # ============================================================================
-# NETWORK ENDPOINTS
+# NETWORK ENDPOINTS - SIMPLIFIED URLS
 # ============================================================================
 
 @network_router.get("/network")
@@ -34,7 +37,7 @@ async def get_network_graph(
     """
     Get network graph data for NetworkGraph and SankeyFlow components.
     
-    GET /api/otc/network/graph?start_date=2024-12-01&end_date=2024-12-28&max_nodes=500
+    GET /api/otc/network?start_date=2024-12-01&end_date=2024-12-28&max_nodes=500
     
     Returns data in two formats:
     - Cytoscape format (for NetworkGraph component)
@@ -54,7 +57,7 @@ async def get_network_graph(
         else:
             end = datetime.now()
         
-        logger.info(f"🌐 GET /network/graph: {start.date()} to {end.date()}, max_nodes={max_nodes}")
+        logger.info(f"🌐 GET /network: {start.date()} to {end.date()}, max_nodes={max_nodes}")
         
         # Get top wallets by volume
         wallets = db.query(OTCWallet).filter(
@@ -93,7 +96,7 @@ async def get_network_graph(
         cytoscape_edges = []
         sankey_links = []
         
-        logger.info(f"✅ Graph: {len(cytoscape_nodes)} nodes, 0 edges")
+        logger.info(f"✅ Network: {len(cytoscape_nodes)} nodes, 0 edges")
         
         return {
             # For NetworkGraph component (Cytoscape)
@@ -115,7 +118,7 @@ async def get_network_graph(
         }
         
     except Exception as e:
-        logger.error(f"❌ Error in /network/graph: {e}", exc_info=True)
+        logger.error(f"❌ Error in /network: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -128,7 +131,7 @@ async def get_activity_heatmap(
     """
     Get 24x7 activity heatmap.
     
-    GET /api/otc/network/heatmap?start_date=2024-12-17&end_date=2024-12-24
+    GET /api/otc/heatmap?start_date=2024-12-17&end_date=2024-12-24
     
     Returns heatmap data showing activity by day of week and hour of day.
     """
@@ -143,7 +146,7 @@ async def get_activity_heatmap(
         else:
             end = datetime.now()
         
-        logger.info(f"🔥 GET /network/heatmap: {start.date()} to {end.date()}")
+        logger.info(f"🔥 GET /heatmap: {start.date()} to {end.date()}")
         
         # Get wallets in time range
         wallets = db.query(OTCWallet).filter(
@@ -187,5 +190,10 @@ async def get_activity_heatmap(
         }
         
     except Exception as e:
-        logger.error(f"❌ Error in /network/heatmap: {e}")
+        logger.error(f"❌ Error in /heatmap: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ✅ CRITICAL: Export router for main.py
+router = network_router
+__all__ = ["network_router", "router"]
