@@ -295,7 +295,7 @@ async def get_sankey_flow(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@flow_router.get("/transfers/timeline")
+@flow_router.get("/timeline")
 async def get_transfer_timeline(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
