@@ -57,6 +57,7 @@ from app.core.otc_analysis.api.streams import router as otc_streams_router
 from app.core.otc_analysis.api.statistics import router as otc_statistics_router
 from app.core.otc_analysis.api.network import router as otc_network_router
 from app.core.otc_analysis.api.flow import router as otc_flow_router
+from app.core.otc_analysis.api.websocket import handle_websocket_connection
 
 from scripts.init_otc_db import init_database
 
@@ -410,6 +411,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 break
     finally:
         manager.disconnect(websocket)
+
+# ------------------------------------------------------------------
+# OTC Analysis WebSocket Endpoint
+# ------------------------------------------------------------------
+@app.websocket("/ws/otc/live")
+async def otc_websocket_endpoint(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time OTC analysis updates.
+    
+    Handles:
+    - Live transaction monitoring  
+    - Cluster activity alerts
+    - Desk interaction notifications
+    
+    Frontend connects to: wss://backend.com/ws/otc/live
+    """
+    logger.info("🔌 OTC WebSocket connection attempt")
+    await handle_websocket_connection(websocket)
 
 # ------------------------------------------------------------------
 # API-Health-Check
