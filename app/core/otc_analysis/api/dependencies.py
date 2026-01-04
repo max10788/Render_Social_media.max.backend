@@ -2,7 +2,7 @@
 Shared Dependencies & Services
 ===============================
 
-✨ UPDATED: Proper service initialization with dependency injection
+✨ UPDATED: Moralis Label-based filtering in OTC discovery
 
 All shared dependencies, service initialization, and helper functions.
 """
@@ -65,13 +65,17 @@ node_provider = NodeProvider(chain_id=1)  # Ethereum mainnet
 etherscan = EtherscanAPI(chain_id=1)
 
 # ✅ PriceOracle WITH Etherscan injected
-price_oracle = PriceOracle(cache_manager, etherscan)  # Pass etherscan!
+price_oracle = PriceOracle(cache_manager, etherscan)
 
 # ✅ WalletProfiler WITH PriceOracle injected
-wallet_profiler = WalletProfiler(price_oracle)  # Pass price_oracle!
+wallet_profiler = WalletProfiler(price_oracle)
 
-# Transaction extractor
-transaction_extractor = TransactionExtractor(node_provider, etherscan)
+# ✅ TransactionExtractor WITH Moralis support
+transaction_extractor = TransactionExtractor(
+    node_provider, 
+    etherscan,
+    use_moralis=True  # Enable Moralis by default
+)
 
 # Other services
 otc_registry = OTCDeskRegistry(cache_manager)
@@ -87,6 +91,7 @@ graph_builder = GraphBuilderService(cache_manager)
 logger.info("✅ All OTC services initialized successfully")
 logger.info(f"   • PriceOracle: {type(price_oracle).__name__} (with Etherscan)")
 logger.info(f"   • WalletProfiler: {type(wallet_profiler).__name__} (with PriceOracle)")
+logger.info(f"   • TransactionExtractor: Moralis enabled")
 
 
 # ============================================================================
@@ -143,7 +148,7 @@ def get_otc_detector():
 
 async def ensure_registry_wallets_in_db(
     db: Session,
-    max_to_fetch: int = 1,  # ✅ CHANGED: 1 statt 3
+    max_to_fetch: int = 1,
     skip_if_recent: bool = True
 ):
     """
@@ -155,26 +160,23 @@ async def ensure_registry_wallets_in_db(
     from datetime import datetime, timedelta
     from sqlalchemy.exc import IntegrityError
     
-    # ✅ CHANGED: 12h Cache statt 1h
+    # ✅ 12h Cache
     if skip_if_recent:
-        cache_threshold = datetime.now() - timedelta(hours=12)  # ← HIER!
+        cache_threshold = datetime.now() - timedelta(hours=12)
         
         recent_count = db.query(OTCWallet).filter(
             OTCWallet.updated_at >= cache_threshold
         ).count()
         
-        if recent_count >= 3:  # ✅ CHANGED: 3 statt 5
+        if recent_count >= 3:
             logger.info(f"⚡ Fast path: {recent_count} wallets cached (12h)")
             return {"cached": True, "count": recent_count}
     
     stats = {"fetched": 0, "kept": 0, "skipped": 0, "updated": 0}
     
     try:
-        # Get all OTC desk addresses from registry
         desks = otc_registry.get_desk_list()
         all_addresses = []
-        
-        # ✅ Build address-to-desk mapping
         address_to_desk = {}
         
         logger.info(f"🔄 Auto-sync: Checking {len(desks)} OTC desks...")
@@ -209,10 +211,7 @@ async def ensure_registry_wallets_in_db(
             logger.warning(f"⚠️  No addresses found in registry!")
             return stats
         
-        # Check each address
         addresses_to_fetch = []
-        
-        # ✅ OPTIMIZED: Längerer Cache per Wallet (12h)
         cache_threshold = datetime.now() - timedelta(hours=12)
         
         for address in all_addresses:
@@ -225,7 +224,6 @@ async def ensure_registry_wallets_in_db(
                 
                 validated = validate_ethereum_address(address_str)
                 
-                # Check if exists in DB with recent update
                 wallet = db.query(OTCWallet).filter(
                     OTCWallet.address == validated
                 ).first()
@@ -250,12 +248,10 @@ async def ensure_registry_wallets_in_db(
             f"(kept {stats['kept']})"
         )
         
-        # ✅ OPTIMIZED: Fetch nur max_to_fetch Wallets (default: 1)
         for address in addresses_to_fetch[:max_to_fetch]:
             try:
                 logger.info(f"🔄 Auto-fetching {address[:10]}...")
                 
-                # Extract transactions
                 transactions = transaction_extractor.extract_wallet_transactions(
                     address,
                     include_internal=True,
@@ -267,14 +263,12 @@ async def ensure_registry_wallets_in_db(
                     stats["skipped"] += 1
                     continue
                 
-                # ✅ OPTIMIZED: Nur 30 statt 50 Transaktionen enrichen
                 transactions = transaction_extractor.enrich_with_usd_value(
                     transactions,
                     price_oracle,
-                    max_transactions=30  # ← 30 statt 50!
+                    max_transactions=30
                 )
                 
-                # Get labels from REGISTRY FIRST
                 desk_info = address_to_desk.get(address.lower())
                 
                 if desk_info:
@@ -304,14 +298,9 @@ async def ensure_registry_wallets_in_db(
                         }
                         logger.info(f"   ⚠️  No labels found for {address[:10]}...")
                 
-                # Create profile
                 profile = wallet_profiler.create_profile(address, transactions, labels)
-                
-                # Calculate confidence
                 otc_probability = wallet_profiler.calculate_otc_probability(profile)
                 confidence = otc_probability * 100
-                
-                # Get metrics
                 total_volume = profile.get('total_volume_usd', 0)
                 data_quality = profile.get('data_quality', 'unknown')
                 
@@ -321,7 +310,6 @@ async def ensure_registry_wallets_in_db(
                 logger.info(f"   • Volume: ${total_volume:,.0f}")
                 logger.info(f"   • Data quality: {data_quality}")
                 
-                # Check confidence threshold
                 if labels.get('source') == 'registry':
                     min_confidence = 40.0
                     logger.info(f"   ℹ️  Registry wallet - using 40% threshold")
@@ -329,19 +317,16 @@ async def ensure_registry_wallets_in_db(
                     min_confidence = 60.0
                 
                 if confidence >= min_confidence:
-                    # Determine entity_type
                     if labels.get('source') == 'registry':
                         entity_type = 'otc_desk'
                     else:
                         entity_type = labels.get('entity_type', 'unknown')
                     
-                    # ✅ Check if wallet exists - UPDATE instead of INSERT
                     existing_wallet = db.query(OTCWallet).filter(
                         OTCWallet.address == address
                     ).first()
                     
                     if existing_wallet:
-                        # ✅ UPDATE existing wallet
                         logger.info(f"📝 Updating existing wallet {address[:10]}...")
                         
                         existing_wallet.entity_type = entity_type
@@ -367,7 +352,6 @@ async def ensure_registry_wallets_in_db(
                             db.rollback()
                             stats["skipped"] += 1
                     else:
-                        # ✅ INSERT new wallet
                         wallet = OTCWallet(
                             address=address,
                             label=labels.get('entity_name') or f"{address[:8]}...",
@@ -393,14 +377,12 @@ async def ensure_registry_wallets_in_db(
                             )
                             stats["fetched"] += 1
                         except IntegrityError as ie:
-                            # Race condition: Another process inserted this wallet
                             logger.warning(
                                 f"⚠️  Wallet {address[:10]}... was inserted "
                                 f"by another process"
                             )
                             db.rollback()
                             
-                            # Try to update instead
                             existing = db.query(OTCWallet).filter(
                                 OTCWallet.address == address
                             ).first()
@@ -425,8 +407,7 @@ async def ensure_registry_wallets_in_db(
                     )
                     stats["skipped"] += 1
                 
-                # ✅ OPTIMIZED: Kurze Pause zwischen Wallets
-                time.sleep(0.3)  # 0.3s statt 0.5s
+                time.sleep(0.3)
                 
             except Exception as e:
                 logger.error(f"❌ Error auto-fetching {address}: {e}", exc_info=True)
@@ -434,7 +415,6 @@ async def ensure_registry_wallets_in_db(
                 stats["skipped"] += 1
                 continue
         
-        # Final summary
         if stats["fetched"] > 0 or stats["updated"] > 0:
             logger.info(
                 f"✅ Auto-sync: "
@@ -469,7 +449,6 @@ async def discover_new_otc_desks(
     logger.info("🕵️ Starting OTC discovery...")
     
     try:
-        # Get known OTC desks
         known_otc = db.query(OTCWallet).filter(
             OTCWallet.entity_type == 'otc_desk',
             OTCWallet.confidence_score >= 70.0
@@ -482,14 +461,12 @@ async def discover_new_otc_desks(
         known_addresses = [w.address for w in known_otc]
         logger.info(f"📊 Analyzing {len(known_addresses)} OTC desks...")
         
-        # Initialize analyzer
         analyzer = CounterpartyAnalyzer(
             db=db,
             transaction_extractor=transaction_extractor,
             wallet_profiler=wallet_profiler
         )
         
-        # Discover candidates
         candidates = analyzer.discover_counterparties(
             known_otc_addresses=known_addresses,
             min_interactions=2,
@@ -503,13 +480,11 @@ async def discover_new_otc_desks(
         
         logger.info(f"🎯 Found {len(candidates)} candidates")
         
-        # Validate and save
         discovered = []
         
         for candidate in candidates:
             address = candidate['address']
             
-            # Skip if exists
             existing = db.query(OTCWallet).filter(
                 OTCWallet.address == address
             ).first()
@@ -525,7 +500,6 @@ async def discover_new_otc_desks(
                 f"Volume: ${candidate['total_volume']:,.0f}"
             )
             
-            # Full profile
             try:
                 transactions = transaction_extractor.extract_wallet_transactions(
                     address,
@@ -551,13 +525,10 @@ async def discover_new_otc_desks(
                     profile = wallet_profiler.create_profile(address, transactions, labels)
                     otc_prob = wallet_profiler.calculate_otc_probability(profile)
                     confidence = otc_prob * 100
-                    
-                    # Combine scores
                     combined = (confidence + candidate['discovery_score']) / 2
                     
                     logger.info(f"      Profile: {combined:.1f}% confidence")
                     
-                    # Save if good enough
                     if combined >= 60.0:
                         wallet = OTCWallet(
                             address=address,
@@ -602,21 +573,35 @@ async def discover_new_otc_desks(
         return []
 
 # ============================================================================
-# ✅ NEU: Simple Last-5-TX Discovery
+# ✅ UPDATED: Simple Discovery mit Moralis Label-Filterung
 # ============================================================================
 
 async def discover_from_last_5_transactions(
     db: Session,
     otc_address: str,
-    num_transactions: int = 5
+    num_transactions: int = 5,
+    filter_known_entities: bool = True
 ) -> List[Dict]:
     """
-    Analysiere Counterparties der letzten N Transaktionen.
+    🔍 Analysiere Counterparties der letzten N Transaktionen.
+    
+    ✅ NEW: Filtert automatisch bekannte Exchanges/Protocols via Moralis Labels
+    
+    Args:
+        db: Database session
+        otc_address: OTC Desk address to analyze
+        num_transactions: Number of recent transactions to analyze
+        filter_known_entities: If True, skip known exchanges/protocols
     """
     from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
     from app.core.otc_analysis.discovery.simple_analyzer import SimpleLastTxAnalyzer
     
     logger.info(f"🔍 Simple Discovery: Last {num_transactions} TXs from {otc_address[:10]}...")
+    
+    if filter_known_entities:
+        logger.info("   🏷️ Moralis label filtering: ENABLED")
+    else:
+        logger.info("   🏷️ Moralis label filtering: DISABLED")
     
     try:
         # Get known OTC desks
@@ -638,40 +623,113 @@ async def discover_from_last_5_transactions(
         # Initialize scorer
         discovery_scorer = DiscoveryScorer(known_addresses)
         
-        # Get counterparties
-        counterparties = analyzer.discover_from_last_transactions(
-            otc_address=otc_address,
-            num_transactions=num_transactions
+        # Get transactions (with Moralis labels if available)
+        transactions = transaction_extractor.extract_wallet_transactions(
+            otc_address,
+            include_internal=True,
+            include_tokens=True
         )
         
-        if not counterparties:
-            logger.info("ℹ️ No counterparties found")
+        if not transactions:
+            logger.info("ℹ️ No transactions found")
+            return []
+        
+        # Sort and take recent N
+        recent_txs = sorted(
+            transactions, 
+            key=lambda x: x.get('timestamp', datetime.min), 
+            reverse=True
+        )[:num_transactions]
+        
+        logger.info(f"📊 Analyzing {len(recent_txs)} recent transactions...")
+        
+        # Extract counterparties
+        counterparties_data = {}
+        filtered_count = 0
+        
+        for tx in recent_txs:
+            # Determine counterparty
+            if tx['from_address'].lower() == otc_address.lower():
+                counterparty = tx['to_address']
+                label = tx.get('to_address_label')
+                entity = tx.get('to_address_entity')
+                is_known = tx.get('to_is_known_entity', False)
+            else:
+                counterparty = tx['from_address']
+                label = tx.get('from_address_label')
+                entity = tx.get('from_address_entity')
+                is_known = tx.get('from_is_known_entity', False)
+            
+            # ✅ FILTER: Skip known entities (if enabled)
+            if filter_known_entities and is_known:
+                filtered_count += 1
+                logger.info(
+                    f"   ⏭️  Skipping {counterparty[:10]}... "
+                    f"(known entity: {label or entity})"
+                )
+                continue
+            
+            # Track counterparty
+            if counterparty not in counterparties_data:
+                counterparties_data[counterparty] = {
+                    'address': counterparty,
+                    'tx_count': 0,
+                    'total_volume': 0,
+                    'first_seen': tx['timestamp'],
+                    'last_seen': tx['timestamp'],
+                    'moralis_label': label,
+                    'moralis_entity': entity,
+                    'is_known_entity': is_known
+                }
+            
+            # Update stats
+            cp_data = counterparties_data[counterparty]
+            cp_data['tx_count'] += 1
+            
+            if tx.get('usd_value'):
+                cp_data['total_volume'] += tx['usd_value']
+            
+            if tx['timestamp'] < cp_data['first_seen']:
+                cp_data['first_seen'] = tx['timestamp']
+            if tx['timestamp'] > cp_data['last_seen']:
+                cp_data['last_seen'] = tx['timestamp']
+        
+        logger.info(
+            f"📊 Found {len(counterparties_data)} unique counterparties "
+            f"(filtered {filtered_count} known entities)"
+        )
+        
+        if not counterparties_data:
+            logger.info("ℹ️ No valid counterparties after filtering")
             return []
         
         # Analyze each counterparty
         discovered = []
         
-        for cp_data in counterparties:
-            address = cp_data['address']
-            
+        for address, cp_data in counterparties_data.items():
             # Skip if already in DB
             existing = db.query(OTCWallet).filter(
                 OTCWallet.address == address
             ).first()
             
             if existing:
-                logger.info(f"   ⚠️ {address[:10]}... already exists (score: {existing.confidence_score:.1f}%)")
+                logger.info(
+                    f"   ⚠️ {address[:10]}... already exists "
+                    f"(score: {existing.confidence_score:.1f}%)"
+                )
                 continue
+            
+            logger.info(f"   🔍 Analyzing {address[:10]}...")
             
             # Analyze
             analysis = analyzer.analyze_counterparty(address)
             
             if not analysis:
-                logger.info(f"   ⚠️ {address[:10]}... analysis failed")
+                logger.info(f"      ⚠️ Analysis failed")
                 continue
             
-            # Get transactions for discovery scoring
-            transactions = transaction_extractor.extract_wallet_transactions(
+            # Get full transactions for scoring
+            cp_transactions = transaction_extractor.extract_wallet_transactions(
                 address,
                 include_internal=True,
                 include_tokens=True
@@ -680,7 +738,7 @@ async def discover_from_last_5_transactions(
             # Calculate discovery score
             discovery_result = discovery_scorer.score_discovered_wallet(
                 address=address,
-                transactions=transactions,
+                transactions=cp_transactions,
                 counterparty_data=cp_data,
                 profile=analysis.get('profile', {})
             )
@@ -691,27 +749,41 @@ async def discover_from_last_5_transactions(
             final_confidence = (base_confidence * 0.4) + (discovery_score * 0.6)
             
             logger.info(
-                f"   🆕 {address[:10]}... - "
-                f"Base: {base_confidence:.1f}%, "
-                f"Discovery: {discovery_score:.0f}, "
-                f"Final: {final_confidence:.1f}%"
+                f"      📊 Scores: Base={base_confidence:.1f}%, "
+                f"Discovery={discovery_score:.0f}, "
+                f"Final={final_confidence:.1f}%"
             )
-            logger.info(f"      Recommendation: {discovery_result['recommendation']}")
+            
+            # Log Moralis info if available
+            if cp_data.get('moralis_label'):
+                logger.info(
+                    f"      🏷️ Moralis: {cp_data['moralis_label']} "
+                    f"(Entity: {cp_data.get('moralis_entity', 'N/A')})"
+                )
+            
+            logger.info(f"      💡 Recommendation: {discovery_result['recommendation']}")
             
             # Save if confidence >= 50%
             if final_confidence >= 50.0:
+                # Prepare tags
+                tags = ['discovered', 'last_tx_analysis', discovery_result['recommendation']]
+                
+                # Add Moralis label as tag if available
+                if cp_data.get('moralis_label'):
+                    tags.append(f"moralis:{cp_data['moralis_label'][:30]}")
+                
                 wallet = OTCWallet(
                     address=address,
                     label=f"Discovered {address[:8]}",
                     entity_type='otc_desk',
-                    entity_name=f"Discovered OTC {address[:8]}",
+                    entity_name=cp_data.get('moralis_label') or f"Discovered OTC {address[:8]}",
                     confidence_score=final_confidence,
                     total_volume=analysis['total_volume'],
                     transaction_count=analysis['transaction_count'],
                     first_seen=analysis['first_seen'],
                     last_active=analysis['last_seen'],
                     is_active=True,
-                    tags=['discovered', 'last_tx_analysis', discovery_result['recommendation']],
+                    tags=tags,
                     created_at=datetime.now(),
                     updated_at=datetime.now()
                 )
@@ -725,14 +797,23 @@ async def discover_from_last_5_transactions(
                     'volume': analysis['total_volume'],
                     'tx_count': analysis['transaction_count'],
                     'counterparty_data': cp_data,
-                    'discovery_breakdown': discovery_result['breakdown']
+                    'discovery_breakdown': discovery_result['breakdown'],
+                    'moralis_label': cp_data.get('moralis_label'),
+                    'moralis_entity': cp_data.get('moralis_entity')
                 })
                 
-                logger.info(f"      ✅ Saved to DB (threshold: 50%, confidence: {final_confidence:.1f}%)")
+                logger.info(
+                    f"      ✅ Saved to DB "
+                    f"(threshold: 50%, confidence: {final_confidence:.1f}%)"
+                )
             else:
                 logger.info(f"      ⚠️ Below threshold (50%)")
         
-        logger.info(f"✅ Discovery complete: {len(discovered)} new wallets found")
+        logger.info(
+            f"✅ Discovery complete: {len(discovered)} new wallets found "
+            f"(filtered {filtered_count} known entities)"
+        )
+        
         return discovered
         
     except Exception as e:
