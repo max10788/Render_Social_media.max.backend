@@ -1,8 +1,8 @@
 from typing import List, Dict, Optional
 from datetime import datetime
-from app.core.otc_analysis.blockchain.etherscan import EtherscanAPI
-from app.core.otc_analysis.blockchain.node_provider import NodeProvider
+import requests
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -10,6 +10,7 @@ class TransactionExtractor:
     """
     Extracts and enriches transaction data from various sources.
     
+    ✅ NEW: Moralis API Integration with auto-enriched labels
     ✅ FIXED: Proper Wei-to-ETH conversion with sanity checks
     ✅ FIXED: Uses int() instead of float() for precision
     ✅ FIXED: Token-specific validation and thresholds
@@ -17,9 +18,19 @@ class TransactionExtractor:
     ✅ FIXED: Shows actual token symbol (USDT, LINK) not "ERC20"
     """
     
-    def __init__(self, node_provider: NodeProvider, etherscan: EtherscanAPI):
+    def __init__(self, node_provider, etherscan, use_moralis: bool = True):
         self.node_provider = node_provider
         self.etherscan = etherscan
+        self.use_moralis = use_moralis
+        
+        # ✅ Moralis API Configuration
+        self.moralis_api_key = os.getenv('MORALIS_API_KEY', '')
+        self.moralis_base_url = "https://deep-index.moralis.io/api/v2.2"
+        
+        if self.use_moralis and self.moralis_api_key:
+            logger.info("✅ Moralis API enabled - labels will be auto-enriched")
+        else:
+            logger.info("⚠️ Moralis disabled - using Etherscan only")
         
         # ✅ Token-specific max reasonable amounts
         self.token_max_amounts = {
@@ -33,6 +44,95 @@ class TransactionExtractor:
             'MATIC': 10_000_000_000,     # 10B MATIC
             'SHIB': 100_000_000_000_000, # 100T SHIB (meme coin)
         }
+        
+        # ✅ Known exchanges/protocols to filter in discovery
+        self.known_entities = {
+            'exchanges': ['Binance', 'Coinbase', 'Kraken', 'Bitfinex', 'Gemini', 'Bybit', 'OKX', 'Huobi'],
+            'dex': ['Uniswap', '1inch', 'SushiSwap', 'Curve', 'Balancer', 'PancakeSwap'],
+            'bridges': ['Multichain', 'Synapse', 'Stargate', 'Hop Protocol'],
+            'mev': ['MEV Bot', 'Flashbots', 'MEV Relay'],
+            'protocols': ['Aave', 'Compound', 'MakerDAO', 'Lido']
+        }
+    
+    def _fetch_moralis_transactions(
+        self,
+        address: str,
+        limit: int = 100
+    ) -> List[Dict]:
+        """
+        🔥 Fetch transactions from Moralis with auto-enriched labels.
+        
+        Returns transactions with:
+        - to_address_label (e.g., "Binance: Hot Wallet")
+        - from_address_label
+        - to_address_entity (e.g., "Binance")
+        - from_address_entity
+        """
+        if not self.moralis_api_key:
+            logger.warning("⚠️ Moralis API key missing - falling back to Etherscan")
+            return []
+        
+        try:
+            url = f"{self.moralis_base_url}/{address}"
+            headers = {
+                "X-API-Key": self.moralis_api_key,
+                "Accept": "application/json"
+            }
+            params = {
+                "chain": "eth",  # Ethereum mainnet
+                "limit": min(limit, 100)  # Max 100 per request
+            }
+            
+            logger.info(f"🔍 Fetching from Moralis: {address[:10]}... (limit: {limit})")
+            
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                transactions = data.get('result', [])
+                
+                logger.info(
+                    f"✅ Moralis: Got {len(transactions)} transactions "
+                    f"(with auto-labels)"
+                )
+                
+                return transactions
+            
+            elif response.status_code == 429:
+                logger.warning("⚠️ Moralis rate limit hit - using Etherscan fallback")
+                return []
+            
+            else:
+                logger.warning(
+                    f"⚠️ Moralis error {response.status_code}: {response.text[:100]}"
+                )
+                return []
+        
+        except requests.exceptions.Timeout:
+            logger.warning("⚠️ Moralis timeout - using Etherscan fallback")
+            return []
+        
+        except Exception as e:
+            logger.error(f"❌ Moralis error: {e}")
+            return []
+    
+    def _is_known_entity(self, label: str) -> bool:
+        """
+        Check if a label matches a known exchange/protocol.
+        
+        Used for filtering in OTC discovery.
+        """
+        if not label:
+            return False
+        
+        label_upper = label.upper()
+        
+        for category, entities in self.known_entities.items():
+            for entity in entities:
+                if entity.upper() in label_upper:
+                    return True
+        
+        return False
     
     @staticmethod
     def wei_to_eth(wei_value: str | int) -> float:
@@ -67,13 +167,43 @@ class TransactionExtractor:
         start_block: int = 0,
         end_block: int = 99999999,
         include_internal: bool = True,
-        include_tokens: bool = True
+        include_tokens: bool = True,
+        use_moralis_first: bool = True
     ) -> List[Dict]:
-        """Extract all transactions for a wallet address."""
+        """
+        Extract all transactions for a wallet address.
+        
+        ✅ NEW: Tries Moralis first (with labels), falls back to Etherscan
+        """
         all_txs = []
         
+        # ============================================================================
+        # 🔥 TRY MORALIS FIRST (if enabled)
+        # ============================================================================
+        if use_moralis_first and self.use_moralis and self.moralis_api_key:
+            logger.info(f"🔥 Using Moralis API for {address[:10]}...")
+            
+            moralis_txs = self._fetch_moralis_transactions(address, limit=100)
+            
+            if moralis_txs:
+                formatted = self._format_moralis_transactions(moralis_txs)
+                
+                if formatted:
+                    logger.info(
+                        f"✅ Moralis success: {len(formatted)} transactions "
+                        f"(with entity labels)"
+                    )
+                    return formatted
+                else:
+                    logger.warning("⚠️ Moralis returned empty results")
+        
+        # ============================================================================
+        # FALLBACK: Use Etherscan (original logic)
+        # ============================================================================
+        logger.info(f"📡 Using Etherscan fallback for {address[:10]}...")
+        
         # Get normal transactions
-        logger.info(f"Fetching normal transactions for {address[:10]}...")
+        logger.info(f"Fetching normal transactions...")
         normal_txs = self.etherscan.get_normal_transactions(
             address, start_block, end_block
         )
@@ -103,6 +233,73 @@ class TransactionExtractor:
         logger.info(f"✓ Extracted {len(all_txs)} transactions for {address[:10]}...")
         return all_txs
     
+    def _format_moralis_transactions(self, txs: List[Dict]) -> List[Dict]:
+        """
+        Format Moralis transactions with auto-enriched labels.
+        
+        ✅ Extracts labels automatically:
+        - to_address_label
+        - from_address_label
+        - to_address_entity
+        - from_address_entity
+        - to_address_entity_logo
+        - from_address_entity_logo
+        """
+        formatted = []
+        
+        for tx in txs:
+            try:
+                # Basic transaction data
+                value_wei = tx.get('value', '0')
+                value_eth = self.wei_to_eth(value_wei)
+                
+                # ✅ Extract Moralis labels
+                to_label = tx.get('to_address_label', None)
+                from_label = tx.get('from_address_label', None)
+                to_entity = tx.get('to_address_entity', None)
+                from_entity = tx.get('from_address_entity', None)
+                to_logo = tx.get('to_address_entity_logo', None)
+                from_logo = tx.get('from_address_entity_logo', None)
+                
+                # Check if it's a known entity
+                to_is_known = self._is_known_entity(to_label or to_entity or '')
+                from_is_known = self._is_known_entity(from_label or from_entity or '')
+                
+                formatted.append({
+                    'tx_hash': tx['hash'],
+                    'block_number': int(tx['block_number']),
+                    'timestamp': datetime.fromisoformat(tx['block_timestamp'].replace('Z', '+00:00')),
+                    'from_address': tx['from_address'],
+                    'to_address': tx['to_address'],
+                    'value': value_wei,
+                    'value_decimal': value_eth,
+                    'gas_used': int(tx.get('receipt_gas_used', 0)),
+                    'gas_price': int(tx.get('gas_price', 0)),
+                    'is_contract_interaction': tx.get('input', '0x') != '0x',
+                    'method_id': tx.get('input', '')[:10] if len(tx.get('input', '')) >= 10 else None,
+                    'is_error': tx.get('receipt_status', '1') == '0',
+                    'token_address': None,
+                    'token_symbol': 'ETH',
+                    'tx_type': 'normal',
+                    
+                    # ✅ MORALIS LABELS
+                    'to_address_label': to_label,
+                    'from_address_label': from_label,
+                    'to_address_entity': to_entity,
+                    'from_address_entity': from_entity,
+                    'to_address_entity_logo': to_logo,
+                    'from_address_entity_logo': from_logo,
+                    'to_is_known_entity': to_is_known,
+                    'from_is_known_entity': from_is_known,
+                    'source': 'moralis'
+                })
+                
+            except Exception as e:
+                logger.debug(f"Error formatting Moralis transaction {tx.get('hash')}: {e}")
+                continue
+        
+        return formatted
+    
     def _format_normal_transactions(self, txs: List[Dict]) -> List[Dict]:
         """Format normal transactions from Etherscan."""
         formatted = []
@@ -119,15 +316,26 @@ class TransactionExtractor:
                     'from_address': tx['from'],
                     'to_address': tx['to'],
                     'value': value_wei,
-                    'value_decimal': value_eth,  # ✅ Already in ETH!
+                    'value_decimal': value_eth,
                     'gas_used': int(tx['gasUsed']),
                     'gas_price': int(tx['gasPrice']),
                     'is_contract_interaction': tx.get('input', '0x') != '0x',
                     'method_id': tx.get('input', '')[:10] if len(tx.get('input', '')) >= 10 else None,
                     'is_error': tx.get('isError', '0') == '1',
                     'token_address': None,
-                    'token_symbol': 'ETH',  # ✅ FIXED: Native ETH
-                    'tx_type': 'normal'
+                    'token_symbol': 'ETH',
+                    'tx_type': 'normal',
+                    
+                    # No Moralis labels available
+                    'to_address_label': None,
+                    'from_address_label': None,
+                    'to_address_entity': None,
+                    'from_address_entity': None,
+                    'to_address_entity_logo': None,
+                    'from_address_entity_logo': None,
+                    'to_is_known_entity': False,
+                    'from_is_known_entity': False,
+                    'source': 'etherscan'
                 })
             except Exception as e:
                 logger.debug(f"Error formatting transaction {tx.get('hash')}: {e}")
@@ -154,15 +362,26 @@ class TransactionExtractor:
                     'from_address': tx['from'],
                     'to_address': tx['to'],
                     'value': value_wei,
-                    'value_decimal': value_eth,  # ✅ Already in ETH!
+                    'value_decimal': value_eth,
                     'gas_used': int(tx.get('gas', 0)),
                     'gas_price': 0,
                     'is_contract_interaction': True,
                     'method_id': None,
                     'is_error': tx.get('isError', '0') == '1',
                     'token_address': None,
-                    'token_symbol': 'ETH',  # ✅ FIXED: Native ETH
-                    'tx_type': 'internal'
+                    'token_symbol': 'ETH',
+                    'tx_type': 'internal',
+                    
+                    # No Moralis labels available
+                    'to_address_label': None,
+                    'from_address_label': None,
+                    'to_address_entity': None,
+                    'from_address_entity': None,
+                    'to_address_entity_logo': None,
+                    'from_address_entity_logo': None,
+                    'to_is_known_entity': False,
+                    'from_is_known_entity': False,
+                    'source': 'etherscan'
                 })
             except Exception as e:
                 logger.debug(f"Error formatting internal transaction: {e}")
@@ -226,9 +445,20 @@ class TransactionExtractor:
                     'is_error': False,
                     'token_address': tx['contractAddress'],
                     'token_name': tx.get('tokenName'),
-                    'token_symbol': token_symbol,  # ✅ FIXED: Include token symbol!
+                    'token_symbol': token_symbol,
                     'token_decimals': decimals,
-                    'tx_type': 'erc20'
+                    'tx_type': 'erc20',
+                    
+                    # No Moralis labels available
+                    'to_address_label': None,
+                    'from_address_label': None,
+                    'to_address_entity': None,
+                    'from_address_entity': None,
+                    'to_address_entity_logo': None,
+                    'from_address_entity_logo': None,
+                    'to_is_known_entity': False,
+                    'from_is_known_entity': False,
+                    'source': 'etherscan'
                 })
             except Exception as e:
                 logger.debug(f"Error formatting token transaction: {e}")
@@ -268,7 +498,7 @@ class TransactionExtractor:
         cached_count = 0
         failed_count = 0
         suspicious_count = 0
-        stablecoin_count = 0  # ✅ NEW
+        stablecoin_count = 0
         
         # Failure tracking
         failure_reasons = {
@@ -281,7 +511,7 @@ class TransactionExtractor:
             'other': []
         }
         
-        # ✅ NEW: Stablecoin list
+        # ✅ Stablecoin list
         STABLECOINS = {
             'USDT': 1.0,
             'USDC': 1.0,
@@ -380,9 +610,7 @@ class TransactionExtractor:
                         else:
                             logger.debug(f"   ❌ Price API returned None")
                             
-                            # ====================================================================
-                            # ✅ NEW: STABLECOIN FALLBACK
-                            # ====================================================================
+                            # ✅ STABLECOIN FALLBACK
                             if token_symbol in STABLECOINS:
                                 price_usd = STABLECOINS[token_symbol]
                                 price_cache[cache_key] = price_usd
@@ -393,7 +621,6 @@ class TransactionExtractor:
                             else:
                                 price_cache[cache_key] = None
                                 
-                                # Track failure reason
                                 failure_reason = 'price_fetch_failed'
                                 
                                 if hasattr(price_oracle, 'last_error'):
@@ -414,9 +641,7 @@ class TransactionExtractor:
                     except Exception as e:
                         logger.debug(f"   ❌ Exception: {str(e)}")
                         
-                        # ====================================================================
-                        # ✅ NEW: STABLECOIN FALLBACK ON EXCEPTION
-                        # ====================================================================
+                        # ✅ STABLECOIN FALLBACK ON EXCEPTION
                         if token_symbol in STABLECOINS:
                             price_usd = STABLECOINS[token_symbol]
                             price_cache[cache_key] = price_usd
@@ -427,7 +652,6 @@ class TransactionExtractor:
                         else:
                             price_cache[cache_key] = None
                             
-                            # Categorize exception
                             error_msg = str(e).lower()
                             if 'rate limit' in error_msg or '429' in error_msg:
                                 failure_reasons['rate_limited'].append({
@@ -446,10 +670,8 @@ class TransactionExtractor:
                                 })
                 
                 if price_usd:
-                    # Calculate USD value
                     usd_value = amount * price_usd
                     
-                    # Final sanity check
                     if usd_value > 1_000_000_000:
                         logger.error(
                             f"🚨 UNREALISTIC USD VALUE:\n"
@@ -474,7 +696,6 @@ class TransactionExtractor:
                         tx['usd_value'] = usd_value
                         enriched_count += 1
                         
-                        # Log first 3 successful enrichments
                         if enriched_count <= 3:
                             logger.info(
                                 f"✅ Enriched TX {tx_hash}...: "
@@ -493,66 +714,20 @@ class TransactionExtractor:
                     'error': str(e)
                 })
         
-        # Set usd_value to None for remaining transactions
         for tx in remaining_txs:
             tx['usd_value'] = None
         
-        # ====================================================================
-        # ENHANCED SUMMARY LOGGING
-        # ====================================================================
         logger.info(f"✅ Enrichment complete:")
         logger.info(f"   • Enriched: {enriched_count} transactions")
         logger.info(f"   • Cached: {cached_count} (saved API calls)")
         logger.info(f"   • Failed: {failed_count}")
         logger.info(f"   • Suspicious (rejected): {suspicious_count}")
         
-        # ✅ NEW: Stablecoin stats
         if stablecoin_count > 0:
             logger.info(f"   💵 Stablecoin fallback: {stablecoin_count} transactions")
         
         logger.info(f"📊 Made {len(price_cache)} unique price API calls instead of {len(txs_to_enrich)}")
         
-        # Detailed failure analysis
-        if failed_count > 0:
-            logger.warning(f"")
-            logger.warning(f"📊 FAILURE ANALYSIS:")
-            logger.warning(f"   Total failed: {failed_count}")
-            
-            if failure_reasons['rate_limited']:
-                logger.warning(f"   ⏱️  Rate limited: {len(failure_reasons['rate_limited'])} calls")
-                for item in failure_reasons['rate_limited'][:3]:
-                    logger.warning(f"      • {item}")
-            
-            if failure_reasons['token_not_found']:
-                logger.warning(f"   ❓ Token not found: {len(failure_reasons['token_not_found'])} tokens")
-                unique_tokens = list(set(item['token'] for item in failure_reasons['token_not_found']))
-                logger.warning(f"      Tokens: {', '.join(unique_tokens[:10])}")
-            
-            if failure_reasons['price_fetch_failed']:
-                logger.warning(f"   ❌ Price fetch failed: {len(failure_reasons['price_fetch_failed'])} calls")
-                tokens = {}
-                for item in failure_reasons['price_fetch_failed']:
-                    token = item['token']
-                    tokens[token] = tokens.get(token, 0) + 1
-                logger.warning(f"      Most common failures:")
-                for token, count in sorted(tokens.items(), key=lambda x: x[1], reverse=True)[:5]:
-                    logger.warning(f"         • {token}: {count} times")
-            
-            if failure_reasons['network_error']:
-                logger.warning(f"   🌐 Network errors: {len(failure_reasons['network_error'])} calls")
-            
-            if failure_reasons['amount_missing']:
-                logger.warning(f"   📉 Amount missing: {len(failure_reasons['amount_missing'])} txs")
-            
-            if failure_reasons['suspicious_value']:
-                logger.warning(f"   ⚠️  Suspicious values: {len(failure_reasons['suspicious_value'])} txs")
-            
-            if failure_reasons['other']:
-                logger.warning(f"   ❓ Other errors: {len(failure_reasons['other'])} calls")
-                if failure_reasons['other']:
-                    logger.warning(f"      Example: {failure_reasons['other'][0]}")
-        
-        # Calculate and log volume
         total_usd = sum(tx.get('usd_value', 0) for tx in txs_to_enrich if tx.get('usd_value'))
         avg_usd = total_usd / enriched_count if enriched_count > 0 else 0
         logger.info(f"💵 Enriched Volume: ${total_usd:,.2f} total, ${avg_usd:,.2f} average")
