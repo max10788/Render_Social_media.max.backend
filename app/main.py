@@ -59,6 +59,9 @@ from app.core.otc_analysis.api.network import router as otc_network_router
 from app.core.otc_analysis.api.flow import router as otc_flow_router
 from app.core.otc_analysis.api.websocket import handle_websocket_connection
 
+# Bei den OTC Analysis API Routes Imports (ca. Zeile 45-55)
+from app.core.otc_analysis.api.migration import router as otc_migration_router
+
 from scripts.init_otc_db import init_database
 
 # Konfiguration und Datenbank
@@ -349,6 +352,10 @@ app.include_router(otc_streams_router, prefix="/api/otc")        # Streams endpo
 
 # ✅ NEU: Discovery Router
 app.include_router(otc_discovery_router, prefix="/api/otc")
+
+# Bei den OTC Analysis API Routes (ca. Zeile 350-365)
+# ✅ TEMPORÄR: Migration Endpoint (nach Ausführung löschen!)
+app.include_router(otc_migration_router, prefix="/api/migration", tags=["Migration"])
 
 # ✅ Optional: Validators & WebSocket (wenn du sie nutzt)
 # app.include_router(otc_validators_router, prefix="/api/otc")
