@@ -1,0 +1,34 @@
+services:
+  # Web Service
+  - type: web
+    name: Render_Social_media.max.backend
+    env: python
+    region: frankfurt  # ← Oder deine Region
+    plan: free  # ← Oder dein Plan
+    
+    # Build Command (läuft VOR dem Start)
+    buildCommand: |
+      pip install -r requirements.txt
+      chmod +x scripts/migrate_db.sh
+      scripts/migrate_db.sh
+    
+    # Start Command
+    startCommand: uvicorn app.main:socket_app --host 0.0.0.0 --port $PORT
+    
+    # Environment Variables
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: otc-analysis-db
+          property: connectionString
+      
+      - key: MORALIS_API_KEY
+        sync: false  # Setze manuell in Render Dashboard
+
+# PostgreSQL Database
+databases:
+  - name: otc-analysis-db
+    region: frankfurt  # ← Oder deine Region
+    plan: free  # ← Oder dein Plan
+    databaseName: your_db
+    user: your_user
