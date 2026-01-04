@@ -12,6 +12,7 @@ class OTCWallet(Base):
     
     Stores wallet data with OTC classification and behavioral metrics.
     
+    ✅ NEW: Moralis label support (entity_label, entity_logo)
     ✅ WICHTIG: Klasse heißt "OTCWallet" (nicht "Wallet")
     Das passt zu init_otc_db.py!
     """
@@ -24,6 +25,10 @@ class OTCWallet(Base):
     entity_type = Column(String(50), index=True)  # 'otc_desk', 'market_maker', 'cex', 'prop_trading', 'whale', 'unknown'
     entity_name = Column(String(255), nullable=True)  # e.g., "Wintermute", "Binance"
     label = Column(String(255), nullable=True)  # Display name / custom label
+    
+    # ✅ NEW: Moralis Labels
+    entity_label = Column(String(255), nullable=True)  # e.g., "Binance: Hot Wallet" (from Moralis)
+    entity_logo = Column(String(512), nullable=True)   # Logo URL (from Moralis)
     
     # Activity metrics
     first_seen = Column(DateTime, index=True)
@@ -91,6 +96,8 @@ class OTCWallet(Base):
             'label': self.label,
             'entity_type': self.entity_type,
             'entity_name': self.entity_name,
+            'entity_label': self.entity_label,  # ✅ NEW
+            'entity_logo': self.entity_logo,    # ✅ NEW
             'total_volume': self.total_volume,
             'transaction_count': self.transaction_count,
             'avg_transaction_size': self.avg_transaction_size,
