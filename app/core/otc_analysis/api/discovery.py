@@ -8,13 +8,13 @@ from typing import List, Dict
 import logging
 
 from app.core.backend_crypto_tracker.config.database import get_db
-from app.core.otc_analysis.api.dependencies import discover_new_otc_desks
+from app.core.otc_analysis.api.dependencies import discover_new_otc_desks, discover_from_last_5_transactions
 
 router = APIRouter(tags=["Discovery"])
 logger = logging.getLogger(__name__)
 
 
-@router.post("/discover")  # ✅ /discover statt /discovery/discover
+@router.post("/discover")
 async def trigger_discovery(
     max_discoveries: int = Query(5, ge=1, le=20),
     db: Session = Depends(get_db)
@@ -44,7 +44,7 @@ async def trigger_discovery(
         }
 
 
-@router.get("/candidates")  # ✅ /candidates statt /discovery/candidates
+@router.get("/candidates")
 async def get_candidates(
     min_confidence: float = Query(60.0, ge=0, le=100),
     db: Session = Depends(get_db)
@@ -86,35 +86,76 @@ async def get_candidates(
 async def simple_discovery(
     otc_address: str = Query(..., description="OTC Desk Adresse"),
     num_transactions: int = Query(5, ge=1, le=20, description="Anzahl Transaktionen"),
+    filter_known_entities: bool = Query(
+        True, 
+        description="Filtere bekannte Exchanges/Protocols (Binance, Uniswap, etc.) via Moralis Labels"
+    ),
     db: Session = Depends(get_db)
 ) -> Dict:
     """
     🔍 Simple Discovery: Analysiere letzte N Transaktionen.
     
-    Schritte:
-    1. Hole letzte 5 Transaktionen vom OTC Desk
-    2. Extrahiere Counterparty-Adressen (from/to)
-    3. Analysiere jede Counterparty
-    4. Speichere wenn OTC-Score >= 60%
-    """
-    from app.core.otc_analysis.api.dependencies import discover_from_last_5_transactions
+    ✅ NEW: Moralis Label-basierte Filterung
     
-    logger.info(f"🔍 Simple Discovery: {otc_address[:10]}... last {num_transactions} TXs")
+    Schritte:
+    1. Hole letzte N Transaktionen vom OTC Desk (mit Moralis Labels)
+    2. Extrahiere Counterparty-Adressen (from/to)
+    3. **Filtere bekannte Exchanges/Protocols** (wenn filter_known_entities=True)
+    4. Analysiere verbleibende Counterparties
+    5. Speichere wenn OTC-Score >= 50%
+    
+    **Moralis Filter entfernt:**
+    - Binance, Coinbase, Kraken, Gemini, etc.
+    - Uniswap, 1inch, SushiSwap, Curve, etc.
+    - MEV Bots, Flashbots
+    - Bridge Protocols
+    - Lending Protocols (Aave, Compound, etc.)
+    """
+    logger.info(
+        f"🔍 Simple Discovery: {otc_address[:10]}... "
+        f"last {num_transactions} TXs (filter={filter_known_entities})"
+    )
     
     try:
         discovered = await discover_from_last_5_transactions(
             db=db,
             otc_address=otc_address,
-            num_transactions=num_transactions
+            num_transactions=num_transactions,
+            filter_known_entities=filter_known_entities
         )
+        
+        # Build detailed response
+        wallets_response = []
+        
+        for wallet in discovered:
+            wallet_data = {
+                "address": wallet["address"],
+                "confidence": wallet["confidence"],
+                "volume": wallet["volume"],
+                "tx_count": wallet["tx_count"],
+                "discovery_breakdown": wallet["discovery_breakdown"]
+            }
+            
+            # ✅ Include Moralis labels if available
+            if wallet.get("moralis_label"):
+                wallet_data["moralis_label"] = wallet["moralis_label"]
+            if wallet.get("moralis_entity"):
+                wallet_data["moralis_entity"] = wallet["moralis_entity"]
+            
+            wallets_response.append(wallet_data)
         
         return {
             "success": True,
             "otc_address": otc_address,
             "transactions_analyzed": num_transactions,
+            "filter_enabled": filter_known_entities,
             "discovered_count": len(discovered),
-            "wallets": discovered,
-            "message": f"Analyzed last {num_transactions} transactions, found {len(discovered)} new OTC desks"
+            "wallets": wallets_response,
+            "message": (
+                f"Analyzed last {num_transactions} transactions, "
+                f"found {len(discovered)} new OTC desks "
+                f"({'with' if filter_known_entities else 'without'} known entity filtering)"
+            )
         }
         
     except Exception as e:
@@ -129,7 +170,9 @@ async def debug_transactions(
     otc_address: str = Query(...),
     limit: int = Query(5, ge=1, le=20)
 ) -> Dict:
-    """🐛 DEBUG: Show ALL transaction fields"""
+    """
+    🐛 DEBUG: Show ALL transaction fields including Moralis labels
+    """
     from datetime import datetime
     import app.core.otc_analysis.api.dependencies as deps
     
@@ -152,26 +195,31 @@ async def debug_transactions(
             reverse=True
         )[:limit]
         
-        # ✅ ZEIGE ALLE KEYS der ersten Transaction
         first_tx = recent[0] if recent else {}
         
         return {
             "success": True,
             "otc_address": otc_address,
             "total_transactions": len(transactions),
-            "first_tx_keys": list(first_tx.keys()),  # ✅ ALLE Feldnamen!
-            "first_tx_sample": {
-                key: str(value)[:100]  # Erste 100 chars von jedem Feld
-                for key, value in first_tx.items()
-            },
+            "source": first_tx.get('source', 'unknown'),  # 'moralis' or 'etherscan'
+            "first_tx_keys": list(first_tx.keys()),
+            "moralis_enabled": deps.transaction_extractor.use_moralis,
             "transactions": [
                 {
                     "num": i,
-                    "all_keys": list(tx.keys()),  # ✅ Keys für jede TX
-                    "raw_data": {
-                        key: str(tx.get(key, 'N/A'))[:50]
-                        for key in ['from', 'to', 'hash', 'value', 'tokenSymbol', 'contractAddress']
-                    }
+                    "hash": tx.get('tx_hash', 'N/A')[:16],
+                    "from": tx.get('from_address', 'N/A')[:10],
+                    "to": tx.get('to_address', 'N/A')[:10],
+                    "value_eth": tx.get('value_decimal', 0),
+                    "token": tx.get('token_symbol', 'ETH'),
+                    "source": tx.get('source', 'unknown'),
+                    # ✅ Moralis Labels
+                    "to_label": tx.get('to_address_label'),
+                    "from_label": tx.get('from_address_label'),
+                    "to_entity": tx.get('to_address_entity'),
+                    "from_entity": tx.get('from_address_entity'),
+                    "to_is_known": tx.get('to_is_known_entity', False),
+                    "from_is_known": tx.get('from_is_known_entity', False)
                 }
                 for i, tx in enumerate(recent, 1)
             ]
