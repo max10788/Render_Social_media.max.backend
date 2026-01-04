@@ -60,7 +60,6 @@ class SimpleLastTxAnalyzer:
                 from_addr = str(tx.get('from_address', '')).lower().strip()
                 to_addr = str(tx.get('to_address', '')).lower().strip()
                 
-                # ✅ MEHR LOGGING
                 logger.info(f"   🔎 TX {i}:")
                 logger.info(f"      From: {from_addr[:42] if from_addr else 'EMPTY'}")
                 logger.info(f"      To:   {to_addr[:42] if to_addr else 'EMPTY'}")
@@ -97,7 +96,8 @@ class SimpleLastTxAnalyzer:
                     'value_eth': tx.get('value_decimal', 0),
                     'value_usd': tx.get('usd_value', 0),
                     'token_symbol': tx.get('token_symbol', 'ETH'),
-                    'token_address': tx.get('token_address', None)
+                    'token_address': tx.get('token_address', None),
+                    'block_number': tx.get('block_number', 0)  # ✅ ADD
                 }
                 
                 counterparties.append(tx_info)
@@ -175,13 +175,14 @@ class SimpleLastTxAnalyzer:
             profile = self.wallet_profiler.create_profile(
                 counterparty_address,
                 transactions,
-                labels={}  # Keine vordefinierten Labels
+                labels={}
             )
             
             # 4. Berechne OTC Probability
             otc_probability = self.wallet_profiler.calculate_otc_probability(profile)
             confidence = otc_probability * 100
             
+            # ✅ NEW: Store transactions in result
             result = {
                 'address': counterparty_address,
                 'confidence': confidence,
@@ -190,7 +191,8 @@ class SimpleLastTxAnalyzer:
                 'avg_transaction': profile.get('avg_transaction_usd', 0),
                 'first_seen': profile.get('first_transaction'),
                 'last_seen': profile.get('last_transaction'),
-                'profile': profile
+                'profile': profile,
+                'transactions': transactions[:100]  # ✅ ADD: Top 100 transactions
             }
             
             logger.info(
@@ -203,3 +205,55 @@ class SimpleLastTxAnalyzer:
         except Exception as e:
             logger.error(f"❌ Error analyzing {counterparty_address[:10]}: {e}", exc_info=True)
             return None
+    
+    # ✅ NEW METHOD: Save transactions to database
+    def save_transactions_to_db(self, transactions: List[Dict], session) -> int:
+        """
+        Save discovered transactions to database.
+        
+        Args:
+            transactions: List of transaction dicts
+            session: SQLAlchemy session
+            
+        Returns:
+            Number of transactions saved
+        """
+        from app.core.otc_analysis.models.transaction import OTCTransaction
+        
+        saved_count = 0
+        
+        try:
+            for tx in transactions:
+                # Check if transaction already exists
+                existing = session.query(OTCTransaction).filter_by(
+                    tx_hash=tx.get('tx_hash')
+                ).first()
+                
+                if existing:
+                    continue
+                
+                # Create new transaction
+                transaction = OTCTransaction(
+                    tx_hash=tx.get('tx_hash', ''),
+                    from_address=tx.get('from_address', '').lower(),
+                    to_address=tx.get('to_address', '').lower(),
+                    token_symbol=tx.get('token_symbol', 'ETH'),
+                    token_address=tx.get('token_address'),
+                    amount=float(tx.get('amount', 0) or 0),
+                    usd_value=float(tx.get('usd_value', 0) or 0),
+                    timestamp=tx.get('timestamp'),
+                    block_number=int(tx.get('block_number', 0) or 0)
+                )
+                
+                session.add(transaction)
+                saved_count += 1
+            
+            session.commit()
+            logger.info(f"💾 Saved {saved_count} transactions to database")
+            
+            return saved_count
+            
+        except Exception as e:
+            logger.error(f"❌ Error saving transactions: {e}", exc_info=True)
+            session.rollback()
+            return 0
