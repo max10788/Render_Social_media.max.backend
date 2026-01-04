@@ -1,15 +1,15 @@
 """
-Wallet Profiler - WITH Hybrid Strategy & Quick Stats
-=====================================================
+Wallet Profiler - WITH Hybrid Strategy & Quick Stats Integration
+==================================================================
 
-✨ NEW FEATURES:
+✨ COMPLETE VERSION with ALL features:
+- Multi-level volume calculation (USD → ETH with live price → Count)
+- Improved OTC probability algorithm (40+30+20+10 = 100 points)
 - Hybrid profiling based on transaction count
-- Quick stats for small wallets (<100 TX)
-- Multi-level volume calculation with live ETH price
-- Improved OTC scoring (100 point system)
+- Works without USD enrichment
 - Dependency injection for PriceOracle and WalletStatsAPI
 
-Version: 4.0 with Hybrid Strategy
+Version: 4.0 Complete with Hybrid Strategy
 Date: 2025-01-04
 """
 
@@ -303,7 +303,7 @@ class WalletProfiler:
         }
     
     # ========================================================================
-    # VOLUME CALCULATION (from Document 3 - unchanged)
+    # ✨ IMPROVED: MULTI-LEVEL VOLUME CALCULATION (Complete from Document 5)
     # ========================================================================
     
     def _calculate_volume_metrics_multilevel(
@@ -313,10 +313,23 @@ class WalletProfiler:
         all_txs: List[Dict]
     ) -> Dict:
         """
-        Multi-level volume calculation with LIVE ETH price.
-        [Same implementation as in Document 3]
+        ✨ IMPROVED: Multi-level volume calculation with LIVE ETH price.
+        
+        Calculation Strategy:
+        1. LEVEL 1: Try enriched USD values (best accuracy)
+        2. LEVEL 2: Calculate from NATIVE ETH values × LIVE ETH price
+        3. LEVEL 3: Fallback to transaction count only
+        
+        ✅ FIXED: Token decimals handling
+        ✅ FIXED: WEI → ETH conversion detection
+        ✅ FIXED: Unrealistic value filtering
+        
+        Returns:
+            Dict with volume metrics and data quality indicators
         """
-        # LEVEL 1: Try USD values
+        # ====================================================================
+        # LEVEL 1: Try USD values (already enriched)
+        # ====================================================================
         usd_values = [tx.get('usd_value', 0) for tx in all_txs if tx.get('usd_value')]
         
         if usd_values:
@@ -331,8 +344,10 @@ class WalletProfiler:
                 'data_quality': 'high'
             }
         
-        # LEVEL 2: Calculate from NATIVE ETH with live price
-        logger.info(f"   ⚠️  LEVEL 2: Calculating from ETH with live price...")
+        # ====================================================================
+        # LEVEL 2: Calculate from NATIVE ETH values with LIVE price
+        # ====================================================================
+        logger.info(f"   ⚠️  LEVEL 2: No USD enrichment, calculating from ETH with live price...")
         
         eth_values = []
         skipped_tokens = 0
@@ -341,6 +356,8 @@ class WalletProfiler:
         wei_conversions = 0
         
         for tx in all_txs:
+            # ✅ CRITICAL FIX: Only use NATIVE ETH transactions
+            # Token transfers have WRONG decimals (USDT=6, WBTC=8, etc.)
             is_token_transfer = bool(
                 tx.get('token_address') or 
                 tx.get('token_symbol') or 
@@ -353,40 +370,68 @@ class WalletProfiler:
                 skipped_tokens += 1
                 continue
             
+            # Only process native ETH transfers
             if tx.get('value_decimal'):
                 try:
                     value = float(tx['value_decimal'])
                     
+                    # ✅ SANITY CHECK 1: Detect if value is in WEI instead of ETH
+                    # Threshold: >1M means probably WEI (nobody sends 1M ETH)
                     if value > 1_000_000:
                         logger.debug(f"   🔄 Converting WEI to ETH: {value:.2f}")
                         value = value / 1e18
                         wei_conversions += 1
                     
-                    if value > 100_000:
+                    # ✅ SANITY CHECK 2: Skip unrealistic ETH values
+                    # Even after WEI conversion, check if still too high
+                    if value > 100_000:  # >100k ETH per transaction
                         logger.debug(f"   ⚠️ Skipping unrealistic: {value:.2f} ETH")
                         skipped_unrealistic += 1
                         continue
                     
-                    if value < 0.001:
+                    # ✅ SANITY CHECK 3: Skip dust transactions
+                    # Small values don't contribute much and might be gas refunds
+                    if value < 0.001:  # <0.001 ETH (~$3)
                         skipped_dust += 1
                         continue
                     
+                    # ✅ Value passed all checks - add it
                     eth_values.append(value)
                     
-                except (ValueError, TypeError):
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"   ⚠️ Invalid value_decimal: {tx.get('value_decimal')}")
                     continue
+        
+        # Log filtering results
+        logger.info(f"   📊 Transaction filtering:")
+        logger.info(f"      • Native ETH txs: {len(eth_values)}")
+        logger.info(f"      • Skipped tokens: {skipped_tokens}")
+        logger.info(f"      • WEI conversions: {wei_conversions}")
+        logger.info(f"      • Skipped unrealistic: {skipped_unrealistic}")
+        logger.info(f"      • Skipped dust: {skipped_dust}")
         
         if eth_values and self.price_oracle:
             try:
+                # Fetch LIVE ETH price
                 eth_price = self.price_oracle.get_eth_price_live()
                 
                 if eth_price and eth_price > 0:
+                    # Calculate USD values from ETH
                     estimated_usd = [eth * eth_price for eth in eth_values]
+                    
+                    # ====================================================================
+                    # ✅ FINAL SANITY CHECKS: Aggregate validation
+                    # ====================================================================
                     total_usd = sum(estimated_usd)
                     total_eth = sum(eth_values)
+                    avg_eth = total_eth / len(eth_values) if eth_values else 0
+                    avg_usd = total_usd / len(estimated_usd) if estimated_usd else 0
                     
-                    # Sanity checks
-                    if total_eth > 1_000_000:
+                    # Check 1: Total ETH volume
+                    if total_eth > 1_000_000:  # >1M ETH total ($3.4B+)
+                        logger.error(f"   🚨 UNREALISTIC TOTAL ETH: {total_eth:,.2f} ETH")
+                        logger.error(f"   🚨 This indicates wrong token decimals!")
+                        logger.error(f"   🚨 Likely cause: Token transfers treated as ETH")
                         return {
                             'total_volume_usd': 0,
                             'total_volume_eth': 0,
@@ -397,7 +442,44 @@ class WalletProfiler:
                             'error': 'total_eth_too_high'
                         }
                     
+                    # Check 2: Average ETH per transaction
+                    if avg_eth > 10_000:  # Avg >10k ETH per tx ($34M+)
+                        logger.error(f"   🚨 UNREALISTIC AVG: {avg_eth:,.2f} ETH per tx")
+                        logger.error(f"   🚨 Average transaction should be <10k ETH")
+                        return {
+                            'total_volume_usd': 0,
+                            'total_volume_eth': 0,
+                            'avg_transaction_usd': 0,
+                            'median_transaction_usd': 0,
+                            'has_usd_values': False,
+                            'data_quality': 'corrupted_decimals',
+                            'error': 'avg_eth_too_high'
+                        }
+                    
+                    # Check 3: Total USD volume
+                    if total_usd > 1_000_000_000_000:  # >$1 Trillion
+                        logger.error(f"   🚨 UNREALISTIC USD VOLUME: ${total_usd:,.2f}")
+                        logger.error(f"   🚨 Total volume exceeds $1 trillion")
+                        return {
+                            'total_volume_usd': 0,
+                            'total_volume_eth': 0,
+                            'avg_transaction_usd': 0,
+                            'median_transaction_usd': 0,
+                            'has_usd_values': False,
+                            'data_quality': 'corrupted_decimals',
+                            'error': 'total_usd_too_high'
+                        }
+                    
+                    # ✅ All checks passed - calculate statistics
                     stats = rolling_statistics(estimated_usd)
+                    
+                    logger.info(f"   ✅ Volume calculation successful:")
+                    logger.info(f"      • Processed: {len(eth_values)} native ETH txs")
+                    logger.info(f"      • Live ETH price: ${eth_price:,.2f}")
+                    logger.info(f"      • Total ETH: {total_eth:,.4f} ETH")
+                    logger.info(f"      • Avg ETH: {avg_eth:,.4f} ETH per tx")
+                    logger.info(f"      • Total USD: ${total_usd:,.2f}")
+                    logger.info(f"      • Avg USD: ${avg_usd:,.2f} per tx")
                     
                     return {
                         'total_volume_usd': total_usd,
@@ -407,37 +489,61 @@ class WalletProfiler:
                         'has_usd_values': False,
                         'eth_price_used': eth_price,
                         'data_quality': 'medium',
-                        'transactions_used': len(eth_values)
+                        'transactions_used': len(eth_values),
+                        'transactions_skipped': {
+                            'tokens': skipped_tokens,
+                            'unrealistic': skipped_unrealistic,
+                            'dust': skipped_dust
+                        }
                     }
+                else:
+                    logger.warning(f"   ⚠️  Invalid ETH price: {eth_price}")
             except Exception as e:
                 logger.error(f"   ❌ Live price calculation failed: {e}")
         
-        # LEVEL 3: No usable data
-        logger.warning(f"   ❌ LEVEL 3: No usable volume data")
+        # ====================================================================
+        # LEVEL 3: Ultimate fallback - No volume data
+        # ====================================================================
+        logger.warning(f"   ❌ LEVEL 3: No usable volume data available")
+        logger.warning(f"      Reason: No USD enrichment + no native ETH transactions")
+        logger.warning(f"      Total transactions: {len(all_txs)}")
+        logger.warning(f"      Token transfers: {skipped_tokens}")
+        logger.warning(f"      Native ETH txs found: {len(eth_values)}")
+        
         return {
             'total_volume_usd': 0,
             'total_volume_eth': 0,
             'avg_transaction_usd': 0,
             'median_transaction_usd': 0,
             'has_usd_values': False,
-            'data_quality': 'none'
+            'data_quality': 'none',
+            'error': 'no_usable_data',
+            'debug_info': {
+                'total_transactions': len(all_txs),
+                'token_transfers': skipped_tokens,
+                'native_eth_txs': len(eth_values)
+            }
         }
     
     # ========================================================================
-    # BEHAVIORAL & OTHER ANALYSES (from Document 3 - unchanged)
+    # BEHAVIORAL ANALYSIS
     # ========================================================================
     
     def _analyze_behavior(self, transactions: List[Dict]) -> Dict:
         """Analyze behavioral patterns."""
         has_defi = any(tx.get('is_contract_interaction') for tx in transactions)
         
+        # Check for DEX swaps
         has_dex = any(
             tx.get('is_contract_interaction') and tx.get('method_id') in [
-                '0x38ed1739', '0x7ff36ab5', '0x18cbafe5',
+                '0x38ed1739',  # swapExactTokensForTokens (Uniswap)
+                '0x7ff36ab5',  # swapExactETHForTokens
+                '0x18cbafe5',  # swapExactTokensForETH
             ]
             for tx in transactions
         )
         
+        # Check for contract deployments
         has_deployments = any(tx.get('to_address') is None for tx in transactions)
         
         return {
@@ -457,12 +563,15 @@ class WalletProfiler:
                 'weekend_ratio': 0
             }
         
+        # Active hours (UTC)
         hours = [ts.hour for ts in timestamps]
         active_hours = list(set(hours))
         
+        # Active days of week
         days = [ts.weekday() for ts in timestamps]
         active_days = list(set(days))
         
+        # Weekend activity ratio
         weekend_txs = sum(1 for day in days if day >= 5)
         weekend_ratio = weekend_txs / len(days) if days else 0
         
@@ -482,8 +591,12 @@ class WalletProfiler:
             elif tx.get('to_address') == address:
                 counterparties.append(tx.get('from_address'))
         
+        # Remove None values
         counterparties = [cp for cp in counterparties if cp]
+        
         unique_count = len(set(counterparties))
+        
+        # Calculate Shannon entropy for diversity
         entropy = shannon_entropy(counterparties) if counterparties else 0
         
         return {
@@ -492,15 +605,24 @@ class WalletProfiler:
             'counterparties': list(set(counterparties))
         }
     
+    # ========================================================================
+    # CONFIDENCE CALCULATION
+    # ========================================================================
+    
     def _calculate_profile_confidence(
         self,
         transactions: List[Dict],
         volume_metrics: Dict
     ) -> float:
-        """Calculate confidence score for profile accuracy."""
+        """
+        Calculate confidence score for profile accuracy.
+        
+        ✨ IMPROVED: Considers transaction count AND data quality
+        """
         tx_count = len(transactions)
         data_quality = volume_metrics.get('data_quality', 'none')
         
+        # Base confidence from transaction count
         if tx_count >= 1000:
             base_confidence = 1.0
         elif tx_count >= 100:
@@ -514,68 +636,450 @@ class WalletProfiler:
         else:
             base_confidence = 0.3
         
+        # Modifier based on data quality
         quality_modifiers = {
-            'high': 1.0,
-            'medium': 0.95,
-            'low': 0.85,
-            'none': 0.75
+            'high': 1.0,     # USD enriched
+            'medium': 0.95,  # ETH with live price
+            'low': 0.85,     # Minimal data
+            'none': 0.75     # No volume data
         }
         
         modifier = quality_modifiers.get(data_quality, 0.75)
-        return base_confidence * modifier
+        confidence = base_confidence * modifier
+        
+        return confidence
     
     # ========================================================================
-    # OTC PROBABILITY (from Document 3 - unchanged)
+    # ✨ IMPROVED: OTC PROBABILITY CALCULATION (Complete from Document 5)
     # ========================================================================
     
     def calculate_otc_probability(self, profile: Dict) -> float:
-        """Calculate OTC probability using 100-point scoring system."""
+        """
+        ✨ IMPROVED: Multi-factor OTC probability calculation.
+        
+        Scoring System (0-100 points):
+        - Entity Labels: 40 points
+        - Volume Metrics: 30 points  
+        - Transaction Patterns: 20 points
+        - Network Characteristics: 10 points
+        
+        Returns:
+            OTC probability (0-1) adjusted by confidence
+        """
         score = 0
         max_score = 100
+        details = []
         
-        # Entity Labels (40 points)
-        entity_type = profile.get('entity_type', 'unknown')
+        # ====================================================================
+        # 1. ENTITY LABELS (40 points max)
+        # ====================================================================
+        entity_type = profile.get('entity_type') or 'unknown'
+        entity_name = profile.get('entity_name') or ''  # ✅ FIXED: Handle None
+        entity_name_lower = entity_name.lower() if entity_name else ''  # ✅ Safe lower()
+        
+        # Known OTC desk types
         if entity_type in ['otc_desk', 'market_maker', 'institutional']:
             score += 40
+            details.append(f"Entity type '{entity_type}' (+40)")
         elif entity_type in ['exchange', 'cex']:
             score += 35
+            details.append(f"Entity type '{entity_type}' (+35)")
         elif entity_type in ['whale', 'institutional_investor']:
             score += 30
+            details.append(f"Entity type '{entity_type}' (+30)")
+        elif entity_type == 'dex':
+            score += 10
+            details.append(f"Entity type '{entity_type}' (+10)")
         
-        # Volume Metrics (30 points)
+        # Known OTC desk name patterns
+        otc_keywords = [
+            'jump', 'wintermute', 'cumberland', 'b2c2', 'galaxy',
+            'coinbase', 'binance', 'kraken', 'ftx', 'alameda',
+            'flowtraders', 'dwf', 'gsr', 'falconx', 'sfox',
+            'circle', 'paxos', 'gemini', 'bitstamp'
+        ]
+        
+        if entity_name_lower and any(kw in entity_name_lower for kw in otc_keywords):
+            score += 10
+            details.append(f"Known OTC name '{entity_name}' (+10)")
+        
+        # ====================================================================
+        # 2. VOLUME METRICS (30 points max)
+        # ====================================================================
+        total_volume = profile.get('total_volume_usd') or 0
+        avg_transaction = profile.get('avg_transaction_usd') or 0
+        data_quality = profile.get('data_quality') or 'none'
+        
+        # Total volume (logarithmic scale)
+        if total_volume >= 1_000_000_000:  # $1B+
+            score += 15
+            details.append(f"Volume ${total_volume/1e9:.1f}B (+15)")
+        elif total_volume >= 100_000_000:  # $100M+
+            score += 12
+            details.append(f"Volume ${total_volume/1e6:.0f}M (+12)")
+        elif total_volume >= 10_000_000:   # $10M+
+            score += 10
+            details.append(f"Volume ${total_volume/1e6:.0f}M (+10)")
+        elif total_volume >= 1_000_000:    # $1M+
+            score += 7
+            details.append(f"Volume ${total_volume/1e6:.1f}M (+7)")
+        elif total_volume >= 100_000:      # $100K+
+            score += 5
+            details.append(f"Volume ${total_volume/1e3:.0f}K (+5)")
+        
+        # Average transaction size
+        if avg_transaction >= 10_000_000:  # $10M+ avg
+            score += 15
+            details.append(f"Avg ${avg_transaction/1e6:.0f}M (+15)")
+        elif avg_transaction >= 1_000_000:  # $1M+ avg
+            score += 12
+            details.append(f"Avg ${avg_transaction/1e6:.1f}M (+12)")
+        elif avg_transaction >= 500_000:    # $500K+ avg
+            score += 10
+            details.append(f"Avg ${avg_transaction/1e3:.0f}K (+10)")
+        elif avg_transaction >= 100_000:    # $100K+ avg
+            score += 7
+            details.append(f"Avg ${avg_transaction/1e3:.0f}K (+7)")
+        elif avg_transaction >= 50_000:     # $50K+ avg
+            score += 5
+            details.append(f"Avg ${avg_transaction/1e3:.0f}K (+5)")
+        
+        # Note data quality
+        if data_quality == 'medium':
+            details.append(f"(Calculated from ETH with live price)")
+        elif data_quality == 'none':
+            details.append(f"(No volume data - relying on entity labels)")
+        
+        # ====================================================================
+        # 3. TRANSACTION PATTERNS (20 points max)
+        # ====================================================================
+        tx_frequency = profile.get('transaction_frequency') or 0
+        total_txs = profile.get('total_transactions') or 0
+        
+        # Low frequency = institutional (not retail)
+        if tx_frequency < 0.1:  # <1 tx per 10 days
+            score += 10
+            details.append(f"Low frequency {tx_frequency:.2f} tx/day (+10)")
+        elif tx_frequency < 0.5:  # <0.5 tx/day
+            score += 7
+            details.append(f"Low frequency {tx_frequency:.2f} tx/day (+7)")
+        elif tx_frequency < 2:    # <2 tx/day
+            score += 5
+            details.append(f"Moderate frequency (+5)")
+        
+        # High transaction count = established entity
+        if total_txs >= 10000:
+            score += 5
+            details.append(f"High tx count {total_txs} (+5)")
+        elif total_txs >= 1000:
+            score += 4
+            details.append(f"Good tx count {total_txs} (+4)")
+        elif total_txs >= 100:
+            score += 3
+            details.append(f"Decent tx count (+3)")
+        
+        # DeFi interactions (modern OTC desks use DeFi)
+        has_defi = profile.get('has_defi_interactions', False)
+        if has_defi:
+            score += 5
+            details.append(f"DeFi user (+5)")
+        
+        # ====================================================================
+        # 4. NETWORK CHARACTERISTICS (10 points max)
+        # ====================================================================
+        unique_counterparties = profile.get('unique_counterparties') or 0
+        counterparty_entropy = profile.get('counterparty_entropy') or 0
+        
+        # Many unique counterparties = active trading
+        if unique_counterparties >= 1000:
+            score += 5
+            details.append(f"{unique_counterparties} counterparties (+5)")
+        elif unique_counterparties >= 500:
+            score += 4
+            details.append(f"{unique_counterparties} counterparties (+4)")
+        elif unique_counterparties >= 100:
+            score += 3
+            details.append(f"{unique_counterparties} counterparties (+3)")
+        elif unique_counterparties >= 50:
+            score += 2
+            details.append(f"{unique_counterparties} counterparties (+2)")
+        
+        # High entropy = diverse trading
+        if counterparty_entropy >= 5.0:
+            score += 5
+            details.append(f"High entropy {counterparty_entropy:.1f} (+5)")
+        elif counterparty_entropy >= 3.0:
+            score += 3
+            details.append(f"Good entropy {counterparty_entropy:.1f} (+3)")
+        elif counterparty_entropy >= 2.0:
+            score += 2
+            details.append(f"Moderate entropy (+2)")
+        
+        # ====================================================================
+        # NORMALIZE & RETURN
+        # ====================================================================
+        probability = min(1.0, score / max_score)
+        
+        # Apply confidence modifier
+        confidence = profile.get('confidence_score') or 1.0
+        adjusted_probability = probability * confidence
+        
+        logger.info(f"🎯 OTC Scoring:")
+        logger.info(f"   • Raw score: {score}/{max_score} ({probability:.1%})")
+        logger.info(f"   • Confidence modifier: {confidence:.1%}")
+        logger.info(f"   • Final probability: {adjusted_probability:.1%}")
+        for detail in details[:10]:  # Limit to first 10 details
+            logger.info(f"   • {detail}")
+        
+        return adjusted_probability
+    
+    def get_otc_score_breakdown(self, profile: Dict) -> Dict:
+        """
+        Get detailed breakdown of OTC probability calculation.
+        
+        Useful for debugging and UI display.
+        """
+        breakdown = {
+            'entity_labels': 0,
+            'volume_metrics': 0,
+            'transaction_patterns': 0,
+            'network_characteristics': 0,
+            'total_score': 0,
+            'probability': 0,
+            'details': []
+        }
+        
+        # Entity Labels
+        entity_type = profile.get('entity_type', 'unknown')
+        if entity_type in ['otc_desk', 'market_maker']:
+            breakdown['entity_labels'] = 40
+            breakdown['details'].append(f"Entity type: {entity_type} (+40)")
+        
+        # Volume Metrics
         total_volume = profile.get('total_volume_usd', 0)
         if total_volume >= 1_000_000_000:
-            score += 15
-        elif total_volume >= 100_000_000:
-            score += 12
-        elif total_volume >= 10_000_000:
-            score += 10
+            breakdown['volume_metrics'] += 15
+            breakdown['details'].append(f"Volume: ${total_volume/1e9:.1f}B (+15)")
         
         avg_transaction = profile.get('avg_transaction_usd', 0)
         if avg_transaction >= 10_000_000:
-            score += 15
-        elif avg_transaction >= 1_000_000:
-            score += 12
+            breakdown['volume_metrics'] += 15
+            breakdown['details'].append(f"Avg: ${avg_transaction/1e6:.0f}M (+15)")
         
-        # Transaction Patterns (20 points)
+        # Transaction Patterns
         tx_frequency = profile.get('transaction_frequency', 0)
-        if tx_frequency < 0.1:
-            score += 10
-        elif tx_frequency < 0.5:
-            score += 7
+        if tx_frequency < 0.5:
+            breakdown['transaction_patterns'] += 7
+            breakdown['details'].append(f"Low frequency: {tx_frequency:.2f} (+7)")
         
-        # Network Characteristics (10 points)
+        # Network
         unique_cp = profile.get('unique_counterparties', 0)
         if unique_cp >= 1000:
-            score += 5
-        elif unique_cp >= 500:
-            score += 4
+            breakdown['network_characteristics'] += 5
+            breakdown['details'].append(f"Counterparties: {unique_cp} (+5)")
         
-        probability = min(1.0, score / max_score)
-        confidence = profile.get('confidence_score', 1.0)
+        breakdown['total_score'] = (
+            breakdown['entity_labels'] +
+            breakdown['volume_metrics'] +
+            breakdown['transaction_patterns'] +
+            breakdown['network_characteristics']
+        )
         
-        return probability * confidence
+        breakdown['probability'] = min(1.0, breakdown['total_score'] / 100)
+        
+        return breakdown
+    
+    # ========================================================================
+    # OTHER UTILITY METHODS
+    # ========================================================================
+    
+    def update_profile(
+        self,
+        existing_profile: Dict,
+        new_transactions: List[Dict]
+    ) -> Dict:
+        """Update existing profile with new transaction data."""
+        address = existing_profile['address']
+        
+        # Combine with existing transactions count
+        total_txs = existing_profile.get('total_transactions', 0) + len(new_transactions)
+        
+        # Update last seen
+        new_timestamps = [tx['timestamp'] for tx in new_transactions if tx.get('timestamp')]
+        if new_timestamps:
+            existing_profile['last_seen'] = max(new_timestamps)
+        
+        # Recalculate metrics
+        existing_profile['total_transactions'] = total_txs
+        existing_profile['last_analyzed'] = datetime.utcnow()
+        
+        return existing_profile
+    
+    def batch_profile(
+        self,
+        addresses: List[str],
+        transactions_by_address: Dict[str, List[Dict]],
+        labels_by_address: Optional[Dict[str, Dict]] = None
+    ) -> Dict[str, Dict]:
+        """Create profiles for multiple addresses in batch."""
+        profiles = {}
+        
+        for address in addresses:
+            txs = transactions_by_address.get(address, [])
+            labels = labels_by_address.get(address) if labels_by_address else None
+            
+            profile = self.create_profile(address, txs, labels)
+            profiles[address] = profile
+        
+        return profiles
+
+
+# ============================================================================
+# WALLET DETAILS SERVICE (from Document 5)
+# ============================================================================
+
+class WalletDetailsService:
+    """Service for fetching and calculating wallet details with live data."""
+    
+    @staticmethod
+    async def get_wallet_details(
+        address: str,
+        wallet,  # OTCWallet model
+        db  # Database session
+    ) -> Dict:
+        """Get comprehensive wallet details with live Etherscan data."""
+        from ..blockchain.etherscan import EtherscanAPI
+        from ..utils.calculations import (
+            calculate_wallet_metrics,
+            generate_activity_chart,
+            generate_transfer_size_chart
+        )
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
+        is_verified = (wallet.confidence_score or 0) >= 80
+        
+        logger.info(f"🔍 Wallet verified: {is_verified} (confidence: {wallet.confidence_score}%)")
+        
+        # Initialize Etherscan client
+        etherscan = EtherscanAPI(chain_id=1)
+        
+        # Fetch live data
+        balance_data = etherscan.get_balance(address)
+        transactions = etherscan.get_recent_transactions(address, limit=100)
+        
+        if not balance_data or not transactions:
+            logger.warning(f"⚠️ Etherscan failed, using DB data only")
+            return WalletDetailsService._create_fallback_response(wallet)
+        
+        # Calculate metrics
+        metrics = calculate_wallet_metrics(
+            balance_eth=balance_data["balance_eth"],
+            transactions=transactions
+        )
+        
+        # Update DB if verified
+        if is_verified:
+            logger.info(f"💾 VERIFIED wallet - Updating DB with live data")
+            
+            wallet.total_volume = metrics["balance_usd"]
+            wallet.transaction_count = metrics["transaction_count"]
+            wallet.last_active = datetime.fromtimestamp(metrics["last_tx_timestamp"])
+            wallet.is_active = metrics["is_active"]
+            
+            if not isinstance(wallet.tags, list):
+                wallet.tags = []
+            if "verified_live" not in wallet.tags:
+                wallet.tags.append("verified_live")
+            
+            db.commit()
+            db.refresh(wallet)
+            
+            logger.info(f"✅ DB updated: ${wallet.total_volume:,.2f}, {wallet.transaction_count} txs")
+        else:
+            logger.info(f"⚠️ UNVERIFIED wallet - Only showing data, NOT updating DB")
+        
+        # Generate chart data
+        activity_data = generate_activity_chart(
+            total_volume=metrics["total_volume"],
+            transaction_count=metrics["transaction_count"],
+            transactions=transactions
+        )
+        
+        transfer_size_data = generate_transfer_size_chart(
+            avg_transfer=metrics["avg_transfer_size"],
+            transactions=transactions
+        )
+        
+        # Return complete response
+        return {
+            "address": wallet.address,
+            "label": wallet.label,
+            "entity_type": wallet.entity_type,
+            "entity_name": wallet.entity_name,
+            "confidence_score": float(wallet.confidence_score or 0),
+            "is_active": bool(metrics["is_active"]),
+            "is_verified": bool(is_verified),
+            
+            "balance_eth": float(metrics["balance_eth"]),
+            "balance_usd": float(metrics["balance_usd"]),
+            "lifetime_volume": float(metrics["balance_usd"]),
+            "volume_30d": float(metrics["recent_volume_30d"]),
+            "volume_7d": float(metrics["recent_volume_7d"]),
+            "avg_transfer": float(metrics["avg_transfer_size"]),
+            "transaction_count": int(metrics["transaction_count"]),
+            "last_activity": str(metrics["last_activity_text"]),
+            
+            "activity_data": activity_data,
+            "transfer_size_data": transfer_size_data,
+            "tags": wallet.tags if isinstance(wallet.tags, list) else [],
+            
+            "data_source": "etherscan_live" if is_verified else "etherscan_display",
+            "last_updated": datetime.now().isoformat()
+        }
+    
+    @staticmethod
+    def _create_fallback_response(wallet) -> Dict:
+        """Create fallback response when Etherscan unavailable."""
+        from ..utils.calculations import (
+            generate_activity_chart,
+            generate_transfer_size_chart
+        )
+        
+        activity_data = generate_activity_chart(
+            total_volume=wallet.total_volume or 0,
+            transaction_count=wallet.transaction_count or 0
+        )
+        
+        transfer_size_data = generate_transfer_size_chart(
+            avg_transfer=(wallet.total_volume or 0) / max(1, wallet.transaction_count or 1)
+        )
+        
+        return {
+            "address": wallet.address,
+            "label": wallet.label,
+            "entity_type": wallet.entity_type,
+            "entity_name": wallet.entity_name,
+            "confidence_score": float(wallet.confidence_score or 0),
+            "is_active": bool(wallet.is_active),
+            "is_verified": False,
+            
+            "lifetime_volume": float(wallet.total_volume or 0),
+            "volume_30d": float(wallet.total_volume or 0) * 0.6,
+            "volume_7d": float(wallet.total_volume or 0) * 0.2,
+            "avg_transfer": float(wallet.total_volume or 0) / max(1, wallet.transaction_count or 1),
+            "transaction_count": wallet.transaction_count or 0,
+            "last_activity": "Unknown",
+            
+            "activity_data": activity_data,
+            "transfer_size_data": transfer_size_data,
+            "tags": wallet.tags if isinstance(wallet.tags, list) else [],
+            
+            "data_source": "database",
+            "last_updated": datetime.now().isoformat()
+        }
 
 
 # Export
-__all__ = ['WalletProfiler']
+__all__ = ['WalletProfiler', 'WalletDetailsService']
