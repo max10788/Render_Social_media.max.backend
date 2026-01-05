@@ -160,10 +160,11 @@ class SimpleLastTxAnalyzer:
         """
         Führe volle OTC-Analyse auf Counterparty durch.
         
-        ✨ NEW STRATEGY - ALWAYS QUICK STATS FIRST:
-        1. Hole Quick Stats FIRST (um TX Count zu wissen)
-        2. Wenn Quick Stats verfügbar → NUTZE ES direkt (15x schneller)
-        3. Nur bei Fehler → Fallback zu Transaction Processing
+        ✨ NEW STRATEGY - MORALIS ERC20 TRANSFERS:
+        1. Hole ERC20 Transfers via Moralis API
+        2. Berechne Volume aus tatsächlichen Transfers (USDT/USDC incoming)
+        3. Analysiere Counterparty-Muster
+        4. Fallback zu Transaction Processing wenn Moralis fehlt
         
         Args:
             counterparty_address: Adresse zum Analysieren
@@ -175,68 +176,150 @@ class SimpleLastTxAnalyzer:
         
         try:
             # ================================================================
-            # ✨ PRIORITY 1: ALWAYS TRY QUICK STATS FIRST
+            # ✨ PRIORITY 1: MORALIS ERC20 TRANSFERS API
             # ================================================================
             
-            if self.wallet_stats_api:
-                logger.info(f"   🚀 PRIORITY 1: Trying Quick Stats API (ALWAYS preferred)")
+            if self.wallet_stats_api and hasattr(self.wallet_stats_api, 'get_erc20_transfers'):
+                logger.info(f"   🚀 PRIORITY 1: Fetching ERC20 transfers via Moralis")
                 
-                quick_stats = self.wallet_stats_api.get_quick_stats(counterparty_address)
-                tx_count = quick_stats.get('total_transactions', 0)
+                # Hole ERC20 Transfers (letzte 100)
+                transfers = self.wallet_stats_api.get_erc20_transfers(
+                    counterparty_address,
+                    limit=100
+                )
                 
-                logger.info(f"   📊 Quick stats result: {tx_count} transactions")
-                
-                # ============================================================
-                # ✨ STRATEGY A: Use Quick Stats (if available)
-                # ============================================================
-                
-                if quick_stats.get('source') != 'none':
-                    logger.info(f"   ✅ Quick Stats available from {quick_stats['source']}")
-                    logger.info(f"   ⚡ Using aggregated data (NO transaction processing)")
+                if transfers and len(transfers) > 0:
+                    logger.info(f"   📊 Found {len(transfers)} ERC20 transfers")
                     
-                    # Create profile from Quick Stats (no TX processing needed!)
-                    labels = {}
-                    profile = self.wallet_profiler._create_profile_from_quick_stats(
-                        counterparty_address,
-                        quick_stats,
-                        labels,
-                        tx_count
-                    )
+                    # Berechne Volume aus Transfers
+                    total_volume_usd = 0
+                    incoming_stables = 0  # USDT/USDC incoming
+                    outgoing_tokens = 0   # Andere Token outgoing
+                    unique_counterparties = set()
+                    token_diversity = set()
                     
-                    # Calculate OTC Probability
-                    otc_probability = self.wallet_profiler.calculate_otc_probability(profile)
-                    confidence = otc_probability * 100
+                    normalized_address = counterparty_address.lower().strip()
+                    
+                    for transfer in transfers:
+                        from_addr = str(transfer.get('from_address', '')).lower().strip()
+                        to_addr = str(transfer.get('to_address', '')).lower().strip()
+                        token_symbol = transfer.get('token_symbol', '')
+                        value = float(transfer.get('value', 0) or 0)
+                        decimals = int(transfer.get('token_decimals', 18) or 18)
+                        
+                        # Konvertiere value (Wei zu Decimal)
+                        value_decimal = value / (10 ** decimals)
+                        
+                        # USD Value für Stablecoins (USDT, USDC, DAI)
+                        if token_symbol in ['USDT', 'USDC', 'DAI', 'BUSD']:
+                            value_usd = value_decimal
+                        else:
+                            # Für andere Token: Nutze Preis wenn verfügbar
+                            value_usd = value_decimal * 1  # Placeholder, kann mit price_oracle erweitert werden
+                        
+                        total_volume_usd += value_usd
+                        
+                        # Analyse: Incoming Stablecoins?
+                        if to_addr == normalized_address and token_symbol in ['USDT', 'USDC', 'DAI']:
+                            incoming_stables += value_usd
+                        
+                        # Analyse: Outgoing Tokens?
+                        if from_addr == normalized_address and token_symbol not in ['USDT', 'USDC', 'DAI']:
+                            outgoing_tokens += value_usd
+                        
+                        # Track Counterparties
+                        if from_addr == normalized_address:
+                            unique_counterparties.add(to_addr)
+                        elif to_addr == normalized_address:
+                            unique_counterparties.add(from_addr)
+                        
+                        # Track Token Diversity
+                        token_diversity.add(token_symbol)
+                    
+                    # OTC Desk Merkmale berechnen
+                    otc_score = 0.0
+                    
+                    # 1. Hohe USDT/USDC Inflows (40% weight)
+                    if incoming_stables > 1_000_000:  # > $1M
+                        otc_score += 0.4
+                    elif incoming_stables > 100_000:  # > $100k
+                        otc_score += 0.3
+                    elif incoming_stables > 10_000:   # > $10k
+                        otc_score += 0.2
+                    
+                    # 2. Diverse Token Outflows (30% weight)
+                    if len(token_diversity) > 20:
+                        otc_score += 0.3
+                    elif len(token_diversity) > 10:
+                        otc_score += 0.2
+                    elif len(token_diversity) > 5:
+                        otc_score += 0.1
+                    
+                    # 3. Viele Counterparties (20% weight)
+                    if len(unique_counterparties) > 50:
+                        otc_score += 0.2
+                    elif len(unique_counterparties) > 20:
+                        otc_score += 0.15
+                    elif len(unique_counterparties) > 10:
+                        otc_score += 0.1
+                    
+                    # 4. High Volume per Transfer (10% weight)
+                    avg_transfer = total_volume_usd / len(transfers)
+                    if avg_transfer > 100_000:
+                        otc_score += 0.1
+                    elif avg_transfer > 10_000:
+                        otc_score += 0.05
+                    
+                    confidence = otc_score * 100
+                    
+                    # Erstelle Profile
+                    profile = {
+                        'address': counterparty_address,
+                        'total_volume_usd': total_volume_usd,
+                        'incoming_stablecoins_usd': incoming_stables,
+                        'outgoing_tokens_usd': outgoing_tokens,
+                        'unique_counterparties': len(unique_counterparties),
+                        'token_diversity': len(token_diversity),
+                        'transfer_count': len(transfers),
+                        'avg_transfer_usd': avg_transfer,
+                        'first_seen': transfers[-1].get('block_timestamp') if transfers else None,
+                        'last_seen': transfers[0].get('block_timestamp') if transfers else None,
+                        'data_quality': 'high',
+                        'otc_indicators': {
+                            'high_stable_inflows': incoming_stables > 100_000,
+                            'diverse_tokens': len(token_diversity) > 10,
+                            'many_counterparties': len(unique_counterparties) > 20,
+                            'large_transfers': avg_transfer > 10_000
+                        }
+                    }
                     
                     result = {
                         'address': counterparty_address,
                         'confidence': confidence,
-                        'total_volume': quick_stats.get('total_value_usd', 0),
-                        'transaction_count': tx_count,
-                        'avg_transaction': quick_stats.get('total_value_usd', 0) / max(1, tx_count),
-                        'first_seen': profile.get('first_seen'),
-                        'last_seen': profile.get('last_seen'),
+                        'total_volume': total_volume_usd,
+                        'transaction_count': len(transfers),
+                        'avg_transaction': avg_transfer,
+                        'first_seen': profile['first_seen'],
+                        'last_seen': profile['last_seen'],
                         'profile': profile,
-                        'strategy': 'quick_stats',  # ✅ Mark which strategy was used
-                        'stats_source': quick_stats.get('source'),
-                        'data_quality': quick_stats.get('data_quality', 'medium')
+                        'strategy': 'moralis_erc20_transfers',
+                        'stats_source': 'moralis_api',
+                        'data_quality': 'high'
                     }
                     
                     logger.info(
-                        f"✅ Quick Stats Analysis complete: "
-                        f"{confidence:.1f}% OTC probability, "
-                        f"${result['total_volume']:,.0f} volume "
-                        f"(source: {quick_stats['source']})"
+                        f"✅ Moralis ERC20 Analysis: "
+                        f"{confidence:.1f}% OTC, "
+                        f"${total_volume_usd:,.0f} volume, "
+                        f"${incoming_stables:,.0f} stable inflows"
                     )
                     
                     return result
                 
                 else:
-                    # Quick Stats unavailable - fallback
-                    logger.warning(f"   ⚠️  Quick Stats unavailable from all APIs")
-                    logger.warning(f"   ⚠️  FALLBACK: Will process transactions manually")
+                    logger.warning(f"   ⚠️ No ERC20 transfers found via Moralis")
             else:
-                logger.warning(f"   ⚠️  WalletStatsAPI not available")
-                logger.warning(f"   ⚠️  FALLBACK: Will process transactions manually")
+                logger.warning(f"   ⚠️ Moralis ERC20 API not available")
             
             # ================================================================
             # ✨ STRATEGY B: FALLBACK - Transaction Processing
@@ -244,7 +327,7 @@ class SimpleLastTxAnalyzer:
             
             logger.info(f"   📊 FALLBACK: Processing transactions manually")
             
-            # 1. Hole Transaktionen der Counterparty
+            # 1. Hole Transaktionen
             transactions = self.transaction_extractor.extract_wallet_transactions(
                 counterparty_address,
                 include_internal=True,
@@ -262,7 +345,7 @@ class SimpleLastTxAnalyzer:
                 max_transactions=30
             )
             
-            # 3. Erstelle Profil (wird automatisch versuchen Quick Stats zu nutzen)
+            # 3. Erstelle Profil
             profile = self.wallet_profiler.create_profile(
                 counterparty_address,
                 transactions,
@@ -282,14 +365,14 @@ class SimpleLastTxAnalyzer:
                 'first_seen': profile.get('first_seen'),
                 'last_seen': profile.get('last_seen'),
                 'profile': profile,
-                'transactions': transactions[:100],  # Top 100 transactions
-                'strategy': 'transaction_processing',  # ✅ Mark which strategy was used
+                'transactions': transactions[:100],
+                'strategy': 'transaction_processing',
                 'data_quality': profile.get('data_quality', 'unknown')
             }
             
             logger.info(
-                f"✅ Transaction Processing complete: "
-                f"{confidence:.1f}% OTC probability, "
+                f"✅ Transaction Processing: "
+                f"{confidence:.1f}% OTC, "
                 f"${result['total_volume']:,.0f} volume"
             )
             
