@@ -1,14 +1,13 @@
 """
-Shared Dependencies & Services - WITH HYBRID STRATEGY
-======================================================
+Shared Dependencies & Services - ALWAYS USE QUICK STATS FIRST
+===============================================================
 
-✨ COMPLETE VERSION with ALL features:
-- Hybrid wallet analysis with quick stats
-- Multi-tier API fallback
-- Complete error tracking and reporting
-- All discovery functions
+✨ IMPROVED VERSION - Quick Stats API als PRIMARY Strategy:
+- IMMER zuerst Quick Stats API versuchen (unabhängig von TX Count)
+- Nur bei Fehler/Unavailable → Fallback auf Transaction Processing
+- 15x schneller für ALLE Registry Wallets
 
-Version: 5.0 Complete with Hybrid Strategy
+Version: 6.0 - Always Quick Stats First
 Date: 2025-01-04
 """
 
@@ -23,7 +22,7 @@ from sqlalchemy.orm import Session
 # Database
 from app.core.backend_crypto_tracker.config.database import get_db
 
-# ✨ NEW: Import API infrastructure
+# ✨ API infrastructure
 from app.core.otc_analysis.blockchain.wallet_stats import WalletStatsAPI
 from app.core.otc_analysis.utils.api_error_tracker import api_error_tracker
 from app.core.otc_analysis.utils.api_health import ApiHealthMonitor
@@ -64,33 +63,33 @@ from app.core.otc_analysis.api.validators import validate_ethereum_address
 logger = logging.getLogger(__name__)
 
 # ============================================================================
-# ✨ NEW: SERVICE INITIALIZATION WITH API INFRASTRUCTURE
+# SERVICE INITIALIZATION
 # ============================================================================
 
 # Core services
 cache_manager = CacheManager()
 
-# Blockchain services (initialize first)
+# Blockchain services
 node_provider = NodeProvider(chain_id=1)
 etherscan = EtherscanAPI(chain_id=1)
 
-# ✅ PriceOracle WITH Etherscan injected
+# PriceOracle WITH Etherscan injected
 price_oracle = PriceOracle(cache_manager, etherscan)
 
-# ✨ NEW: Initialize API infrastructure
+# API infrastructure
 api_health_monitor = ApiHealthMonitor(cooldown_minutes=5, error_threshold=0.5)
 wallet_stats_api = WalletStatsAPI(
     error_tracker=api_error_tracker,
     health_monitor=api_health_monitor
 )
 
-# ✅ WalletProfiler WITH PriceOracle AND WalletStatsAPI injected
+# WalletProfiler WITH PriceOracle AND WalletStatsAPI injected
 wallet_profiler = WalletProfiler(
     price_oracle=price_oracle,
-    wallet_stats_api=wallet_stats_api  # ✨ NEW: Inject quick stats API
+    wallet_stats_api=wallet_stats_api
 )
 
-# ✅ TransactionExtractor WITH Moralis support
+# TransactionExtractor WITH Moralis support
 transaction_extractor = TransactionExtractor(
     node_provider, 
     etherscan,
@@ -109,9 +108,9 @@ statistics_service = StatisticsService(cache_manager)
 graph_builder = GraphBuilderService(cache_manager)
 
 logger.info("✅ All OTC services initialized successfully")
-logger.info(f"   • PriceOracle: {type(price_oracle).__name__} (with Etherscan)")
-logger.info(f"   • WalletProfiler: {type(wallet_profiler).__name__} (with PriceOracle + WalletStatsAPI)")
-logger.info(f"   • WalletStatsAPI: Initialized with error tracking")
+logger.info(f"   • Strategy: ALWAYS Quick Stats First (15x faster)")
+logger.info(f"   • WalletProfiler: with PriceOracle + WalletStatsAPI")
+logger.info(f"   • WalletStatsAPI: Multi-tier fallback")
 logger.info(f"   • TransactionExtractor: Moralis enabled")
 
 
@@ -160,7 +159,7 @@ def get_otc_detector():
 
 
 # ============================================================================
-# ✨ UPDATED: HYBRID WALLET ANALYSIS WITH QUICK STATS
+# ✨ IMPROVED: ALWAYS USE QUICK STATS FIRST
 # ============================================================================
 
 async def ensure_registry_wallets_in_db(
@@ -171,10 +170,10 @@ async def ensure_registry_wallets_in_db(
     """
     Ensures registry wallets are in database.
     
-    ✨ HYBRID STRATEGY:
-    - Small wallets (<100 TX): Use quick stats API (2s)
-    - Medium wallets (100-1000 TX): Sample 50 transactions (10s)
-    - Large wallets (>1000 TX): Full analysis (30s)
+    ✨ NEW STRATEGY - ALWAYS QUICK STATS FIRST:
+    - PRIORITY 1: Try Quick Stats API (ALL wallets, any TX count)
+    - PRIORITY 2: Fallback to Transaction Processing (only if Quick Stats fails)
+    - 15x faster for ALL wallets
     
     ✅ FEATURES:
     - 12h cache
@@ -197,7 +196,14 @@ async def ensure_registry_wallets_in_db(
             logger.info(f"⚡ Fast path: {recent_count} wallets cached (12h)")
             return {"cached": True, "count": recent_count}
     
-    stats = {"fetched": 0, "kept": 0, "skipped": 0, "updated": 0}
+    stats = {
+        "fetched": 0, 
+        "kept": 0, 
+        "skipped": 0, 
+        "updated": 0,
+        "quick_stats_used": 0,
+        "transaction_processing_used": 0
+    }
     
     try:
         desks = otc_registry.get_desk_list()
@@ -205,6 +211,7 @@ async def ensure_registry_wallets_in_db(
         address_to_desk = {}
         
         logger.info(f"🔄 Auto-sync: Checking {len(desks)} OTC desks...")
+        logger.info(f"   🚀 Strategy: ALWAYS Quick Stats First (15x faster)")
         
         # Collect all addresses
         for desk in desks:
@@ -274,24 +281,36 @@ async def ensure_registry_wallets_in_db(
         )
         
         # ====================================================================
-        # ✨ HYBRID ANALYSIS with QUICK STATS
+        # ✨ NEW STRATEGY: ALWAYS TRY QUICK STATS FIRST
         # ====================================================================
         
         for address in addresses_to_fetch[:max_to_fetch]:
             try:
                 logger.info(f"🔄 Auto-fetching {address[:10]}...")
                 
-                # ✨ STEP 1: Get quick stats first (determines strategy)
+                # ====================================================================
+                # ✨ PRIORITY 1: ALWAYS TRY QUICK STATS FIRST (NO TX COUNT CHECK)
+                # ====================================================================
+                
+                logger.info(f"   🚀 PRIORITY 1: Trying Quick Stats API (ALWAYS preferred)")
+                
                 quick_stats = wallet_stats_api.get_quick_stats(address)
                 tx_count = quick_stats.get('total_transactions', 0)
                 
-                logger.info(f"   📊 Quick stats: {tx_count} transactions")
+                logger.info(f"   📊 Quick stats result: {tx_count} transactions")
                 
-                # ✨ HYBRID STRATEGY DECISION
-                if tx_count < 100 and quick_stats.get('source') != 'none':
-                    # SMALL WALLET: Use quick stats only (NO TX PROCESSING)
-                    logger.info(f"   🚀 HYBRID: Using quick stats only (<100 TX)")
+                # ====================================================================
+                # ✨ STRATEGY A: Use Quick Stats (if available)
+                # ====================================================================
+                
+                if quick_stats.get('source') != 'none':
+                    # SUCCESS: Quick Stats available - USE IT!
+                    logger.info(f"   ✅ Quick Stats available from {quick_stats['source']}")
+                    logger.info(f"   ⚡ Using aggregated data (NO transaction processing)")
                     
+                    stats["quick_stats_used"] += 1
+                    
+                    # Get labels
                     desk_info = address_to_desk.get(address.lower())
                     
                     if desk_info:
@@ -318,50 +337,19 @@ async def ensure_registry_wallets_in_db(
                     otc_probability = wallet_profiler.calculate_otc_probability(profile)
                     confidence = otc_probability * 100
                     total_volume = quick_stats.get('total_value_usd', 0)
-                    
-                elif tx_count < 1000:
-                    # MEDIUM WALLET: Sample 50 transactions
-                    logger.info(f"   📊 HYBRID: Sampling 50 transactions (100-1000 TX)")
-                    
-                    transactions = transaction_extractor.extract_wallet_transactions(
-                        address,
-                        include_internal=True,
-                        include_tokens=True
-                    )
-                    
-                    # Sample if too many
-                    if len(transactions) > 50:
-                        import random
-                        transactions = random.sample(transactions, 50)
-                    
-                    transactions = transaction_extractor.enrich_with_usd_value(
-                        transactions,
-                        price_oracle,
-                        max_transactions=50
-                    )
-                    
-                    desk_info = address_to_desk.get(address.lower())
-                    
-                    if desk_info:
-                        labels = {
-                            'entity_type': 'otc_desk',
-                            'entity_name': desk_info.get('name'),
-                            'labels': ['verified_otc_desk', 'registry'],
-                            'source': 'registry',
-                            'confidence': 1.0
-                        }
-                    else:
-                        labels = labeling_service.get_wallet_labels(address)
-                    
-                    profile = wallet_profiler.create_profile(address, transactions, labels)
-                    otc_probability = wallet_profiler.calculate_otc_probability(profile)
-                    confidence = otc_probability * 100
-                    total_volume = profile.get('total_volume_usd', 0)
+                    data_quality = 'high'  # Quick Stats = high quality
                     
                 else:
-                    # LARGE WALLET: Full analysis
-                    logger.info(f"   📊 HYBRID: Full analysis (>1000 TX)")
+                    # ====================================================================
+                    # ✨ STRATEGY B: Fallback to Transaction Processing
+                    # ====================================================================
                     
+                    logger.warning(f"   ⚠️  Quick Stats unavailable from all APIs")
+                    logger.warning(f"   ⚠️  FALLBACK: Will process transactions manually")
+                    
+                    stats["transaction_processing_used"] += 1
+                    
+                    # Fetch transactions
                     transactions = transaction_extractor.extract_wallet_transactions(
                         address,
                         include_internal=True,
@@ -373,12 +361,20 @@ async def ensure_registry_wallets_in_db(
                         stats["skipped"] += 1
                         continue
                     
+                    # Sample if too many
+                    if len(transactions) > 50:
+                        import random
+                        logger.info(f"   📊 Sampling 50 of {len(transactions)} transactions")
+                        transactions = random.sample(transactions, 50)
+                    
+                    # Enrich with USD
                     transactions = transaction_extractor.enrich_with_usd_value(
                         transactions,
                         price_oracle,
-                        max_transactions=100
+                        max_transactions=50
                     )
                     
+                    # Get labels
                     desk_info = address_to_desk.get(address.lower())
                     
                     if desk_info:
@@ -392,15 +388,19 @@ async def ensure_registry_wallets_in_db(
                     else:
                         labels = labeling_service.get_wallet_labels(address)
                     
+                    # Create profile
                     profile = wallet_profiler.create_profile(address, transactions, labels)
                     otc_probability = wallet_profiler.calculate_otc_probability(profile)
                     confidence = otc_probability * 100
                     total_volume = profile.get('total_volume_usd', 0)
+                    data_quality = profile.get('data_quality', 'unknown')
                 
-                # Save to database
-                data_quality = profile.get('data_quality', 'unknown')
+                # ====================================================================
+                # SAVE TO DATABASE
+                # ====================================================================
                 
                 logger.info(f"📊 Profile complete:")
+                logger.info(f"   • Method: {profile.get('profile_method', 'unknown')}")
                 logger.info(f"   • Confidence: {confidence:.1f}%")
                 logger.info(f"   • Volume: ${total_volume:,.0f}")
                 logger.info(f"   • Data quality: {data_quality}")
@@ -468,16 +468,23 @@ async def ensure_registry_wallets_in_db(
                 continue
         
         # ====================================================================
-        # ✨ PRINT API ERROR SUMMARY
+        # ✨ PRINT API ERROR SUMMARY & STRATEGY STATS
         # ====================================================================
         logger.info("\n" + "="*60)
-        logger.info("EXECUTION COMPLETE - Printing API Summary")
+        logger.info("EXECUTION COMPLETE - Printing Summary")
         logger.info("="*60)
+        
+        # Strategy stats
+        logger.info(f"\n📊 STRATEGY USAGE:")
+        logger.info(f"   • Quick Stats used: {stats['quick_stats_used']} (15x faster)")
+        logger.info(f"   • Transaction Processing used: {stats['transaction_processing_used']} (fallback)")
+        
+        # API summary
         api_error_tracker.print_summary()
         
         if stats["fetched"] > 0 or stats["updated"] > 0:
             logger.info(
-                f"✅ Auto-sync: "
+                f"\n✅ Auto-sync complete: "
                 f"Fetched {stats['fetched']}, "
                 f"Updated {stats['updated']}, "
                 f"Kept {stats['kept']}, "
@@ -490,25 +497,23 @@ async def ensure_registry_wallets_in_db(
         logger.error(f"❌ Auto-sync failed: {e}", exc_info=True)
         db.rollback()
         
-        # Still print API summary even on failure
+        # Still print summary
         logger.info("\n" + "="*60)
-        logger.info("EXECUTION FAILED - Printing API Summary")
+        logger.info("EXECUTION FAILED - Printing Summary")
         logger.info("="*60)
         api_error_tracker.print_summary()
         
         return stats
 
 # ============================================================================
-# COMPLETE DISCOVERY FUNCTIONS FROM DOCUMENT 4
+# DISCOVERY FUNCTIONS
 # ============================================================================
 
 async def discover_new_otc_desks(
     db: Session,
     max_discoveries: int = 5
 ) -> List[Dict]:
-    """
-    🕵️ Discover new OTC desks through counterparty analysis.
-    """
+    """🕵️ Discover new OTC desks through counterparty analysis."""
     from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
     from app.core.otc_analysis.discovery.counterparty_analyzer import CounterpartyAnalyzer
     
@@ -567,13 +572,34 @@ async def discover_new_otc_desks(
             )
             
             try:
-                transactions = transaction_extractor.extract_wallet_transactions(
-                    address,
-                    include_internal=True,
-                    include_tokens=True
-                )
+                # ✨ Try Quick Stats first
+                quick_stats = wallet_stats_api.get_quick_stats(address)
                 
-                if transactions:
+                if quick_stats.get('source') != 'none':
+                    logger.info(f"      ✅ Using Quick Stats for discovery")
+                    
+                    labels = {
+                        'entity_type': 'otc_desk',
+                        'entity_name': f"Discovered {address[:8]}",
+                        'labels': ['discovered', 'counterparty_analysis'],
+                        'source': 'discovery',
+                        'confidence': candidate['discovery_score'] / 100
+                    }
+                    
+                    profile = wallet_profiler._create_profile_from_quick_stats(
+                        address, quick_stats, labels, quick_stats.get('total_transactions', 0)
+                    )
+                else:
+                    # Fallback to transaction processing
+                    transactions = transaction_extractor.extract_wallet_transactions(
+                        address,
+                        include_internal=True,
+                        include_tokens=True
+                    )
+                    
+                    if not transactions:
+                        continue
+                    
                     transactions = transaction_extractor.enrich_with_usd_value(
                         transactions,
                         price_oracle,
@@ -589,42 +615,43 @@ async def discover_new_otc_desks(
                     }
                     
                     profile = wallet_profiler.create_profile(address, transactions, labels)
-                    otc_prob = wallet_profiler.calculate_otc_probability(profile)
-                    confidence = otc_prob * 100
-                    combined = (confidence + candidate['discovery_score']) / 2
+                
+                otc_prob = wallet_profiler.calculate_otc_probability(profile)
+                confidence = otc_prob * 100
+                combined = (confidence + candidate['discovery_score']) / 2
+                
+                logger.info(f"      Profile: {combined:.1f}% confidence")
+                
+                if combined >= 60.0:
+                    wallet = OTCWallet(
+                        address=address,
+                        label=f"Discovered {address[:8]}",
+                        entity_type='otc_desk',
+                        entity_name=f"Discovered OTC {address[:8]}",
+                        confidence_score=combined,
+                        total_volume=profile.get('total_volume_usd', 0),
+                        transaction_count=profile.get('total_transactions', 0),
+                        first_seen=candidate['first_seen'],
+                        last_active=candidate['last_seen'],
+                        is_active=True,
+                        tags=['discovered', 'counterparty'],
+                        created_at=datetime.now(),
+                        updated_at=datetime.now()
+                    )
                     
-                    logger.info(f"      Profile: {combined:.1f}% confidence")
+                    db.add(wallet)
+                    db.commit()
                     
-                    if combined >= 60.0:
-                        wallet = OTCWallet(
-                            address=address,
-                            label=f"Discovered {address[:8]}",
-                            entity_type='otc_desk',
-                            entity_name=f"Discovered OTC {address[:8]}",
-                            confidence_score=combined,
-                            total_volume=profile.get('total_volume_usd', 0),
-                            transaction_count=len(transactions),
-                            first_seen=candidate['first_seen'],
-                            last_active=candidate['last_seen'],
-                            is_active=True,
-                            tags=['discovered', 'counterparty'],
-                            created_at=datetime.now(),
-                            updated_at=datetime.now()
-                        )
-                        
-                        db.add(wallet)
-                        db.commit()
-                        
-                        discovered.append({
-                            'address': address,
-                            'confidence': combined,
-                            'discovery_score': candidate['discovery_score'],
-                            'otc_interactions': candidate['otc_interaction_count']
-                        })
-                        
-                        logger.info(f"      ✅ Saved to DB")
-                    else:
-                        logger.info(f"      ⚠️ Low confidence ({combined:.1f}%)")
+                    discovered.append({
+                        'address': address,
+                        'confidence': combined,
+                        'discovery_score': candidate['discovery_score'],
+                        'otc_interactions': candidate['otc_interaction_count']
+                    })
+                    
+                    logger.info(f"      ✅ Saved to DB")
+                else:
+                    logger.info(f"      ⚠️ Low confidence ({combined:.1f}%)")
                 
             except Exception as e:
                 logger.error(f"❌ Error profiling {address[:10]}: {e}")
@@ -638,9 +665,6 @@ async def discover_new_otc_desks(
         db.rollback()
         return []
 
-# ============================================================================
-# ✅ UPDATED: Simple Discovery mit Moralis Label-Filterung
-# ============================================================================
 
 async def discover_from_last_5_transactions(
     db: Session,
@@ -648,17 +672,7 @@ async def discover_from_last_5_transactions(
     num_transactions: int = 5,
     filter_known_entities: bool = True
 ) -> List[Dict]:
-    """
-    🔍 Analysiere Counterparties der letzten N Transaktionen.
-    
-    ✅ NEW: Filtert automatisch bekannte Exchanges/Protocols via Moralis Labels
-    
-    Args:
-        db: Database session
-        otc_address: OTC Desk address to analyze
-        num_transactions: Number of recent transactions to analyze
-        filter_known_entities: If True, skip known exchanges/protocols
-    """
+    """🔍 Analyze counterparties from last N transactions."""
     from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
     from app.core.otc_analysis.discovery.simple_analyzer import SimpleLastTxAnalyzer
     
@@ -689,7 +703,7 @@ async def discover_from_last_5_transactions(
         # Initialize scorer
         discovery_scorer = DiscoveryScorer(known_addresses)
         
-        # Get transactions (with Moralis labels if available)
+        # Get transactions
         transactions = transaction_extractor.extract_wallet_transactions(
             otc_address,
             include_internal=True,
@@ -726,7 +740,7 @@ async def discover_from_last_5_transactions(
                 entity = tx.get('from_address_entity')
                 is_known = tx.get('from_is_known_entity', False)
             
-            # ✅ FILTER: Skip known entities (if enabled)
+            # Filter known entities
             if filter_known_entities and is_known:
                 filtered_count += 1
                 logger.info(
@@ -809,7 +823,7 @@ async def discover_from_last_5_transactions(
                 profile=analysis.get('profile', {})
             )
             
-            # Combine scores (40% base + 60% discovery)
+            # Combine scores
             base_confidence = analysis['confidence']
             discovery_score = discovery_result['score']
             final_confidence = (base_confidence * 0.4) + (discovery_score * 0.6)
@@ -820,7 +834,6 @@ async def discover_from_last_5_transactions(
                 f"Final={final_confidence:.1f}%"
             )
             
-            # Log Moralis info if available
             if cp_data.get('moralis_label'):
                 logger.info(
                     f"      🏷️ Moralis: {cp_data['moralis_label']} "
@@ -831,10 +844,8 @@ async def discover_from_last_5_transactions(
             
             # Save if confidence >= 50%
             if final_confidence >= 50.0:
-                # Prepare tags
                 tags = ['discovered', 'last_tx_analysis', discovery_result['recommendation']]
                 
-                # Add Moralis label as tag if available
                 if cp_data.get('moralis_label'):
                     tags.append(f"moralis:{cp_data['moralis_label'][:30]}")
                 
@@ -887,6 +898,7 @@ async def discover_from_last_5_transactions(
         db.rollback()
         return []
 
+
 # ============================================================================
 # EXPORT ALL
 # ============================================================================
@@ -909,9 +921,9 @@ __all__ = [
     "labeling_service",
     "otc_detector",
     "wallet_profiler",
-    "wallet_stats_api",  # ✨ NEW
-    "api_error_tracker",  # ✨ NEW
-    "api_health_monitor",  # ✨ NEW
+    "wallet_stats_api",
+    "api_error_tracker",
+    "api_health_monitor",
     "flow_tracer",
     "node_provider",
     "etherscan",
