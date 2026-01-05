@@ -58,6 +58,8 @@ class WalletStatsAPI:
         logger.info(f"   • Covalent: {'✅' if self.covalent_available else '❌'}")
         logger.info(f"   • DeBank: {'✅' if self.debank_available else '❌'}")
         logger.info(f"   • Etherscan: {'✅' if self.etherscan_available else '❌'}")
+
+
     
     def get_quick_stats(self, address: str) -> Dict:
         """
@@ -435,6 +437,68 @@ class WalletStatsAPI:
             # ✅ FIXED: Use correct method name
             if self.api_error_tracker:
                 self.api_error_tracker.track_call('etherscan', success=False, error=type(e).__name__)
+            return None
+
+    # ========================================================================
+    # MORALIS ERC20 TRANSFERS
+    # ========================================================================
+    
+    def _get_moralis_erc20_transfers(self, address: str, limit: int = 100) -> Optional[list]:
+        """
+        Hole ERC20 Transfers via Moralis API.
+        
+        Args:
+            address: Wallet address (42 chars)
+            limit: Max transfers to fetch
+            
+        Returns:
+            List of transfer dicts or None
+        """
+        if not self.wallet_stats_api or not self.wallet_stats_api.moralis_available:
+            logger.warning(f"   ⚠️ Moralis API not available")
+            return None
+        
+        try:
+            url = f"https://deep-index.moralis.io/api/v2.2/{address}/erc20/transfers"
+            
+            response = requests.get(
+                url,
+                headers={
+                    'X-API-Key': self.wallet_stats_api.moralis_key,
+                    'accept': 'application/json'
+                },
+                params={'limit': limit},
+                timeout=15
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                transfers = data.get('result', [])
+                
+                logger.info(f"   ✅ Fetched {len(transfers)} ERC20 transfers from Moralis")
+                
+                # Track success
+                if self.wallet_stats_api.api_error_tracker:
+                    self.wallet_stats_api.api_error_tracker.track_call('moralis', success=True)
+                
+                return transfers
+            
+            elif response.status_code == 429:
+                logger.warning(f"   ⏱️  Moralis rate limit")
+                if self.wallet_stats_api.api_error_tracker:
+                    self.wallet_stats_api.api_error_tracker.track_call('moralis', success=False, error='rate_limit')
+            
+            else:
+                logger.warning(f"   ❌ Moralis ERC20 API failed: HTTP {response.status_code}")
+                if self.wallet_stats_api.api_error_tracker:
+                    self.wallet_stats_api.api_error_tracker.track_call('moralis', success=False, error=f'http_{response.status_code}')
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"   ❌ Moralis ERC20 error: {type(e).__name__}")
+            if self.wallet_stats_api.api_error_tracker:
+                self.wallet_stats_api.api_error_tracker.track_call('moralis', success=False, error=type(e).__name__)
             return None
     
     # ========================================================================
