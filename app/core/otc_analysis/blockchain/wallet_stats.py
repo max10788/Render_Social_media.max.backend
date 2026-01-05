@@ -35,9 +35,9 @@ class WalletStatsAPI:
     4. Etherscan (fallback, TX count only)
     """
     
-    def __init__(self, api_error_tracker=None, api_health_monitor=None):
-        self.api_error_tracker = api_error_tracker
-        self.api_health_monitor = api_health_monitor
+    def __init__(self, error_tracker=None, health_monitor=None):
+        self.api_error_tracker = error_tracker
+        self.api_health_monitor = health_monitor
         
         # API Keys from environment
         self.moralis_key = os.getenv('MORALIS_API_KEY')
