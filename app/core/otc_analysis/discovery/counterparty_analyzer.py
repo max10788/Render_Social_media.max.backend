@@ -44,21 +44,23 @@ class CounterpartyAnalyzer:
             logger.info(f"   📊 {otc_address[:10]}...")
             
             try:
-                transactions = self.transaction_extractor.extract_wallet_transactions(
+                # Get transactions (MIT LIMIT)
+                transactions = transaction_extractor.extract_wallet_transactions(
                     otc_address,
                     include_internal=True,
                     include_tokens=True
-                )
+                )[:num_transactions * 2]  # ← Begrenze SOFORT nach Fetch ✅
                 
                 if not transactions:
-                    continue
+                    logger.info("ℹ️ No transactions found")
+                    return []
                 
-                # Get recent 100 transactions
+                # Sort and take recent N
                 recent_txs = sorted(
-                    transactions,
-                    key=lambda x: x.get('timestamp', datetime.min),
+                    transactions, 
+                    key=lambda x: x.get('timestamp', datetime.min), 
                     reverse=True
-                )[:100]
+                )[:num_transactions]
                 
                 # Extract counterparties
                 for tx in recent_txs:
