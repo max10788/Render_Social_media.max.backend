@@ -112,37 +112,59 @@ class TransactionExtractor:
         """
         Check if label matches known exchange/protocol.
         
-        ✅ OPTIMIERT: Set-based O(1) lookup
+        ✅ OPTIMIERT: Set-based O(1) lookup mit Caching
+        
+        Examples:
+        - "Binance: Hot Wallet 6" → True (contains "binance")
+        - "Uniswap V3: Router" → True (contains "uniswap")
+        - "MEV Bot: 0x123..." → True (contains "mev bot")
+        - "Random Wallet" → False
         """
         if not label:
             return False
         
         label_lower = label.lower()
         
-        # ✅ Cache pattern set (einmalig)
+        # ✅ Cache pattern set (einmalig beim ersten Call)
         if not hasattr(self, '_known_patterns_set'):
             self._known_patterns_set = {
-                # CEX
+                # Centralized Exchanges (CEX)
                 'binance', 'coinbase', 'kraken', 'bitfinex', 'gemini',
                 'bybit', 'okx', 'huobi', 'kucoin', 'gate.io', 'crypto.com',
-                # DEX
+                'bittrex', 'poloniex', 'bitstamp', 'ftx',
+                
+                # Decentralized Exchanges (DEX)
                 'uniswap', '1inch', 'sushiswap', 'curve', 'balancer',
-                'pancakeswap', '0x protocol', 'paraswap',
+                'pancakeswap', '0x protocol', 'paraswap', 'kyber',
+                'matcha', 'dex aggregator',
+                
                 # Bridges
                 'multichain', 'synapse', 'stargate', 'hop protocol',
-                'across', 'celer', 'wormhole',
-                # MEV
+                'across', 'celer', 'connext', 'anyswap', 'wormhole',
+                
+                # MEV & Bots
                 'mev bot', 'flashbots', 'mev relay', 'jit', 'sandwich',
-                # DeFi
+                'arbitrage bot', 'front-run', 'backrun',
+                
+                # DeFi Protocols
                 'aave', 'compound', 'makerdao', 'lido', 'yearn',
+                'convex', 'curve finance', 'rocket pool',
+                
+                # Lending/Borrowing
+                'benqi', 'venus', 'radiant', 'euler',
+                
                 # Privacy
-                'tornado cash', 'mixer',
-                # Wallets
-                'gnosis safe', 'multisig', 'argent',
-                # NFT
-                'opensea', 'blur', 'x2y2',
+                'tornado cash', 'mixer', 'privacy protocol',
+                
+                # Smart Contract Wallets
+                'gnosis safe', 'multisig', 'argent', 'safe',
+                
+                # NFT Marketplaces
+                'opensea', 'blur', 'x2y2', 'looksrare',
+                
                 # Others
-                'null address', 'burn address', 'deployer'
+                'null address', 'burn address', 'team wallet',
+                'treasury', 'deployer'
             }
         
         # Check if any pattern is in label
@@ -151,6 +173,7 @@ class TransactionExtractor:
                 return True
         
         return False
+
     
     @staticmethod
     def wei_to_eth(wei_value: str | int) -> float:
