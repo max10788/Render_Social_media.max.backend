@@ -1,24 +1,24 @@
 """
-Wallet Stats API - Multi-Tier Fallback System
-==============================================
+Wallet Stats API - CORRECTED VERSION
+=====================================
 
-Fetches aggregated wallet statistics with intelligent fallback chain.
-Optimized for quick stats without processing individual transactions.
+Fixes:
+1. Moralis: Correct response parsing (no total_networth_usd)
+2. Covalent: Sum all holdings[].quote values
+3. DeBank: Add AccessKey authentication
+4. Etherscan: Upgrade to V2 API
 
-Fallback Chain:
-1. Moralis (best - rich data)
-2. Covalent (good - portfolio data)
-3. DeBank (free - basic stats)
-4. Etherscan (fallback - transaction count only)
-
-Version: 1.0
-Date: 2025-01-04
+Environment Variables:
+- MORALIS_API_KEY
+- COVALENT_API_KEY  
+- DEBANK_ACCESS_KEY (NEW!)
+- ETHERSCAN_API_KEY
 """
 
-import os
-import logging
 import requests
+import logging
 from typing import Dict, Optional
+import os
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -26,371 +26,450 @@ logger = logging.getLogger(__name__)
 
 class WalletStatsAPI:
     """
-    Fetches quick wallet statistics from multiple APIs with automatic fallback.
+    Multi-tier wallet stats API with proper response parsing.
     
-    Features:
-    - Multi-tier fallback chain
-    - Error tracking and reporting
-    - Rate limit handling
-    - Graceful degradation
-    
-    Usage:
-        stats_api = WalletStatsAPI()
-        stats = stats_api.get_quick_stats("0x123...")
-        
-        if stats['source'] != 'none':
-            print(f"Got stats from {stats['source']}")
-            print(f"Total transactions: {stats['total_transactions']}")
-            print(f"Total value: ${stats['total_value_usd']:,.2f}")
+    Priority:
+    1. Moralis (best quality, fastest)
+    2. Covalent (good quality, detailed)
+    3. DeBank (requires API key now)
+    4. Etherscan (fallback, TX count only)
     """
     
-    def __init__(self, error_tracker=None, health_monitor=None):
-        """
-        Initialize with optional error tracking.
+    def __init__(self, api_error_tracker=None, api_health_monitor=None):
+        self.api_error_tracker = api_error_tracker
+        self.api_health_monitor = api_health_monitor
         
-        Args:
-            error_tracker: ApiErrorTracker instance
-            health_monitor: ApiHealthMonitor instance
-        """
         # API Keys from environment
         self.moralis_key = os.getenv('MORALIS_API_KEY')
         self.covalent_key = os.getenv('COVALENT_API_KEY')
+        self.debank_key = os.getenv('DEBANK_ACCESS_KEY')  # NEW!
         self.etherscan_key = os.getenv('ETHERSCAN_API_KEY')
         
-        # Optional tracking
-        self.error_tracker = error_tracker
-        self.health_monitor = health_monitor
+        # API availability
+        self.moralis_available = bool(self.moralis_key)
+        self.covalent_available = bool(self.covalent_key)
+        self.debank_available = bool(self.debank_key)  # NEW!
+        self.etherscan_available = bool(self.etherscan_key)
         
-        # API endpoints
-        self.moralis_base = "https://deep-index.moralis.io/api/v2.2"
-        self.covalent_base = "https://api.covalenthq.com/v1"
-        self.debank_base = "https://pro-openapi.debank.com/v1"
-        self.etherscan_base = "https://api.etherscan.io/api"
-        
-        # Request timeout
-        self.timeout = 10
-        
-        # Fallback enabled?
-        self.fallback_enabled = os.getenv('API_FALLBACK_ENABLED', 'true').lower() == 'true'
-        
-        logger.info("🔧 WalletStatsAPI initialized")
-        logger.info(f"   • Moralis: {'✅' if self.moralis_key else '❌'}")
-        logger.info(f"   • Covalent: {'✅' if self.covalent_key else '❌'}")
-        logger.info(f"   • Etherscan: {'✅' if self.etherscan_key else '❌'}")
-        logger.info(f"   • Fallback: {'✅ Enabled' if self.fallback_enabled else '❌ Disabled'}")
+        logger.info(f"📊 WalletStatsAPI initialized:")
+        logger.info(f"   • Moralis: {'✅' if self.moralis_available else '❌'}")
+        logger.info(f"   • Covalent: {'✅' if self.covalent_available else '❌'}")
+        logger.info(f"   • DeBank: {'✅' if self.debank_available else '❌'}")
+        logger.info(f"   • Etherscan: {'✅' if self.etherscan_available else '❌'}")
     
     def get_quick_stats(self, address: str) -> Dict:
         """
-        Get quick wallet stats with automatic fallback.
+        Get quick wallet statistics with multi-tier fallback.
         
-        Args:
-            address: Ethereum address
-            
         Returns:
-            Dict with:
-                - total_transactions: int
-                - total_value_usd: float
-                - balance_usd: float (current balance)
-                - source: str (which API provided data)
-                - data_quality: str (high/medium/low/none)
+            {
+                'total_transactions': int,
+                'total_value_usd': float,
+                'source': 'moralis'|'covalent'|'debank'|'etherscan'|'none',
+                'data_quality': 'high'|'medium'|'low',
+                'timestamp': datetime
+            }
         """
+        address = address.lower().strip()
         logger.info(f"📊 Getting quick stats for {address[:10]}...")
         
-        # Try APIs in order
-        apis_to_try = [
-            ('moralis', self._get_moralis_stats),
-            ('covalent', self._get_covalent_stats),
-            ('debank', self._get_debank_stats),
-            ('etherscan', self._get_etherscan_stats)
-        ]
+        # Priority 1: Moralis
+        if self.moralis_available and self._is_api_healthy('moralis'):
+            result = self._try_moralis(address)
+            if result:
+                return result
         
-        for api_name, api_func in apis_to_try:
-            # Check health if monitor available
-            if self.health_monitor and not self.health_monitor.is_api_healthy(api_name):
-                logger.info(f"   ⏭️  Skipping {api_name} (unhealthy)")
-                continue
-            
-            # Try API
-            try:
-                stats = api_func(address)
-                
-                if stats and stats.get('total_transactions', 0) > 0:
-                    # Success!
-                    logger.info(f"   ✅ Got stats from {api_name}")
-                    
-                    if self.error_tracker:
-                        self.error_tracker.track_call(api_name, success=True)
-                    if self.health_monitor:
-                        self.health_monitor.mark_success(api_name)
-                    
-                    return stats
-                else:
-                    # No data returned
-                    logger.debug(f"   ⚠️  {api_name} returned no data")
-                    
-                    if self.error_tracker:
-                        self.error_tracker.track_call(api_name, success=False, error='no_data')
-                    
-            except Exception as e:
-                # API call failed
-                error_type = type(e).__name__
-                logger.warning(f"   ❌ {api_name} failed: {error_type}")
-                
-                if self.error_tracker:
-                    self.error_tracker.track_call(api_name, success=False, error=error_type)
-                if self.health_monitor:
-                    self.health_monitor.mark_failure(api_name, error_type)
-            
-            # If fallback disabled, stop after first attempt
-            if not self.fallback_enabled:
-                break
+        # Priority 2: Covalent
+        if self.covalent_available and self._is_api_healthy('covalent'):
+            result = self._try_covalent(address)
+            if result:
+                return result
         
-        # All APIs failed
+        # Priority 3: DeBank
+        if self.debank_available and self._is_api_healthy('debank'):
+            result = self._try_debank(address)
+            if result:
+                return result
+        
+        # Priority 4: Etherscan (fallback)
+        if self.etherscan_available and self._is_api_healthy('etherscan'):
+            result = self._try_etherscan(address)
+            if result:
+                return result
+        
+        # All failed
         logger.warning(f"   ❌ All APIs failed for {address[:10]}")
-        return self._empty_stats()
-    
-    # ========================================================================
-    # API IMPLEMENTATIONS
-    # ========================================================================
-    
-    def _get_moralis_stats(self, address: str) -> Optional[Dict]:
-        """
-        Get stats from Moralis.
-        
-        Endpoint: /wallets/{address}/stats
-        Returns: Transaction count, total volume, balance
-        """
-        if not self.moralis_key:
-            logger.debug("   ⚠️  Moralis API key not configured")
-            return None
-        
-        url = f"{self.moralis_base}/wallets/{address}/stats"
-        headers = {
-            'X-API-Key': self.moralis_key,
-            'accept': 'application/json'
-        }
-        
-        try:
-            response = requests.get(url, headers=headers, timeout=self.timeout)
-            
-            # Handle rate limiting
-            if response.status_code == 429:
-                logger.warning("   ⚠️  Moralis rate limited")
-                if self.error_tracker:
-                    self.error_tracker.track_call('moralis', success=False, error='rate_limit')
-                return None
-            
-            # Handle invalid key
-            if response.status_code == 401:
-                logger.error("   ❌ Moralis invalid API key")
-                if self.error_tracker:
-                    self.error_tracker.track_call('moralis', success=False, error='invalid_key')
-                if self.health_monitor:
-                    self.health_monitor.disable_permanently('moralis')
-                return None
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            # Parse Moralis response
-            return {
-                'total_transactions': data.get('nft_transfers', 0) + data.get('token_transfers', 0),
-                'total_value_usd': data.get('total_networth_usd', 0),
-                'balance_usd': data.get('total_networth_usd', 0),
-                'source': 'moralis',
-                'data_quality': 'high'
-            }
-            
-        except requests.exceptions.Timeout:
-            logger.warning("   ⏱️  Moralis timeout")
-            if self.error_tracker:
-                self.error_tracker.track_call('moralis', success=False, error='timeout')
-            return None
-            
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"   ❌ Moralis error: {e}")
-            if self.error_tracker:
-                self.error_tracker.track_call('moralis', success=False, error='request_error')
-            return None
-    
-    def _get_covalent_stats(self, address: str) -> Optional[Dict]:
-        """
-        Get stats from Covalent.
-        
-        Endpoint: /v1/eth-mainnet/address/{address}/portfolio_v2/
-        Returns: Portfolio balance and transaction count
-        """
-        if not self.covalent_key:
-            logger.debug("   ⚠️  Covalent API key not configured")
-            return None
-        
-        url = f"{self.covalent_base}/eth-mainnet/address/{address}/portfolio_v2/"
-        headers = {
-            'Authorization': f'Bearer {self.covalent_key}'
-        }
-        
-        try:
-            response = requests.get(url, headers=headers, timeout=self.timeout)
-            
-            if response.status_code == 429:
-                logger.warning("   ⚠️  Covalent rate limited")
-                if self.error_tracker:
-                    self.error_tracker.track_call('covalent', success=False, error='rate_limit')
-                return None
-            
-            if response.status_code == 401:
-                logger.error("   ❌ Covalent invalid API key")
-                if self.error_tracker:
-                    self.error_tracker.track_call('covalent', success=False, error='invalid_key')
-                if self.health_monitor:
-                    self.health_monitor.disable_permanently('covalent')
-                return None
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            # Parse Covalent response
-            items = data.get('data', {}).get('items', [])
-            total_value = sum(item.get('quote', 0) for item in items)
-            
-            return {
-                'total_transactions': len(items) * 10,  # Estimate
-                'total_value_usd': total_value,
-                'balance_usd': total_value,
-                'source': 'covalent',
-                'data_quality': 'medium'
-            }
-            
-        except requests.exceptions.Timeout:
-            logger.warning("   ⏱️  Covalent timeout")
-            if self.error_tracker:
-                self.error_tracker.track_call('covalent', success=False, error='timeout')
-            return None
-            
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"   ❌ Covalent error: {e}")
-            if self.error_tracker:
-                self.error_tracker.track_call('covalent', success=False, error='request_error')
-            return None
-    
-    def _get_debank_stats(self, address: str) -> Optional[Dict]:
-        """
-        Get stats from DeBank (FREE API).
-        
-        Endpoint: /v1/user/total_balance
-        Returns: Total balance in USD
-        """
-        url = f"{self.debank_base}/user/total_balance"
-        params = {
-            'id': address
-        }
-        
-        try:
-            response = requests.get(url, params=params, timeout=self.timeout)
-            
-            if response.status_code == 429:
-                logger.warning("   ⚠️  DeBank rate limited")
-                if self.error_tracker:
-                    self.error_tracker.track_call('debank', success=False, error='rate_limit')
-                return None
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            total_usd = data.get('total_usd_value', 0)
-            
-            if total_usd == 0:
-                return None
-            
-            return {
-                'total_transactions': 0,  # DeBank doesn't provide this
-                'total_value_usd': total_usd,
-                'balance_usd': total_usd,
-                'source': 'debank',
-                'data_quality': 'low'
-            }
-            
-        except requests.exceptions.Timeout:
-            logger.warning("   ⏱️  DeBank timeout")
-            if self.error_tracker:
-                self.error_tracker.track_call('debank', success=False, error='timeout')
-            return None
-            
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"   ❌ DeBank error: {e}")
-            if self.error_tracker:
-                self.error_tracker.track_call('debank', success=False, error='request_error')
-            return None
-    
-    def _get_etherscan_stats(self, address: str) -> Optional[Dict]:
-        """
-        Get stats from Etherscan (FALLBACK).
-        
-        Endpoint: /api?module=account&action=txlist
-        Returns: Transaction count only
-        """
-        if not self.etherscan_key:
-            logger.debug("   ⚠️  Etherscan API key not configured")
-            return None
-        
-        url = self.etherscan_base
-        params = {
-            'module': 'account',
-            'action': 'txlist',
-            'address': address,
-            'startblock': 0,
-            'endblock': 99999999,
-            'page': 1,
-            'offset': 1,  # Only get 1 transaction to check if any exist
-            'sort': 'desc',
-            'apikey': self.etherscan_key
-        }
-        
-        try:
-            response = requests.get(url, params=params, timeout=self.timeout)
-            
-            if response.status_code == 429:
-                logger.warning("   ⚠️  Etherscan rate limited")
-                if self.error_tracker:
-                    self.error_tracker.track_call('etherscan', success=False, error='rate_limit')
-                return None
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get('status') != '1':
-                return None
-            
-            # Etherscan only provides transaction count
-            return {
-                'total_transactions': len(data.get('result', [])),
-                'total_value_usd': 0,  # Not available
-                'balance_usd': 0,
-                'source': 'etherscan',
-                'data_quality': 'low'
-            }
-            
-        except requests.exceptions.Timeout:
-            logger.warning("   ⏱️  Etherscan timeout")
-            if self.error_tracker:
-                self.error_tracker.track_call('etherscan', success=False, error='timeout')
-            return None
-            
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"   ❌ Etherscan error: {e}")
-            if self.error_tracker:
-                self.error_tracker.track_call('etherscan', success=False, error='request_error')
-            return None
-    
-    def _empty_stats(self) -> Dict:
-        """Return empty stats when all APIs fail."""
         return {
             'total_transactions': 0,
             'total_value_usd': 0,
-            'balance_usd': 0,
             'source': 'none',
-            'data_quality': 'none'
+            'data_quality': 'none',
+            'timestamp': datetime.utcnow()
         }
+    
+    # ========================================================================
+    # MORALIS - CORRECTED
+    # ========================================================================
+    
+    def _try_moralis(self, address: str) -> Optional[Dict]:
+        """
+        Try Moralis API.
+        
+        CORRECTED: Moralis gives transaction COUNTS, not USD values!
+        
+        Response format:
+        {
+            "nfts": "237",
+            "collections": "159",
+            "transactions": {"total": "173343"},
+            "nft_transfers": {"total": "360"},
+            "token_transfers": {"total": "229528"}
+        }
+        """
+        try:
+            url = f"https://deep-index.moralis.io/api/v2.2/wallets/{address}/stats"
+            
+            response = requests.get(
+                url,
+                headers={
+                    'X-API-Key': self.moralis_key,
+                    'accept': 'application/json'
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # ✅ CORRECTED: Parse transaction counts
+                tx_count = int(data.get('transactions', {}).get('total', 0))
+                token_transfers = int(data.get('token_transfers', {}).get('total', 0))
+                
+                # Total transactions = normal TX + token transfers
+                total_tx = tx_count + token_transfers
+                
+                if self.api_error_tracker:
+                    self.api_error_tracker.record_success('moralis')
+                
+                logger.info(f"   ✅ Got stats from moralis: {total_tx} transactions")
+                
+                return {
+                    'total_transactions': total_tx,
+                    'total_value_usd': 0,  # ❌ Moralis doesn't provide USD value in this endpoint
+                    'source': 'moralis',
+                    'data_quality': 'high',
+                    'timestamp': datetime.utcnow(),
+                    'raw_data': {
+                        'normal_tx': tx_count,
+                        'token_transfers': token_transfers,
+                        'nft_transfers': int(data.get('nft_transfers', {}).get('total', 0))
+                    }
+                }
+            
+            elif response.status_code == 429:
+                logger.warning(f"   ⏱️  Moralis rate limit")
+                if self.api_error_tracker:
+                    self.api_error_tracker.record_error('moralis', 'rate_limit')
+            
+            else:
+                logger.warning(f"   ❌ moralis failed: HTTP {response.status_code}")
+                if self.api_error_tracker:
+                    self.api_error_tracker.record_error('moralis', f'http_{response.status_code}')
+            
+            return None
+            
+        except requests.exceptions.Timeout:
+            logger.warning(f"   ⏱️  Moralis timeout")
+            if self.api_error_tracker:
+                self.api_error_tracker.record_error('moralis', 'timeout')
+            return None
+            
+        except Exception as e:
+            logger.warning(f"   ❌ moralis failed: {type(e).__name__}")
+            if self.api_error_tracker:
+                self.api_error_tracker.record_error('moralis', type(e).__name__)
+            return None
+    
+    # ========================================================================
+    # COVALENT - CORRECTED
+    # ========================================================================
+    
+    def _try_covalent(self, address: str) -> Optional[Dict]:
+        """
+        Try Covalent API.
+        
+        CORRECTED: Must sum all holdings[].quote values!
+        
+        Response format:
+        {
+            "data": {
+                "items": [
+                    {
+                        "contract_name": "USD Coin",
+                        "holdings": [
+                            {"quote": 1234.56, ...},
+                            {"quote": 789.01, ...}
+                        ]
+                    },
+                    ...
+                ]
+            }
+        }
+        """
+        try:
+            url = f"https://api.covalenthq.com/v1/eth-mainnet/address/{address}/portfolio_v2/"
+            
+            response = requests.get(
+                url,
+                headers={
+                    'Authorization': f'Bearer {self.covalent_key}'
+                },
+                timeout=15
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # ✅ CORRECTED: Sum all holdings[].quote values
+                items = data.get('data', {}).get('items', [])
+                
+                total_value = 0.0
+                token_count = 0
+                
+                for item in items:
+                    holdings = item.get('holdings', [])
+                    for holding in holdings:
+                        quote = holding.get('quote', 0)
+                        if quote:
+                            total_value += float(quote)
+                            token_count += 1
+                
+                # Estimate transaction count from token diversity
+                # More tokens usually means more transactions
+                estimated_tx = min(token_count * 10, 10000)  # Rough estimate
+                
+                if self.api_error_tracker:
+                    self.api_error_tracker.record_success('covalent')
+                
+                logger.info(f"   ✅ Got stats from covalent: ${total_value:,.2f} across {len(items)} tokens")
+                
+                return {
+                    'total_transactions': estimated_tx,
+                    'total_value_usd': total_value,
+                    'source': 'covalent',
+                    'data_quality': 'high' if total_value > 0 else 'medium',
+                    'timestamp': datetime.utcnow(),
+                    'raw_data': {
+                        'total_tokens': len(items),
+                        'total_holdings': token_count
+                    }
+                }
+            
+            elif response.status_code == 429:
+                logger.warning(f"   ⏱️  Covalent rate limit")
+                if self.api_error_tracker:
+                    self.api_error_tracker.record_error('covalent', 'rate_limit')
+            
+            else:
+                logger.warning(f"   ❌ covalent failed: HTTP {response.status_code}")
+                if self.api_error_tracker:
+                    self.api_error_tracker.record_error('covalent', f'http_{response.status_code}')
+            
+            return None
+            
+        except requests.exceptions.Timeout:
+            logger.warning(f"   ⏱️  Covalent timeout")
+            if self.api_error_tracker:
+                self.api_error_tracker.record_error('covalent', 'timeout')
+            return None
+            
+        except Exception as e:
+            logger.warning(f"   ❌ Covalent error: {type(e).__name__}")
+            if self.api_error_tracker:
+                self.api_error_tracker.record_error('covalent', type(e).__name__)
+            return None
+    
+    # ========================================================================
+    # DEBANK - CORRECTED (NOW REQUIRES API KEY)
+    # ========================================================================
+    
+    def _try_debank(self, address: str) -> Optional[Dict]:
+        """
+        Try DeBank API.
+        
+        CORRECTED: Now requires AccessKey authentication!
+        
+        Endpoint: https://pro-openapi.debank.com/v1/user/total_balance
+        Header: AccessKey: {your_key}
+        
+        Response format:
+        {
+            "total_usd_value": 1234567.89,
+            "chain_list": [
+                {
+                    "id": "eth",
+                    "usd_value": 1234567.89
+                }
+            ]
+        }
+        """
+        try:
+            url = f"https://pro-openapi.debank.com/v1/user/total_balance?id={address}"
+            
+            response = requests.get(
+                url,
+                headers={
+                    'AccessKey': self.debank_key  # ✅ CORRECTED: Use AccessKey header
+                },
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Parse response
+                total_usd = float(data.get('total_usd_value', 0))
+                
+                # Estimate TX count from portfolio value
+                # Rough heuristic: higher value = more transactions
+                if total_usd > 1000000:
+                    estimated_tx = 1000
+                elif total_usd > 100000:
+                    estimated_tx = 500
+                elif total_usd > 10000:
+                    estimated_tx = 100
+                else:
+                    estimated_tx = 50
+                
+                if self.api_error_tracker:
+                    self.api_error_tracker.record_success('debank')
+                
+                logger.info(f"   ✅ Got stats from debank: ${total_usd:,.2f}")
+                
+                return {
+                    'total_transactions': estimated_tx,
+                    'total_value_usd': total_usd,
+                    'source': 'debank',
+                    'data_quality': 'medium',
+                    'timestamp': datetime.utcnow()
+                }
+            
+            elif response.status_code == 401:
+                logger.warning(f"   ❌ DeBank error: 401 UNAUTHORIZED - Check DEBANK_ACCESS_KEY")
+                if self.api_error_tracker:
+                    self.api_error_tracker.record_error('debank', 'unauthorized')
+            
+            elif response.status_code == 429:
+                logger.warning(f"   ⏱️  DeBank rate limit")
+                if self.api_error_tracker:
+                    self.api_error_tracker.record_error('debank', 'rate_limit')
+            
+            else:
+                logger.warning(f"   ❌ DeBank error: {response.status_code}")
+                if self.api_error_tracker:
+                    self.api_error_tracker.record_error('debank', f'http_{response.status_code}')
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"   ❌ DeBank error: {type(e).__name__}")
+            if self.api_error_tracker:
+                self.api_error_tracker.record_error('debank', type(e).__name__)
+            return None
+    
+    # ========================================================================
+    # ETHERSCAN - CORRECTED (UPGRADE TO V2)
+    # ========================================================================
+    
+    def _try_etherscan(self, address: str) -> Optional[Dict]:
+        """
+        Try Etherscan API (fallback).
+        
+        CORRECTED: Use V2 API endpoint!
+        
+        V2 Endpoint: https://api.etherscan.io/v2/api
+        
+        Response format:
+        {
+            "status": "1",
+            "message": "OK",
+            "result": [...]
+        }
+        """
+        try:
+            # ✅ CORRECTED: Use V2 API
+            url = "https://api.etherscan.io/v2/api"
+            
+            params = {
+                'module': 'account',
+                'action': 'txlist',
+                'address': address,
+                'startblock': 0,
+                'endblock': 99999999,
+                'page': 1,
+                'offset': 1,  # Just get count, not full list
+                'sort': 'desc',
+                'apikey': self.etherscan_key
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                if data.get('status') == '1':
+                    # Get actual count from message or result
+                    result = data.get('result', [])
+                    
+                    # Etherscan returns total count in separate call
+                    # For now, use result length as proxy
+                    tx_count = len(result) if isinstance(result, list) else 0
+                    
+                    if self.api_error_tracker:
+                        self.api_error_tracker.record_success('etherscan')
+                    
+                    logger.info(f"   ✅ Got stats from etherscan: {tx_count}+ transactions")
+                    
+                    return {
+                        'total_transactions': tx_count,
+                        'total_value_usd': 0,  # Etherscan doesn't provide USD value
+                        'source': 'etherscan',
+                        'data_quality': 'low',
+                        'timestamp': datetime.utcnow()
+                    }
+                else:
+                    logger.warning(f"   ❌ etherscan error: {data.get('message')}")
+                    if self.api_error_tracker:
+                        self.api_error_tracker.record_error('etherscan', 'api_error')
+            
+            else:
+                logger.warning(f"   ❌ etherscan failed: HTTP {response.status_code}")
+                if self.api_error_tracker:
+                    self.api_error_tracker.record_error('etherscan', f'http_{response.status_code}')
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"   ❌ Etherscan error: {type(e).__name__}")
+            if self.api_error_tracker:
+                self.api_error_tracker.record_error('etherscan', type(e).__name__)
+            return None
+    
+    # ========================================================================
+    # HELPER METHODS
+    # ========================================================================
+    
+    def _is_api_healthy(self, api_name: str) -> bool:
+        """Check if API is healthy (not circuit broken)."""
+        if not self.api_health_monitor:
+            return True
+        
+        is_healthy = self.api_health_monitor.is_healthy(api_name)
+        
+        if not is_healthy:
+            logger.info(f"   ⏭️  Skipping {api_name} (unhealthy)")
+        
+        return is_healthy
 
 
 # Export
