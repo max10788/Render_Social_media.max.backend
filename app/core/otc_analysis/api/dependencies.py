@@ -692,12 +692,13 @@ async def discover_from_last_5_transactions(
         
         known_addresses = [w.address for w in known_otc]
         
-        # Initialize analyzer
+        # Initialize analyzer (✨ WITH wallet_stats_api for Quick Stats)
         analyzer = SimpleLastTxAnalyzer(
             db=db,
             transaction_extractor=transaction_extractor,
             wallet_profiler=wallet_profiler,
-            price_oracle=price_oracle
+            price_oracle=price_oracle,
+            wallet_stats_api=wallet_stats_api  # ✨ NEW: Enable Quick Stats in Discovery
         )
         
         # Initialize scorer
