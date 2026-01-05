@@ -1,32 +1,34 @@
 """
-Simple Last-5-TX Discovery - WITH ALWAYS QUICK STATS FIRST
-============================================================
+Simple Last-5-TX Discovery - WITH MORALIS ERC20 VOLUME CALCULATION
+===================================================================
 
 ✨ IMPROVED VERSION:
-- Quick Stats API FIRST (for all counterparties)
-- Nur bei Fehler → Transaction Processing
-- 15x schneller für Discovery
+- Moralis ERC20 Transfers API FIRST (for volume calculation)
+- Berechnet Volume aus tatsächlichen USDT/USDC Inflows
+- OTC Score basierend auf 4 Metriken
+- Fallback zu Transaction Processing wenn Moralis fehlt
 
-Version: 2.0 - Always Quick Stats First
-Date: 2025-01-04
+Version: 3.0 - Moralis ERC20 Volume First
+Date: 2025-01-05
 """
 
 from typing import List, Dict, Optional
 from datetime import datetime
 import logging
+import requests
 
 logger = logging.getLogger(__name__)
 
 
 class SimpleLastTxAnalyzer:
     """
-    Simpelster Discovery-Ansatz mit QUICK STATS FIRST:
+    Simpelster Discovery-Ansatz mit MORALIS ERC20 VOLUME FIRST:
     - Nimm letzte 5 Transaktionen
     - Finde Counterparty-Adressen
-    - Analysiere sie mit Quick Stats API (PRIORITY 1)
+    - Analysiere mit Moralis ERC20 Transfers (für echtes Volume)
     - Fallback zu Transaction Processing nur wenn nötig
     
-    ✨ NEW: 15x schneller durch Quick Stats API
+    ✨ NEW: Berechnet Volume aus USDT/USDC Transfers (wie PowerShell Beispiel)
     """
     
     def __init__(self, db, transaction_extractor, wallet_profiler, price_oracle, wallet_stats_api=None):
@@ -34,7 +36,7 @@ class SimpleLastTxAnalyzer:
         self.transaction_extractor = transaction_extractor
         self.wallet_profiler = wallet_profiler
         self.price_oracle = price_oracle
-        self.wallet_stats_api = wallet_stats_api  # ✨ NEW
+        self.wallet_stats_api = wallet_stats_api
 
     def discover_from_last_transactions(
         self,
@@ -153,17 +155,17 @@ class SimpleLastTxAnalyzer:
             return []
     
     # ========================================================================
-    # ✨ IMPROVED: ANALYZE WITH QUICK STATS FIRST
+    # ✨ IMPROVED: ANALYZE WITH MORALIS ERC20 VOLUME FIRST
     # ========================================================================
     
     def analyze_counterparty(self, counterparty_address: str) -> Optional[Dict]:
         """
         Führe volle OTC-Analyse auf Counterparty durch.
         
-        ✨ NEW STRATEGY - MORALIS ERC20 TRANSFERS:
+        ✨ NEW STRATEGY - MORALIS ERC20 TRANSFERS FOR VOLUME:
         1. Hole ERC20 Transfers via Moralis API
         2. Berechne Volume aus tatsächlichen Transfers (USDT/USDC incoming)
-        3. Analysiere Counterparty-Muster
+        3. Analysiere Counterparty-Muster (wie PowerShell Beispiel)
         4. Fallback zu Transaction Processing wenn Moralis fehlt
         
         Args:
@@ -176,17 +178,14 @@ class SimpleLastTxAnalyzer:
         
         try:
             # ================================================================
-            # ✨ PRIORITY 1: MORALIS ERC20 TRANSFERS API
+            # ✨ PRIORITY 1: MORALIS ERC20 TRANSFERS API FOR VOLUME
             # ================================================================
             
-            if self.wallet_stats_api and hasattr(self.wallet_stats_api, 'get_erc20_transfers'):
+            if self.wallet_stats_api:
                 logger.info(f"   🚀 PRIORITY 1: Fetching ERC20 transfers via Moralis")
                 
                 # Hole ERC20 Transfers (letzte 100)
-                transfers = self.wallet_stats_api.get_erc20_transfers(
-                    counterparty_address,
-                    limit=100
-                )
+                transfers = self._get_moralis_erc20_transfers(counterparty_address, limit=100)
                 
                 if transfers and len(transfers) > 0:
                     logger.info(f"   📊 Found {len(transfers)} ERC20 transfers")
@@ -214,8 +213,8 @@ class SimpleLastTxAnalyzer:
                         if token_symbol in ['USDT', 'USDC', 'DAI', 'BUSD']:
                             value_usd = value_decimal
                         else:
-                            # Für andere Token: Nutze Preis wenn verfügbar
-                            value_usd = value_decimal * 1  # Placeholder, kann mit price_oracle erweitert werden
+                            # Für andere Token: Nutze Preis wenn verfügbar (oder 1:1 Fallback)
+                            value_usd = value_decimal * 1  # Placeholder
                         
                         total_volume_usd += value_usd
                         
@@ -236,7 +235,7 @@ class SimpleLastTxAnalyzer:
                         # Track Token Diversity
                         token_diversity.add(token_symbol)
                     
-                    # OTC Desk Merkmale berechnen
+                    # OTC Desk Merkmale berechnen (wie in PowerShell Beispiel)
                     otc_score = 0.0
                     
                     # 1. Hohe USDT/USDC Inflows (40% weight)
@@ -285,6 +284,7 @@ class SimpleLastTxAnalyzer:
                         'first_seen': transfers[-1].get('block_timestamp') if transfers else None,
                         'last_seen': transfers[0].get('block_timestamp') if transfers else None,
                         'data_quality': 'high',
+                        'profile_method': 'moralis_erc20_transfers',
                         'otc_indicators': {
                             'high_stable_inflows': incoming_stables > 100_000,
                             'diverse_tokens': len(token_diversity) > 10,
@@ -311,7 +311,8 @@ class SimpleLastTxAnalyzer:
                         f"✅ Moralis ERC20 Analysis: "
                         f"{confidence:.1f}% OTC, "
                         f"${total_volume_usd:,.0f} volume, "
-                        f"${incoming_stables:,.0f} stable inflows"
+                        f"${incoming_stables:,.0f} stable inflows, "
+                        f"{len(token_diversity)} tokens"
                     )
                     
                     return result
@@ -383,27 +384,79 @@ class SimpleLastTxAnalyzer:
             return None
     
     # ========================================================================
+    # MORALIS ERC20 TRANSFERS
+    # ========================================================================
+    
+    def _get_moralis_erc20_transfers(self, address: str, limit: int = 100) -> Optional[list]:
+        """
+        Hole ERC20 Transfers via Moralis API.
+        
+        Args:
+            address: Wallet address (42 chars)
+            limit: Max transfers to fetch
+            
+        Returns:
+            List of transfer dicts or None
+        """
+        if not self.wallet_stats_api or not self.wallet_stats_api.moralis_available:
+            logger.warning(f"   ⚠️ Moralis API not available")
+            return None
+        
+        try:
+            url = f"https://deep-index.moralis.io/api/v2.2/{address}/erc20/transfers"
+            
+            response = requests.get(
+                url,
+                headers={
+                    'X-API-Key': self.wallet_stats_api.moralis_key,
+                    'accept': 'application/json'
+                },
+                params={'limit': limit},
+                timeout=15
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                transfers = data.get('result', [])
+                
+                logger.info(f"   ✅ Fetched {len(transfers)} ERC20 transfers from Moralis")
+                
+                # Track success
+                if self.wallet_stats_api.api_error_tracker:
+                    self.wallet_stats_api.api_error_tracker.track_call('moralis', success=True)
+                
+                return transfers
+            
+            elif response.status_code == 429:
+                logger.warning(f"   ⏱️  Moralis rate limit")
+                if self.wallet_stats_api.api_error_tracker:
+                    self.wallet_stats_api.api_error_tracker.track_call('moralis', success=False, error='rate_limit')
+            
+            else:
+                logger.warning(f"   ❌ Moralis ERC20 API failed: HTTP {response.status_code}")
+                if self.wallet_stats_api.api_error_tracker:
+                    self.wallet_stats_api.api_error_tracker.track_call('moralis', success=False, error=f'http_{response.status_code}')
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"   ❌ Moralis ERC20 error: {type(e).__name__}")
+            if self.wallet_stats_api.api_error_tracker:
+                self.wallet_stats_api.api_error_tracker.track_call('moralis', success=False, error=type(e).__name__)
+            return None
+    
+    # ========================================================================
     # UTILITY METHODS
     # ========================================================================
     
     def save_transactions_to_db(self, transactions: List[Dict], session) -> int:
-        """
-        Save discovered transactions to database.
-        
-        Args:
-            transactions: List of transaction dicts
-            session: SQLAlchemy session
-            
-        Returns:
-            Number of transactions saved
-        """
+        """Save discovered transactions to database."""
         from app.core.otc_analysis.models.transaction import OTCTransaction
         
         saved_count = 0
         
         try:
             for tx in transactions:
-                # Check if transaction already exists
                 existing = session.query(OTCTransaction).filter_by(
                     tx_hash=tx.get('tx_hash')
                 ).first()
@@ -411,7 +464,6 @@ class SimpleLastTxAnalyzer:
                 if existing:
                     continue
                 
-                # Create new transaction
                 transaction = OTCTransaction(
                     tx_hash=tx.get('tx_hash', ''),
                     from_address=tx.get('from_address', '').lower(),
