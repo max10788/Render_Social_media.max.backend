@@ -45,14 +45,6 @@ class TransactionExtractor:
             'SHIB': 100_000_000_000_000, # 100T SHIB (meme coin)
         }
         
-        # ✅ Known exchanges/protocols to filter in discovery
-        self.known_entities = {
-            'exchanges': ['Binance', 'Coinbase', 'Kraken', 'Bitfinex', 'Gemini', 'Bybit', 'OKX', 'Huobi'],
-            'dex': ['Uniswap', '1inch', 'SushiSwap', 'Curve', 'Balancer', 'PancakeSwap'],
-            'bridges': ['Multichain', 'Synapse', 'Stargate', 'Hop Protocol'],
-            'mev': ['MEV Bot', 'Flashbots', 'MEV Relay'],
-            'protocols': ['Aave', 'Compound', 'MakerDAO', 'Lido']
-        }
     
     def _fetch_moralis_transactions(
         self,
@@ -118,19 +110,45 @@ class TransactionExtractor:
     
     def _is_known_entity(self, label: str) -> bool:
         """
-        Check if a label matches a known exchange/protocol.
+        Check if label matches known exchange/protocol.
         
-        Used for filtering in OTC discovery.
+        ✅ OPTIMIERT: Set-based O(1) lookup
         """
         if not label:
             return False
         
-        label_upper = label.upper()
+        label_lower = label.lower()
         
-        for category, entities in self.known_entities.items():
-            for entity in entities:
-                if entity.upper() in label_upper:
-                    return True
+        # ✅ Cache pattern set (einmalig)
+        if not hasattr(self, '_known_patterns_set'):
+            self._known_patterns_set = {
+                # CEX
+                'binance', 'coinbase', 'kraken', 'bitfinex', 'gemini',
+                'bybit', 'okx', 'huobi', 'kucoin', 'gate.io', 'crypto.com',
+                # DEX
+                'uniswap', '1inch', 'sushiswap', 'curve', 'balancer',
+                'pancakeswap', '0x protocol', 'paraswap',
+                # Bridges
+                'multichain', 'synapse', 'stargate', 'hop protocol',
+                'across', 'celer', 'wormhole',
+                # MEV
+                'mev bot', 'flashbots', 'mev relay', 'jit', 'sandwich',
+                # DeFi
+                'aave', 'compound', 'makerdao', 'lido', 'yearn',
+                # Privacy
+                'tornado cash', 'mixer',
+                # Wallets
+                'gnosis safe', 'multisig', 'argent',
+                # NFT
+                'opensea', 'blur', 'x2y2',
+                # Others
+                'null address', 'burn address', 'deployer'
+            }
+        
+        # Check if any pattern is in label
+        for pattern in self._known_patterns_set:
+            if pattern in label_lower:
+                return True
         
         return False
     
