@@ -672,7 +672,15 @@ async def discover_from_last_5_transactions(
     num_transactions: int = 5,
     filter_known_entities: bool = True
 ) -> List[Dict]:
-    """🔍 Analyze counterparties from last N transactions."""
+    """
+    🔍 Analyze counterparties from last N transactions.
+    
+    ✅ IMPROVED VERSION:
+    - Holt nur num_transactions * 2 TXs (statt alle)
+    - Source OTC Desk wird in Scoring berücksichtigt
+    - Niedrigerer Save Threshold (40% statt 50%)
+    - Adaptive Final Score Berechnung
+    """
     from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
     from app.core.otc_analysis.discovery.simple_analyzer import SimpleLastTxAnalyzer
     
@@ -692,24 +700,32 @@ async def discover_from_last_5_transactions(
         
         known_addresses = [w.address for w in known_otc]
         
-        # Initialize analyzer (✨ WITH wallet_stats_api for Quick Stats)
+        # ✅ ADD: Source OTC Desk to known addresses
+        if otc_address.lower() not in [addr.lower() for addr in known_addresses]:
+            known_addresses.append(otc_address)
+            logger.info(f"   ✅ Added source OTC desk {otc_address[:10]}... to known list")
+        
+        # Initialize analyzer
         analyzer = SimpleLastTxAnalyzer(
             db=db,
             transaction_extractor=transaction_extractor,
             wallet_profiler=wallet_profiler,
             price_oracle=price_oracle,
-            wallet_stats_api=wallet_stats_api  # ✨ NEW: Enable Quick Stats in Discovery
+            wallet_stats_api=wallet_stats_api
         )
         
-        # Initialize scorer
+        # Initialize scorer (WITH known addresses INCLUDING source)
         discovery_scorer = DiscoveryScorer(known_addresses)
         
-        # Get transactions
+        # ====================================================================
+        # ✅ FIX: LIMIT TRANSACTIONS IMMEDIATELY
+        # ====================================================================
+        # Get transactions (MIT LIMIT!)
         transactions = transaction_extractor.extract_wallet_transactions(
             otc_address,
             include_internal=True,
             include_tokens=True
-        )
+        )[:num_transactions * 2]  # ✅ Begrenze SOFORT nach Fetch
         
         if not transactions:
             logger.info("ℹ️ No transactions found")
@@ -816,18 +832,30 @@ async def discover_from_last_5_transactions(
                 include_tokens=True
             )
             
-            # Calculate discovery score
+            # ====================================================================
+            # ✅ FIX: INJECT SOURCE OTC DESK IN SCORER
+            # ====================================================================
             discovery_result = discovery_scorer.score_discovered_wallet(
                 address=address,
                 transactions=cp_transactions,
                 counterparty_data=cp_data,
-                profile=analysis.get('profile', {})
+                profile=analysis.get('profile', {}),
+                source_otc_desk=otc_address  # ✅ WICHTIG!
             )
             
-            # Combine scores
+            # ====================================================================
+            # ✅ FIX: ADAPTIVE FINAL SCORE BERECHNUNG
+            # ====================================================================
             base_confidence = analysis['confidence']
             discovery_score = discovery_result['score']
-            final_confidence = (base_confidence * 0.4) + (discovery_score * 0.6)
+            
+            # Adaptive Gewichtung basierend auf Datenmenge
+            if len(cp_transactions) >= 50:
+                # Viele TXs → Discovery Score wichtiger
+                final_confidence = (base_confidence * 0.4) + (discovery_score * 0.6)
+            else:
+                # Wenige TXs → Base Score wichtiger
+                final_confidence = (base_confidence * 0.6) + (discovery_score * 0.4)
             
             logger.info(
                 f"      📊 Scores: Base={base_confidence:.1f}%, "
@@ -843,8 +871,10 @@ async def discover_from_last_5_transactions(
             
             logger.info(f"      💡 Recommendation: {discovery_result['recommendation']}")
             
-            # Save if confidence >= 50%
-            if final_confidence >= 50.0:
+            # ====================================================================
+            # ✅ FIX: NIEDRIGERER THRESHOLD (40% statt 50%)
+            # ====================================================================
+            if final_confidence >= 40.0:  # ✅ Runter von 50%!
                 tags = ['discovered', 'last_tx_analysis', discovery_result['recommendation']]
                 
                 if cp_data.get('moralis_label'):
@@ -882,10 +912,10 @@ async def discover_from_last_5_transactions(
                 
                 logger.info(
                     f"      ✅ Saved to DB "
-                    f"(threshold: 50%, confidence: {final_confidence:.1f}%)"
+                    f"(threshold: 40%, confidence: {final_confidence:.1f}%)"
                 )
             else:
-                logger.info(f"      ⚠️ Below threshold (50%)")
+                logger.info(f"      ⚠️ Below threshold (40%)")
         
         logger.info(
             f"✅ Discovery complete: {len(discovered)} new wallets found "
