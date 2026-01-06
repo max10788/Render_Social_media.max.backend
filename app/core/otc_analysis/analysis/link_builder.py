@@ -23,7 +23,7 @@ Caching:
 - Key: f"links:{start_date}:{end_date}:{min_flow}"
 - Stores both formats together
 
-Version: 1.0
+Version: 1.1 - Fixed PostgreSQL JSON query
 Date: 2025-01-06
 """
 
@@ -217,6 +217,8 @@ class LinkBuilder:
         - simple_analyzer results
         - Stored in wallet.tags as 'discovered', 'counterparty'
         
+        ✅ FIXED: PostgreSQL JSON query issue
+        
         Returns:
             {
                 ("0xabc...", "0xdef..."): {
@@ -231,12 +233,19 @@ class LinkBuilder:
         links = {}
         
         try:
-            # Get all discovered wallets with counterparty relationships
-            discovered_wallets = db.query(OTCWallet).filter(
-                OTCWallet.tags.contains(['discovered'])
-            ).all()
+            # ====================================================================
+            # ✅ FIX: Get ALL wallets, then filter in Python (safer for JSON)
+            # ====================================================================
             
-            logger.info(f"      📊 Analyzing {len(discovered_wallets)} discovered wallets...")
+            all_wallets = db.query(OTCWallet).all()
+            
+            # Filter for discovered wallets in Python
+            discovered_wallets = [
+                w for w in all_wallets
+                if w.tags and 'discovered' in w.tags
+            ]
+            
+            logger.info(f"      📊 Found {len(discovered_wallets)} discovered wallets (out of {len(all_wallets)} total)")
             
             for wallet in discovered_wallets:
                 wallet_addr = wallet.address.lower()
