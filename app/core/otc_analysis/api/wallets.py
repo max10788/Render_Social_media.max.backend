@@ -1,17 +1,17 @@
 """
-Wallet Profile Endpoints
-=========================
+Wallet Profile Endpoints - FIXED VERSION
+=========================================
 
-Endpoints for wallet profiling and analysis:
-- Wallet profile
-- Wallet details
-- Wallet scanning
+✅ FIXES:
+- Datetime timezone aware (UTC)
+- Safe datetime comparison
+- Helper function für robuste timezone handling
 """
 
 import logging
 from fastapi import APIRouter, HTTPException, Query, Depends
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone  # ✅ Added timezone import
 
 from .dependencies import (
     get_db,
@@ -28,6 +28,30 @@ from app.core.otc_analysis.analysis.network_graph import NetworkAnalysisService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/wallet", tags=["Wallets"])
+
+
+# ============================================================================
+# ✅ HELPER FUNCTION - Timezone Safety
+# ============================================================================
+
+def ensure_aware_datetime(dt):
+    """
+    Stelle sicher dass datetime timezone-aware ist (UTC).
+    
+    Args:
+        dt: datetime object (aware oder naive)
+        
+    Returns:
+        timezone-aware datetime (immer UTC)
+    """
+    if dt is None:
+        return None
+    
+    if dt.tzinfo is None:
+        # Naive datetime → Assume UTC
+        return dt.replace(tzinfo=timezone.utc)
+    
+    return dt
 
 
 # ============================================================================
@@ -49,17 +73,21 @@ async def get_wallet_profile(
     Get detailed profile for a wallet address.
     
     GET /api/otc/wallet/0x.../profile?include_network_metrics=true
+    
+    ✅ FIXED: Timezone-aware datetime comparisons
     """
     logger.info(f"👤 Fetching profile for {address[:10]}...")
     
     try:
         address = validate_ethereum_address(address)
         
+        # Check cache
         cached_profile = cache.get_wallet_profile(address)
         if cached_profile:
             logger.info(f"✅ Profile loaded from cache")
             return {"success": True, "data": cached_profile, "cached": True}
         
+        # Fetch transactions
         logger.info(f"📡 Fetching transactions from Etherscan...")
         transactions = tx_extractor.extract_wallet_transactions(
             address,
@@ -68,6 +96,7 @@ async def get_wallet_profile(
         )
         logger.info(f"✅ Found {len(transactions)} transactions")
         
+        # Transaction breakdown
         normal_txs = [tx for tx in transactions if tx.get('tx_type') == 'normal']
         internal_txs = [tx for tx in transactions if tx.get('tx_type') == 'internal']
         token_txs = [tx for tx in transactions if tx.get('tx_type') == 'erc20']
@@ -77,6 +106,7 @@ async def get_wallet_profile(
         logger.info(f"   • Internal: {len(internal_txs)}")
         logger.info(f"   • ERC20 Tokens: {len(token_txs)}")
         
+        # Enrich with prices
         logger.info(f"💰 Enriching with prices...")
         transactions = tx_extractor.enrich_with_usd_value(
             transactions,
@@ -84,6 +114,10 @@ async def get_wallet_profile(
         )
         
         enriched_txs = [tx for tx in transactions if tx.get('usd_value') is not None]
+        
+        # ====================================================================
+        # ✅ DATETIME TIMEZONE FIX
+        # ====================================================================
         
         # Calculate metrics
         total_value = 0
@@ -98,18 +132,19 @@ async def get_wallet_profile(
             max_tx = max(enriched_txs, key=lambda x: x['usd_value'])
             max_tx_value = max_tx['usd_value']
             
-            # Calculate 30-day and 7-day volumes
-            now = datetime.now()
+            # ✅ FIX: Use timezone-aware datetime
+            now = datetime.now(timezone.utc)  # ✅ UTC aware
             thirty_days_ago = now - timedelta(days=30)
             seven_days_ago = now - timedelta(days=7)
             
+            # ✅ FIX: Safe datetime comparison
             recent_30d_txs = [
                 tx for tx in enriched_txs 
-                if tx.get('timestamp') and tx['timestamp'] >= thirty_days_ago
+                if tx.get('timestamp') and ensure_aware_datetime(tx['timestamp']) >= thirty_days_ago
             ]
             recent_7d_txs = [
                 tx for tx in enriched_txs 
-                if tx.get('timestamp') and tx['timestamp'] >= seven_days_ago
+                if tx.get('timestamp') and ensure_aware_datetime(tx['timestamp']) >= seven_days_ago
             ]
             
             volume_30d = sum(tx['usd_value'] for tx in recent_30d_txs)
@@ -122,6 +157,7 @@ async def get_wallet_profile(
             logger.info(f"   • 30-Day Volume: ${volume_30d:,.2f}")
             logger.info(f"   • 7-Day Volume: ${volume_7d:,.2f}")
         
+        # Get labels
         labels = None
         if include_labels:
             logger.info(f"🏷️  Fetching wallet labels...")
@@ -132,6 +168,7 @@ async def get_wallet_profile(
                 logger.info(f"   • Type: {labels.get('entity_type')}")
                 logger.info(f"   • Name: {labels.get('entity_name', 'N/A')}")
         
+        # Build profile
         logger.info(f"📊 Building wallet profile...")
         profile = profiler.create_profile(address, transactions, labels)
         
@@ -144,11 +181,13 @@ async def get_wallet_profile(
         profile['enriched_transaction_count'] = len(enriched_txs)
         profile['total_transaction_count'] = len(transactions)
         
+        # Calculate OTC probability
         otc_probability = profiler.calculate_otc_probability(profile)
         profile['otc_probability'] = otc_probability
         
         logger.info(f"🎯 OTC Probability: {otc_probability:.2%}")
         
+        # Network metrics
         if include_network_metrics and len(transactions) > 0:
             logger.info(f"🕸️  Calculating network metrics...")
             network_analyzer = NetworkAnalysisService()
@@ -157,6 +196,7 @@ async def get_wallet_profile(
             
             profile['network_metrics'] = network_metrics
         
+        # Cache profile
         cache.cache_wallet_profile(address, profile)
         
         logger.info(f"✅ Profile complete - OTC probability: {otc_probability:.2%}")
@@ -213,3 +253,4 @@ async def get_wallet_details(
     except Exception as e:
         logger.error(f"❌ Error in /wallet/details: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
