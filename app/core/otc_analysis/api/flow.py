@@ -5,9 +5,15 @@ Flow & Timeline Endpoints
 Money flow tracing, Sankey diagrams, and transfer timelines.
 
 This module handles all flow-related endpoints:
-- Sankey flow visualization (WITH LINK GENERATION)
+- Sankey flow visualization (✨ WITH FAST LINK GENERATION via LinkBuilder)
 - Transfer timeline events
 - Money flow path tracing
+
+✨ NEW IN v2.0:
+- Uses LinkBuilder for fast link generation
+- 5-minute caching
+- Discovery data + transaction fallback
+- No more slow _create_links_from_transactions()
 """
 
 import logging
@@ -16,12 +22,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from typing import Optional, List, Dict
 from datetime import datetime, timedelta
-from collections import defaultdict
 
 from .dependencies import (
     get_db,
     get_transaction_extractor,
     get_price_oracle,
+    get_link_builder,  # ✨ NEW
     flow_tracer,
     ensure_registry_wallets_in_db
 )
@@ -38,138 +44,6 @@ flow_router = APIRouter(prefix="", tags=["Flow"])
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
-
-async def _create_links_from_transactions(
-    db: Session,
-    otc_wallets: List[OTCWallet],
-    tx_extractor,
-    start_date: datetime,
-    end_date: datetime,
-    min_flow_size: float = 100000
-) -> List[Dict]:
-    """
-    🔗 CREATE LINKS from actual blockchain transactions between OTC desks
-    
-    This function:
-    1. Gets all transactions for each OTC desk
-    2. Finds transactions where BOTH from AND to are OTC desks
-    3. Aggregates flows between desk pairs
-    4. Returns formatted Sankey links
-    
-    Args:
-        db: Database session
-        otc_wallets: List of OTC wallet objects
-        tx_extractor: Transaction extractor service
-        start_date: Filter transactions after this date
-        end_date: Filter transactions before this date
-        min_flow_size: Minimum flow volume in USD
-        
-    Returns:
-        List of Sankey links with source, target, value
-    """
-    logger.info(f"🔗 Creating links from blockchain transactions...")
-    
-    # Create mapping of address -> desk info
-    desk_map = {
-        wallet.address.lower(): {
-            "name": wallet.label or f"{wallet.address[:8]}...",
-            "address": wallet.address,
-            "entity_type": wallet.entity_type
-        }
-        for wallet in otc_wallets
-    }
-    
-    otc_addresses = set(desk_map.keys())
-    logger.info(f"   Analyzing {len(otc_addresses)} OTC desk addresses")
-    
-    # Aggregate flows between desks
-    flows = defaultdict(lambda: {"value": 0, "count": 0, "transactions": []})
-    
-    # Extract transactions for each OTC desk
-    for wallet in otc_wallets[:10]:  # Limit to 10 desks to avoid API rate limits
-        try:
-            logger.info(f"   📡 Fetching transactions for {wallet.label or wallet.address[:10]}...")
-            
-            transactions = tx_extractor.extract_wallet_transactions(
-                wallet.address,
-                include_internal=True,
-                include_tokens=True
-            )
-            
-            logger.info(f"      Found {len(transactions)} transactions")
-            
-            # Filter and analyze transactions
-            for tx in transactions:
-                try:
-                    # Parse timestamp
-                    tx_time = tx.get('timestamp')
-                    if isinstance(tx_time, str):
-                        tx_time = datetime.fromisoformat(tx_time.replace('Z', '+00:00'))
-                    elif isinstance(tx_time, int):
-                        tx_time = datetime.fromtimestamp(tx_time)
-                    
-                    # Skip if outside date range
-                    if tx_time and (tx_time < start_date or tx_time > end_date):
-                        continue
-                    
-                    # Get addresses
-                    from_addr = tx.get('from', '').lower()
-                    to_addr = tx.get('to', '').lower()
-                    
-                    # Check if both addresses are OTC desks
-                    if from_addr in otc_addresses and to_addr in otc_addresses and from_addr != to_addr:
-                        # Get USD value
-                        value_usd = tx.get('value_usd', 0) or tx.get('valueUSD', 0)
-                        
-                        if not value_usd and tx.get('value'):
-                            # Try to calculate USD value
-                            eth_value = float(tx.get('value', 0)) / 1e18
-                            value_usd = eth_value * 2000  # Rough ETH price estimate
-                        
-                        if value_usd >= min_flow_size:
-                            # Create flow key
-                            from_desk = desk_map[from_addr]["name"]
-                            to_desk = desk_map[to_addr]["name"]
-                            flow_key = (from_desk, to_desk)
-                            
-                            # Aggregate
-                            flows[flow_key]["value"] += value_usd
-                            flows[flow_key]["count"] += 1
-                            flows[flow_key]["transactions"].append({
-                                "hash": tx.get('hash') or tx.get('tx_hash'),
-                                "value_usd": value_usd,
-                                "timestamp": tx_time.isoformat() if tx_time else None
-                            })
-                            
-                            logger.info(f"      🔗 Flow: {from_desk} → {to_desk}: ${value_usd:,.0f}")
-                
-                except Exception as tx_error:
-                    logger.debug(f"      Skipping transaction: {tx_error}")
-                    continue
-                    
-        except Exception as e:
-            logger.warning(f"   ⚠️ Error fetching transactions for {wallet.address[:10]}: {e}")
-            continue
-    
-    # Convert to Sankey links format
-    links = []
-    for (source, target), data in flows.items():
-        if data["value"] >= min_flow_size:
-            links.append({
-                "source": source,
-                "target": target,
-                "value": data["value"],
-                "transaction_count": data["count"]
-            })
-    
-    logger.info(f"✅ Created {len(links)} links (min_flow_size: ${min_flow_size:,.0f})")
-    
-    # Log some examples
-    for link in links[:3]:
-        logger.info(f"   📊 {link['source']} → {link['target']}: ${link['value']:,.0f} ({link['transaction_count']} txs)")
-    
-    return links
-
 
 def _get_category_from_wallet(wallet: OTCWallet) -> str:
     """
@@ -207,30 +81,40 @@ async def get_sankey_flow(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     min_flow_size: float = Query(100000),
-    generate_links: bool = Query(True, description="Generate links from blockchain data (slower but shows actual flows)"),
+    generate_links: bool = Query(True, description="Generate links from data (discovery + blockchain)"),
+    use_discovery: bool = Query(True, description="Use discovery data for fast link generation"),
+    use_transactions: bool = Query(False, description="Use blockchain transactions (slower but complete)"),
     db: Session = Depends(get_db),
-    tx_extractor = Depends(get_transaction_extractor)
+    link_builder = Depends(get_link_builder)  # ✨ NEW
 ):
     """
-    Get Sankey flow diagram data WITH LINKS.
+    Get Sankey flow diagram data WITH FAST LINK GENERATION.
     
     GET /api/otc/sankey?start_date=2024-12-01&end_date=2024-12-28&min_flow_size=100000&generate_links=true
+    
+    ✨ NEW IN v2.0:
+    - Uses LinkBuilder for fast, cached link generation
+    - Multiple data sources: discovery (fast) + blockchain (slow)
+    - 5-minute caching for performance
+    - Returns meaningful links even with 0 blockchain TXs (from discovery data)
     
     Parameters:
         start_date: ISO format date (e.g., '2024-12-01')
         end_date: ISO format date (e.g., '2024-12-28')
         min_flow_size: Minimum flow value in USD (default: 100000)
-        generate_links: If true, analyzes blockchain transactions to create actual links (default: true)
+        generate_links: If true, generates links between wallets (default: true)
+        use_discovery: Use discovery data for fast link generation (default: true)
+        use_transactions: Use blockchain transactions for accurate flows (default: false)
     
     Returns:
         nodes: List of wallet nodes with volume data
-        links: List of flow connections between wallets (from blockchain transactions)
-        metadata: Period info and statistics
+        links: List of flow connections between wallets (✨ NOW GENERATED!)
+        metadata: Period info, statistics, and data sources
     
     The Sankey diagram visualizes money flows between wallets:
     - Node size = Total wallet volume
     - Link width = Transaction volume between wallets
-    - Links are created by analyzing actual blockchain transactions
+    - Links created from discovery data (fast) or blockchain (accurate)
     """
     try:
         # AUTO-SYNC: Ensure registry wallets are in database
@@ -247,7 +131,8 @@ async def get_sankey_flow(
         else:
             end = datetime.now()
         
-        logger.info(f"💱 GET /sankey: {start.date()} to {end.date()}, min_flow=${min_flow_size:,.0f}, generate_links={generate_links}")
+        logger.info(f"💱 GET /sankey: {start.date()} to {end.date()}, min_flow=${min_flow_size:,.0f}")
+        logger.info(f"   • generate_links={generate_links}, use_discovery={use_discovery}, use_transactions={use_transactions}")
         
         # Query wallets with significant volume in the time range
         wallets = db.query(OTCWallet).filter(
@@ -270,21 +155,45 @@ async def get_sankey_flow(
             for w in wallets
         ]
         
-        # ✅ GENERATE LINKS from blockchain transactions
+        # ====================================================================
+        # ✨ NEW: USE LINKBUILDER FOR FAST LINK GENERATION
+        # ====================================================================
+        
         links = []
+        link_metadata = {}
+        
         if generate_links and len(wallets) > 1:
             try:
-                links = await _create_links_from_transactions(
+                logger.info(f"   🔗 Building links using LinkBuilder...")
+                
+                # Use LinkBuilder service
+                result = link_builder.build_links(
                     db=db,
-                    otc_wallets=wallets,
-                    tx_extractor=tx_extractor,
+                    wallets=wallets,
                     start_date=start,
                     end_date=end,
-                    min_flow_size=min_flow_size
+                    min_flow_size=min_flow_size,
+                    use_discovery=use_discovery,
+                    use_transactions=use_transactions
                 )
+                
+                # Extract Sankey links
+                links = result.get("sankey_links", [])
+                link_metadata = result.get("metadata", {})
+                
+                logger.info(
+                    f"   ✅ LinkBuilder: {len(links)} links "
+                    f"(source: {link_metadata.get('source', 'unknown')}, "
+                    f"cached: {link_metadata.get('cached', False)})"
+                )
+                
             except Exception as link_error:
-                logger.error(f"⚠️ Error generating links: {link_error}", exc_info=True)
+                logger.error(f"   ⚠️ Error generating links: {link_error}", exc_info=True)
                 logger.info(f"   Continuing with nodes only...")
+        
+        # ====================================================================
+        # RETURN RESULT
+        # ====================================================================
         
         logger.info(f"✅ Sankey: {len(nodes)} nodes, {len(links)} links")
         
@@ -299,7 +208,12 @@ async def get_sankey_flow(
                 "period": {
                     "start": start.isoformat(),
                     "end": end.isoformat()
-                }
+                },
+                # ✨ NEW: Link generation metadata
+                "link_source": link_metadata.get("source", "none"),
+                "link_cached": link_metadata.get("cached", False),
+                "discovery_used": link_metadata.get("discovery_used", False),
+                "transactions_used": link_metadata.get("transactions_used", False)
             }
         }
         
