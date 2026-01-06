@@ -1,3 +1,4 @@
+
 """
 Shared Dependencies & Services - ALWAYS USE QUICK STATS FIRST
 ===============================================================
@@ -7,8 +8,10 @@ Shared Dependencies & Services - ALWAYS USE QUICK STATS FIRST
 - Nur bei Fehler/Unavailable → Fallback auf Transaction Processing
 - 15x schneller für ALLE Registry Wallets
 
-Version: 6.0 - Always Quick Stats First
-Date: 2025-01-04
+✨ NEW: LinkBuilder Service für schnelle Link-Generierung
+
+Version: 6.1 - Always Quick Stats First + LinkBuilder
+Date: 2025-01-06
 """
 
 import os
@@ -48,6 +51,7 @@ from app.core.otc_analysis.discovery.discovery_scorer import DiscoveryScorer
 from app.core.otc_analysis.analysis.statistics_service import StatisticsService
 from app.core.otc_analysis.analysis.graph_builder import GraphBuilderService
 from app.core.otc_analysis.analysis.network_graph import NetworkAnalysisService
+from app.core.otc_analysis.analysis.link_builder import LinkBuilder  # ✨ NEW
 
 # Database Models
 from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
@@ -107,11 +111,15 @@ block_scanner = BlockScanner(node_provider, chain_id=1)
 statistics_service = StatisticsService(cache_manager)
 graph_builder = GraphBuilderService(cache_manager)
 
+# ✨ NEW: LinkBuilder service for fast link/edge generation
+link_builder = LinkBuilder(cache_manager, transaction_extractor)
+
 logger.info("✅ All OTC services initialized successfully")
 logger.info(f"   • Strategy: ALWAYS Quick Stats First (15x faster)")
 logger.info(f"   • WalletProfiler: with PriceOracle + WalletStatsAPI")
 logger.info(f"   • WalletStatsAPI: Multi-tier fallback")
 logger.info(f"   • TransactionExtractor: Moralis enabled")
+logger.info(f"   • LinkBuilder: Fast link generation with caching")  # ✨ NEW
 
 
 # ============================================================================
@@ -156,6 +164,11 @@ def get_wallet_profiler():
 def get_otc_detector():
     """Dependency: Get OTC detector."""
     return otc_detector
+
+
+def get_link_builder():
+    """Dependency: Get link builder service."""
+    return link_builder
 
 
 # ============================================================================
@@ -945,6 +958,7 @@ __all__ = [
     "get_price_oracle",
     "get_wallet_profiler",
     "get_otc_detector",
+    "get_link_builder",  # ✨ NEW
     
     # Services
     "cache_manager",
@@ -963,6 +977,7 @@ __all__ = [
     "block_scanner",
     "statistics_service",
     "graph_builder",
+    "link_builder",  # ✨ NEW
     
     # Helpers
     "ensure_registry_wallets_in_db",
