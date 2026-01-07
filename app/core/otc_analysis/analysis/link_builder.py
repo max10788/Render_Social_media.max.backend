@@ -300,6 +300,8 @@ class LinkBuilder:
         """
         Extract links by analyzing blockchain transactions.
         
+        ✅ NOW INCLUDES: Individual transaction details (hash, value, timestamp)
+        
         This is SLOW because it requires:
         - API calls for each wallet
         - Transaction parsing
@@ -316,11 +318,23 @@ class LinkBuilder:
                 ("0xabc...", "0xdef..."): {
                     "value": 1000000,
                     "count": 5,
-                    "source": "blockchain"
+                    "source": "blockchain",
+                    "transactions": [  # ✅ NEW!
+                        {
+                            "hash": "0xabc123...",
+                            "value_usd": 500000,
+                            "timestamp": "2024-12-25T..."
+                        }
+                    ]
                 }
             }
         """
-        links = defaultdict(lambda: {"value": 0, "count": 0, "source": "blockchain"})
+        links = defaultdict(lambda: {
+            "value": 0, 
+            "count": 0, 
+            "source": "blockchain",
+            "transactions": []  # ✅ NEW: Store individual TXs
+        })
         
         wallet_addresses = list(wallet_map.keys())[:max_wallets]
         logger.info(f"      📡 Analyzing transactions for {len(wallet_addresses)} wallets...")
@@ -374,6 +388,21 @@ class LinkBuilder:
                             link_key = (from_addr, to_addr)
                             links[link_key]["value"] += value_usd
                             links[link_key]["count"] += 1
+                            
+                            # ✅ NEW: Store transaction details
+                            tx_hash = tx.get('hash') or tx.get('tx_hash') or tx.get('transactionHash')
+                            tx_timestamp = tx.get('timestamp')
+                            
+                            if isinstance(tx_timestamp, datetime):
+                                tx_timestamp = tx_timestamp.isoformat()
+                            elif isinstance(tx_timestamp, int):
+                                tx_timestamp = datetime.fromtimestamp(tx_timestamp).isoformat()
+                            
+                            links[link_key]["transactions"].append({
+                                "hash": tx_hash,
+                                "value_usd": value_usd,
+                                "timestamp": tx_timestamp
+                            })
                 
             except Exception as e:
                 logger.warning(f"         ⚠️ Error analyzing transactions: {e}")
@@ -386,11 +415,21 @@ class LinkBuilder:
         """
         Format links for D3-Sankey visualization.
         
+        ✅ NOW INCLUDES: transactions array for frontend display
+        
         Sankey format:
         {
             "source": "Wallet Name",
             "target": "Other Wallet",
-            "value": 1000000
+            "value": 1000000,
+            "transaction_count": 5,
+            "transactions": [  # ✅ NEW!
+                {
+                    "hash": "0xabc...",
+                    "value_usd": 500000,
+                    "timestamp": "2024-12-25T..."
+                }
+            ]
         }
         """
         sankey_links = []
@@ -405,7 +444,9 @@ class LinkBuilder:
                 "value": data["value"],
                 "transaction_count": data.get("count", 0),
                 "source_address": source_addr,
-                "target_address": target_addr
+                "target_address": target_addr,
+                "source_type": data.get("source", "unknown"),
+                "transactions": data.get("transactions", [])  # ✅ NEW: Include TX details
             })
         
         return sankey_links
