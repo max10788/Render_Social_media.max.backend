@@ -688,23 +688,26 @@ class OTCDeskRegistry:
         
         return results
     
+
     def get_combined_desk_list(
         self,
         include_discovered: bool = True,
         include_db_validated: bool = True,
         min_confidence: float = 0.0,
-        db_session=None
+        db_session=None,
+        required_tags: List[str] = None  # ✅ NEW: Filter by tags
     ) -> List[Dict]:
         """
         Get COMBINED list of OTC desks from:
         1. Registry (verified + discovered)
-        2. Database (validated wallets with high confidence)
+        2. Database (validated wallets with tags like 'verified', 'otc_desk')
         
         Args:
             include_discovered: Include auto-discovered desks from registry
             include_db_validated: Include validated desks from database
             min_confidence: Minimum confidence threshold
             db_session: Database session (optional)
+            required_tags: Filter DB wallets by tags (e.g., ['verified', 'otc_desk'])
             
         Returns:
             Combined list of all OTC desks with source tracking
@@ -728,11 +731,30 @@ class OTCDeskRegistry:
             try:
                 from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
                 
-                # Query high-confidence wallets from DB
-                db_wallets = db_session.query(OTCWallet).filter(
-                    OTCWallet.confidence_score >= min_confidence * 100,  # Convert to 0-100 scale
+                # ✅ Build query with tag filter
+                query = db_session.query(OTCWallet).filter(
+                    OTCWallet.confidence_score >= min_confidence * 100,
                     OTCWallet.is_active == True
-                ).all()
+                )
+                
+                # ✅ NEW: Filter by tags if provided
+                if required_tags:
+                    # PostgreSQL: tags column is JSONB array
+                    # Filter wallets that have ANY of the required tags
+                    from sqlalchemy import cast, String
+                    
+                    tag_filters = []
+                    for tag in required_tags:
+                        # Check if tag exists in JSONB array
+                        tag_filters.append(OTCWallet.tags.contains([tag]))
+                    
+                    # Combine with OR (wallet has at least one of the tags)
+                    from sqlalchemy import or_
+                    query = query.filter(or_(*tag_filters))
+                    
+                    logger.info(f"   🏷️  Filtering by tags: {required_tags}")
+                
+                db_wallets = query.all()
                 
                 # Check which addresses are NOT already in registry
                 registry_addresses = set()
@@ -752,9 +774,10 @@ class OTCDeskRegistry:
                             'desk_category': 'db_validated',
                             'address_count': 1,
                             'addresses': [wallet.address],
-                            'confidence': wallet.confidence_score / 100,  # Convert to 0-1 scale
+                            'confidence': wallet.confidence_score / 100,
                             'is_otc': True,
                             'active': wallet.is_active,
+                            'tags': wallet.tags or [],  # ✅ Include tags
                             'logo_url': None,
                             'source': 'database',
                             'data_source': 'database',
@@ -767,8 +790,13 @@ class OTCDeskRegistry:
                 
                 logger.info(f"💾 Database: {db_desk_count} validated desks (excluded {len(db_wallets) - db_desk_count} duplicates)")
                 
+                if required_tags:
+                    logger.info(f"   ✅ Loaded wallets with tags: {required_tags}")
+                
             except Exception as e:
                 logger.error(f"❌ Error fetching DB wallets: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Sort combined list
         all_desks.sort(key=lambda x: (
