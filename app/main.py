@@ -52,6 +52,7 @@ from app.core.otc_analysis.api.wallets import router as otc_wallets_router
 from app.core.otc_analysis.api.discovery import router as otc_discovery_router
 from app.core.otc_analysis.api.monitoring import router as otc_monitoring_router
 from app.core.otc_analysis.api.streams import router as otc_streams_router
+from app.core.otc_analysis.api.admin import router as otc_data_admin_router
 
 # ✅ Vereinfachte Router (ohne Sub-Prefixe)
 from app.core.otc_analysis.api.statistics import router as otc_statistics_router
@@ -356,6 +357,8 @@ app.include_router(otc_discovery_router, prefix="/api/otc")
 # Bei den OTC Analysis API Routes (ca. Zeile 350-365)
 # ✅ TEMPORÄR: Migration Endpoint (nach Ausführung löschen!)
 app.include_router(otc_migration_router, prefix="/api/migration", tags=["Migration"])
+
+app.include_router(otc_data_admin_router, prefix="/api/otc")
 
 # ✅ Optional: Validators & WebSocket (wenn du sie nutzt)
 # app.include_router(otc_validators_router, prefix="/api/otc")
