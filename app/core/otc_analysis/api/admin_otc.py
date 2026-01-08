@@ -11,8 +11,10 @@ Features:
 - ✅ List all addresses with filtering
 - ✅ Duplicate check
 - ✅ Address validation
+- ✅ Fixed: Tags serialization
+- ✅ Fixed: Response validation
 
-Version: 1.0
+Version: 1.1
 Date: 2025-01-08
 """
 
@@ -65,6 +67,15 @@ class OTCAddressCreate(BaseModel):
         if v not in valid_types:
             raise ValueError(f"Invalid entity_type. Must be one of: {', '.join(valid_types)}")
         return v
+    
+    @validator('tags', pre=True, always=True)
+    def validate_tags(cls, v):
+        """Ensure tags is always a list"""
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        return []
 
 
 class OTCAddressUpdate(BaseModel):
@@ -83,16 +94,25 @@ class OTCAddressUpdate(BaseModel):
             if v not in valid_types:
                 raise ValueError(f"Invalid entity_type. Must be one of: {', '.join(valid_types)}")
         return v
+    
+    @validator('tags', pre=True)
+    def validate_tags(cls, v):
+        """Ensure tags is always a list if provided"""
+        if v is None:
+            return None
+        if isinstance(v, list):
+            return v
+        return []
 
 
 class OTCAddressResponse(BaseModel):
     """Response model for OTC address"""
     address: str
     entity_type: str
-    entity_name: Optional[str]
-    label: Optional[str]
-    notes: Optional[str]
-    tags: List[str]
+    entity_name: Optional[str] = None
+    label: Optional[str] = None
+    notes: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
     is_active: bool
     confidence_score: float
     total_volume: float
@@ -100,8 +120,23 @@ class OTCAddressResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     
+    @validator('tags', pre=True, always=True)
+    def validate_tags(cls, v):
+        """Convert None to empty list"""
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        return []
+    
+    @validator('entity_name', 'label', 'notes', pre=True)
+    def validate_optional_strings(cls, v):
+        """Handle None values for optional string fields"""
+        return v if v is not None else None
+    
     class Config:
-        from_attributes = True
+        from_attributes = True  # ✅ Pydantic v2
+        orm_mode = True  # ✅ Pydantic v1 compatibility
 
 
 # ============================================================================
@@ -158,15 +193,15 @@ async def create_otc_address(
     - ✅ Auto-generate label if not provided
     
     **Example:**
-    ```json
+```json
     {
-        "address": "0x...",
+        "address": "0x1151314c646Ce4E0eFD76d1aF4760aE66a9Fe30F",
         "entity_type": "otc_desk",
         "entity_name": "Wintermute",
         "notes": "Main trading wallet",
         "tags": ["verified", "high_volume"]
     }
-    ```
+```
     """
     try:
         logger.info(f"➕ Admin: Adding OTC address {data.address[:10]}...")
@@ -182,6 +217,9 @@ async def create_otc_address(
                 detail=f"Address {data.address} already exists in database"
             )
         
+        # ✅ Ensure tags is a list, never None
+        tags = data.tags if data.tags else []
+        
         # Create wallet entry
         wallet = OTCWallet(
             address=data.address,
@@ -189,7 +227,7 @@ async def create_otc_address(
             entity_name=data.entity_name,
             label=data.label or data.entity_name or f"{data.address[:8]}...",
             notes=data.notes,
-            tags=data.tags or [],
+            tags=tags,  # ✅ Always a list
             is_active=data.is_active,
             # Initial values
             confidence_score=100.0,  # Manual entry = high confidence
@@ -204,6 +242,10 @@ async def create_otc_address(
         db.add(wallet)
         db.commit()
         db.refresh(wallet)
+        
+        # ✅ Ensure tags is not None after refresh
+        if wallet.tags is None:
+            wallet.tags = []
         
         logger.info(f"✅ Added {data.address[:10]}... ({data.entity_type})")
         
@@ -281,6 +323,11 @@ async def list_otc_addresses(
             OTCWallet.updated_at.desc()
         ).offset(offset).limit(limit).all()
         
+        # ✅ Ensure tags is not None for all wallets
+        for wallet in wallets:
+            if wallet.tags is None:
+                wallet.tags = []
+        
         logger.info(f"✅ Found {len(wallets)} addresses (total: {total})")
         
         return wallets
@@ -318,6 +365,10 @@ async def get_otc_address(
                 detail=f"Address {address} not found"
             )
         
+        # ✅ Ensure tags is not None
+        if wallet.tags is None:
+            wallet.tags = []
+        
         return wallet
         
     except HTTPException:
@@ -346,13 +397,13 @@ async def update_otc_address(
     ✏️ Update OTC address
     
     **Example:**
-    ```json
+```json
     {
         "entity_name": "Wintermute Trading",
         "notes": "Updated notes",
         "tags": ["verified", "high_volume", "market_maker"]
     }
-    ```
+```
     """
     try:
         address = validate_ethereum_address(address)
@@ -371,6 +422,11 @@ async def update_otc_address(
         # Update only provided fields
         update_data = data.dict(exclude_unset=True)
         
+        # ✅ Ensure tags is a list if provided
+        if 'tags' in update_data:
+            if update_data['tags'] is None:
+                update_data['tags'] = []
+        
         for field, value in update_data.items():
             setattr(wallet, field, value)
         
@@ -378,6 +434,10 @@ async def update_otc_address(
         
         db.commit()
         db.refresh(wallet)
+        
+        # ✅ Ensure tags is not None after refresh
+        if wallet.tags is None:
+            wallet.tags = []
         
         logger.info(f"✅ Updated {address[:10]}...")
         
@@ -473,6 +533,10 @@ async def toggle_active_status(
         db.commit()
         db.refresh(wallet)
         
+        # ✅ Ensure tags is not None
+        if wallet.tags is None:
+            wallet.tags = []
+        
         status_text = "active" if wallet.is_active else "inactive"
         logger.info(f"✅ Toggled {address[:10]}... to {status_text}")
         
@@ -508,11 +572,9 @@ async def bulk_delete_addresses(
     🗑️ Bulk delete multiple addresses
     
     **Example:**
-    ```json
-    {
-        "addresses": ["0x...", "0x...", "0x..."]
-    }
-    ```
+```json
+    ["0x1151314c646Ce4E0eFD76d1aF4760aE66a9Fe30F", "0x..."]
+```
     """
     try:
         logger.info(f"🗑️ Admin: Bulk deleting {len(addresses)} addresses...")
@@ -541,4 +603,49 @@ async def bulk_delete_addresses(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to bulk delete: {str(e)}"
+        )
+
+
+# ============================================================================
+# STATISTICS ENDPOINT (Bonus)
+# ============================================================================
+
+@router.get(
+    "/stats",
+    summary="Get Statistics",
+    description="Get statistics about OTC addresses in the database"
+)
+async def get_address_statistics(
+    db: Session = Depends(get_db),
+    _admin: bool = Depends(verify_admin)
+):
+    """📊 Get database statistics"""
+    try:
+        total = db.query(OTCWallet).count()
+        active = db.query(OTCWallet).filter(OTCWallet.is_active == True).count()
+        
+        # Count by entity type
+        entity_counts = {}
+        for entity_type in ['otc_desk', 'market_maker', 'cex', 'prop_trading', 'whale', 'unknown']:
+            count = db.query(OTCWallet).filter(OTCWallet.entity_type == entity_type).count()
+            if count > 0:
+                entity_counts[entity_type] = count
+        
+        # Total volume
+        from sqlalchemy import func
+        total_volume = db.query(func.sum(OTCWallet.total_volume)).scalar() or 0.0
+        
+        return {
+            "total_addresses": total,
+            "active_addresses": active,
+            "inactive_addresses": total - active,
+            "by_entity_type": entity_counts,
+            "total_volume_usd": total_volume
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting statistics: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get statistics: {str(e)}"
         )
