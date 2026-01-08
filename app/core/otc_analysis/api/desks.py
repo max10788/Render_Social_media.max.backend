@@ -42,6 +42,7 @@ async def get_otc_desks(
     include_db_validated: bool = Query(True, description="Include validated desks from database"),
     min_confidence: float = Query(0.7, ge=0.0, le=1.0, description="Minimum confidence score (0-1)"),
     source: Optional[str] = Query(None, description="Filter by source: registry, database, or all"),
+    tags: Optional[str] = Query(None, description="Filter by tags (comma-separated, e.g. 'verified,otc_desk')"),  # ✅ NEW!
     db: Session = Depends(get_db),
     registry = Depends(get_otc_registry)
 ):
@@ -49,6 +50,7 @@ async def get_otc_desks(
     🎯 Get list of ALL OTC desks from MULTIPLE sources.
     
     GET /api/otc/desks?include_discovered=true&include_db_validated=true&min_confidence=0.7
+    GET /api/otc/desks?tags=verified  ✅ NEW: Filter by tags!
     
     **Sources:**
     - **Registry**: Verified + Discovered desks (via Moralis)
@@ -59,22 +61,35 @@ async def get_otc_desks(
     - `include_db_validated`: Include DB validated desks (default: true)
     - `min_confidence`: Minimum confidence 0-1 (default: 0.7)
     - `source`: Filter by 'registry', 'database', or null for all
+    - `tags`: Filter DB wallets by tags, comma-separated (e.g. 'verified,otc_desk')  ✅ NEW!
+    
+    **Tag Examples:**
+    - `tags=verified` → Only wallets with 'verified' tag
+    - `tags=verified,otc_desk` → Wallets with 'verified' OR 'otc_desk' tag
+    - `tags=discovered,active` → Wallets with 'discovered' OR 'active' tag
     
     **Returns:**
     Combined list with source tracking!
     """
-    logger.info(f"🏢 GET /desks: discovered={include_discovered}, db={include_db_validated}, min_conf={min_confidence}")
+    logger.info(f"🏢 GET /desks: discovered={include_discovered}, db={include_db_validated}, min_conf={min_confidence}, tags={tags}")
     
     try:
         # ✅ AUTO-SYNC: Ensure registry wallets in DB
         await ensure_registry_wallets_in_db(db, max_to_fetch=3)
         
-        # ✅ Get combined desk list (Registry + Database)
+        # ✅ Parse tags parameter
+        required_tags = None
+        if tags:
+            required_tags = [tag.strip() for tag in tags.split(',') if tag.strip()]
+            logger.info(f"   🏷️  Tag filter: {required_tags}")
+        
+        # ✅ Get combined desk list (Registry + Database) with tag filter
         desks = registry.get_combined_desk_list(
             include_discovered=include_discovered,
             include_db_validated=include_db_validated,
             min_confidence=min_confidence,
-            db_session=db
+            db_session=db,
+            required_tags=required_tags  # ✅ NEW!
         )
         
         # ✅ Filter by source if requested
@@ -117,13 +132,129 @@ async def get_otc_desks(
                     "include_discovered": include_discovered,
                     "include_db_validated": include_db_validated,
                     "min_confidence": min_confidence,
-                    "source_filter": source
+                    "source_filter": source,
+                    "tag_filter": required_tags  # ✅ NEW!
                 }
             }
         }
         
     except Exception as e:
         logger.error(f"❌ Failed to fetch desks: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# ✅ NEW: DATABASE-ONLY ENDPOINT
+# ============================================================================
+
+@router.get("/database")
+async def get_database_wallets(
+    tags: Optional[str] = Query(None, description="Filter by tags (comma-separated)"),
+    min_confidence: float = Query(0.0, ge=0.0, le=1.0, description="Minimum confidence (0-1)"),
+    is_active: bool = Query(True, description="Only active wallets"),
+    limit: int = Query(100, ge=1, le=500, description="Max results"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    db: Session = Depends(get_db)
+):
+    """
+    🎯 Get wallets ONLY from database (skip registry).
+    
+    GET /api/otc/desks/database?tags=verified,otc_desk&min_confidence=0.7
+    
+    **Use Cases:**
+    - Load all wallets with 'verified' tag
+    - Load all wallets with 'otc_desk' tag
+    - Debugging: See what's in DB vs Registry
+    
+    **Query Parameters:**
+    - `tags`: Filter by tags (e.g. 'verified,otc_desk')
+    - `min_confidence`: Minimum confidence (0-1)
+    - `is_active`: Only active wallets (default: true)
+    - `limit`: Max results (1-500, default: 100)
+    - `offset`: Pagination offset (default: 0)
+    
+    **Returns:**
+    List of database wallets with tag distribution stats
+    """
+    logger.info(f"💾 GET /desks/database: tags={tags}, min_conf={min_confidence}, limit={limit}, offset={offset}")
+    
+    try:
+        from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
+        
+        # Build base query
+        query = db.query(OTCWallet).filter(
+            OTCWallet.confidence_score >= min_confidence * 100,
+            OTCWallet.is_active == is_active
+        )
+        
+        # ✅ Filter by tags
+        if tags:
+            required_tags = [tag.strip() for tag in tags.split(',') if tag.strip()]
+            
+            # PostgreSQL JSONB array contains (OR logic: wallet has ANY of the tags)
+            from sqlalchemy import or_
+            tag_filters = []
+            for tag in required_tags:
+                tag_filters.append(OTCWallet.tags.contains([tag]))
+            
+            query = query.filter(or_(*tag_filters))
+            logger.info(f"   🏷️  Tag filter: {required_tags}")
+        
+        # Get total count before pagination
+        total_count = query.count()
+        
+        # Apply pagination
+        wallets = query.order_by(OTCWallet.created_at.desc()).offset(offset).limit(limit).all()
+        
+        # Format response
+        result = []
+        for wallet in wallets:
+            result.append({
+                'address': wallet.address,
+                'label': wallet.label,
+                'entity_name': wallet.entity_name,
+                'entity_type': wallet.entity_type,
+                'confidence': wallet.confidence_score / 100,
+                'is_active': wallet.is_active,
+                'tags': wallet.tags or [],
+                'total_volume': wallet.total_volume,
+                'transaction_count': wallet.transaction_count,
+                'first_seen': wallet.first_seen.isoformat() if wallet.first_seen else None,
+                'last_active': wallet.last_active.isoformat() if wallet.last_active else None,
+                'created_at': wallet.created_at.isoformat() if wallet.created_at else None,
+                'updated_at': wallet.updated_at.isoformat() if wallet.updated_at else None
+            })
+        
+        logger.info(f"✅ Loaded {len(result)} wallets from database (total: {total_count})")
+        
+        # Group by tags for debugging
+        tags_count = {}
+        for wallet in wallets:
+            for tag in (wallet.tags or []):
+                tags_count[tag] = tags_count.get(tag, 0) + 1
+        
+        return {
+            "success": True,
+            "data": {
+                "wallets": result,
+                "count": len(result),
+                "total_count": total_count,
+                "tags_distribution": tags_count,
+                "pagination": {
+                    "offset": offset,
+                    "limit": limit,
+                    "has_more": (offset + len(result)) < total_count
+                },
+                "filters_applied": {
+                    "tags": tags,
+                    "min_confidence": min_confidence,
+                    "is_active": is_active
+                }
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch database wallets: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -273,6 +404,7 @@ async def get_desk_details(
                     "total_volume": wallet.total_volume,
                     "transaction_count": wallet.transaction_count,
                     "active": wallet.is_active,
+                    "tags": wallet.tags or [],  # ✅ Include tags
                     "data_source": "database",
                     "last_updated": wallet.updated_at.isoformat() if wallet.updated_at else None,
                     "last_activity": wallet.last_active.isoformat() if wallet.last_active else None
