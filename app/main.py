@@ -52,7 +52,7 @@ from app.core.otc_analysis.api.wallets import router as otc_wallets_router
 from app.core.otc_analysis.api.discovery import router as otc_discovery_router
 from app.core.otc_analysis.api.monitoring import router as otc_monitoring_router
 from app.core.otc_analysis.api.streams import router as otc_streams_router
-from app.core.otc_analysis.api.admin import router as otc_data_admin_router
+from app.core.otc_analysis.api.admin_otc import router as otc_data_admin_router
 
 # ✅ Vereinfachte Router (ohne Sub-Prefixe)
 from app.core.otc_analysis.api.statistics import router as otc_statistics_router
