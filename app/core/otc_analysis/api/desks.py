@@ -160,26 +160,12 @@ async def get_database_wallets(
     🎯 Get wallets ONLY from database (skip registry).
     
     GET /api/otc/desks/database?tags=verified,otc_desk&min_confidence=0.7
-    
-    **Use Cases:**
-    - Load all wallets with 'verified' tag
-    - Load all wallets with 'otc_desk' tag
-    - Debugging: See what's in DB vs Registry
-    
-    **Query Parameters:**
-    - `tags`: Filter by tags (e.g. 'verified,otc_desk')
-    - `min_confidence`: Minimum confidence (0-1)
-    - `is_active`: Only active wallets (default: true)
-    - `limit`: Max results (1-500, default: 100)
-    - `offset`: Pagination offset (default: 0)
-    
-    **Returns:**
-    List of database wallets with tag distribution stats
     """
-    logger.info(f"💾 GET /desks/database: tags={tags}, min_conf={min_confidence}, limit={limit}, offset={offset}")
+    logger.info(f"💾 GET /desks/database: tags={tags}, min_conf={min_confidence}")
     
     try:
         from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
+        from sqlalchemy import or_
         
         # Build base query
         query = db.query(OTCWallet).filter(
@@ -187,24 +173,27 @@ async def get_database_wallets(
             OTCWallet.is_active == is_active
         )
         
-        # ✅ Filter by tags
+        # ✅ Filter by tags (FIXED: Use JSONB containment operator)
         if tags:
             required_tags = [tag.strip() for tag in tags.split(',') if tag.strip()]
             
-            # PostgreSQL JSONB array contains (OR logic: wallet has ANY of the tags)
-            from sqlalchemy import or_
+            # PostgreSQL JSONB array contains (OR logic)
             tag_filters = []
             for tag in required_tags:
                 tag_filters.append(OTCWallet.tags.contains([tag]))
             
-            query = query.filter(or_(*tag_filters))
-            logger.info(f"   🏷️  Tag filter: {required_tags}")
+            # Apply OR filter
+            if tag_filters:
+                query = query.filter(or_(*tag_filters))
+                logger.info(f"   🏷️  Tag filter (OR logic): {required_tags}")
         
-        # Get total count before pagination
+        # Get total count
         total_count = query.count()
         
         # Apply pagination
-        wallets = query.order_by(OTCWallet.created_at.desc()).offset(offset).limit(limit).all()
+        wallets = query.order_by(
+            OTCWallet.created_at.desc()
+        ).offset(offset).limit(limit).all()
         
         # Format response
         result = []
@@ -220,18 +209,16 @@ async def get_database_wallets(
                 'total_volume': wallet.total_volume,
                 'transaction_count': wallet.transaction_count,
                 'first_seen': wallet.first_seen.isoformat() if wallet.first_seen else None,
-                'last_active': wallet.last_active.isoformat() if wallet.last_active else None,
-                'created_at': wallet.created_at.isoformat() if wallet.created_at else None,
-                'updated_at': wallet.updated_at.isoformat() if wallet.updated_at else None
+                'last_active': wallet.last_active.isoformat() if wallet.last_active else None
             })
         
-        logger.info(f"✅ Loaded {len(result)} wallets from database (total: {total_count})")
-        
-        # Group by tags for debugging
+        # Calculate tag distribution
         tags_count = {}
         for wallet in wallets:
             for tag in (wallet.tags or []):
                 tags_count[tag] = tags_count.get(tag, 0) + 1
+        
+        logger.info(f"✅ Found {len(result)} wallets (total: {total_count})")
         
         return {
             "success": True,
@@ -246,7 +233,7 @@ async def get_database_wallets(
                     "has_more": (offset + len(result)) < total_count
                 },
                 "filters_applied": {
-                    "tags": tags,
+                    "tags": required_tags if tags else None,
                     "min_confidence": min_confidence,
                     "is_active": is_active
                 }
@@ -256,7 +243,6 @@ async def get_database_wallets(
     except Exception as e:
         logger.error(f"❌ Failed to fetch database wallets: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/discover")
 async def discover_otc_desks(
