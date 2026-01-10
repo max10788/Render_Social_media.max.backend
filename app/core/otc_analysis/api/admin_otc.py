@@ -89,10 +89,10 @@ class OTCAddressUpdate(BaseModel):
     
     @validator('entity_type')
     def validate_entity_type(cls, v):
-        if v is not None:
-            valid_types = ['otc_desk', 'market_maker', 'cex', 'prop_trading', 'whale', 'unknown']
-            if v not in valid_types:
-                raise ValueError(f"Invalid entity_type. Must be one of: {', '.join(valid_types)}")
+        """Validate entity type"""
+        valid_types = ['otc_desk', 'market_maker', 'cex', 'prop_trading', 'whale', 'cold_wallet', 'hot_wallet', 'unknown']
+        if v not in valid_types:
+            raise ValueError(f"Invalid entity_type. Must be one of: {', '.join(valid_types)}")
         return v
     
     @validator('tags', pre=True)
