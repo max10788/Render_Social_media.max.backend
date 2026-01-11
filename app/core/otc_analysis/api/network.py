@@ -376,14 +376,18 @@ async def get_activity_heatmap(
         # STEP 3: AGGREGATE TRANSACTIONS BY DAY/HOUR
         # ================================================================
         
-        logger.info(f"🔍 Step 3: Aggregating transactions...")
-        
-        # Query transactions grouped by day of week and hour
+        # ✨ VERBESSERTE QUERY: Zählt ALLE Transaktionen
         results = db.query(
-            func.extract('dow', Transaction.timestamp).label('day'),      # 0=Sun, 1=Mon, ..., 6=Sat
-            func.extract('hour', Transaction.timestamp).label('hour'),    # 0-23
-            func.sum(Transaction.usd_value).label('volume'),
-            func.count(Transaction.tx_hash).label('tx_count')
+            func.extract('dow', Transaction.timestamp).label('day'),
+            func.extract('hour', Transaction.timestamp).label('hour'),
+            func.count(Transaction.tx_hash).label('tx_count'),  # ✅ Zählt ALLE
+            func.coalesce(func.sum(Transaction.usd_value), 0).label('volume'),  # ✅ Volume oder 0
+            func.sum(
+                func.case(
+                    [(Transaction.usd_value != None, 1)],
+                    else_=0
+                )
+            ).label('enriched_count')  # ✨ NEU: Wie viele haben USD-Wert?
         ).filter(
             Transaction.timestamp >= start,
             Transaction.timestamp <= end,
@@ -401,16 +405,19 @@ async def get_activity_heatmap(
         if len(results) > 0:
             total_volume = sum(r.volume or 0 for r in results)
             total_txs = sum(r.tx_count or 0 for r in results)
+            total_enriched = sum(r.enriched_count or 0 for r in results)
+            enrichment_rate = (total_enriched / total_txs * 100) if total_txs > 0 else 0
+            
             logger.info(f"💰 Total volume: ${total_volume:,.2f}")
             logger.info(f"📊 Total transactions: {total_txs:,}")
+            logger.info(f"💵 Enriched: {total_enriched:,} ({enrichment_rate:.1f}%)")
             
-            # Show sample results
-            logger.info(f"📋 Sample results:")
-            for r in results[:5]:
-                logger.info(f"   DOW={int(r.day)} Hour={int(r.hour)} Vol=${r.volume:,.0f} TXs={r.tx_count}")
-        else:
-            logger.warning("⚠️ Still no transactions after sync - returning empty heatmap")
-            return _empty_heatmap_response(start, end)
+            # ✨ Warning wenn viele TXs nicht enriched sind
+            if enrichment_rate < 50:
+                logger.warning(
+                    f"⚠️ Low enrichment rate ({enrichment_rate:.1f}%) - "
+                    f"run POST /admin/enrich-missing-values"
+                )
         
         # ================================================================
         # STEP 4: BUILD 2D HEATMAP ARRAY
