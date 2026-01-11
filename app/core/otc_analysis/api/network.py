@@ -213,19 +213,32 @@ async def get_network_graph(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+"""
+ERSETZE den @network_router.get("/heatmap") Endpoint in network.py
+
+✨ NEU: Auto-Sync wenn keine Transaktionen gefunden werden
+"""
+
 @network_router.get("/heatmap")
 async def get_activity_heatmap(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
+    auto_sync: bool = Query(True, description="Auto-sync transactions if none found"),
     db: Session = Depends(get_db)
 ):
     """
     Get 24x7 activity heatmap with REAL transaction aggregation.
     
-    ✅ FIXED IN v2.2:
+    ✅ ENHANCED IN v2.3:
+    - Auto-syncs transactions if DB is empty
     - Uses Transaction table for accurate volumes
     - SQL GROUP BY with EXTRACT(DOW/HOUR)
     - Real hourly variation (not fake distribution)
+    
+    Parameters:
+        start_date: Start date (ISO format)
+        end_date: End date (ISO format)
+        auto_sync: Auto-fetch transactions if none found (default: true)
     
     Returns:
         heatmap: 2D array [7 days][24 hours] with actual transaction volumes
@@ -235,7 +248,7 @@ async def get_activity_heatmap(
     """
     try:
         logger.info("=" * 80)
-        logger.info("🔥 HEATMAP REQUEST (TRANSACTION-BASED v2.2)")
+        logger.info("🔥 HEATMAP REQUEST (TRANSACTION-BASED v2.3 + AUTO-SYNC)")
         logger.info("=" * 80)
         
         # Parse dates
@@ -279,10 +292,91 @@ async def get_activity_heatmap(
             logger.info(f"   Sample addresses: {wallet_addresses[:3]}")
         
         # ================================================================
-        # STEP 2: AGGREGATE TRANSACTIONS BY DAY/HOUR
+        # STEP 2: CHECK IF TRANSACTIONS EXIST IN DB
         # ================================================================
         
-        logger.info(f"🔍 Step 2: Aggregating transactions...")
+        logger.info(f"🔍 Step 2: Checking for existing transactions...")
+        
+        # Quick check: Do we have ANY transactions for these wallets?
+        tx_check = db.query(Transaction).filter(
+            Transaction.timestamp >= start,
+            Transaction.timestamp <= end,
+            or_(
+                Transaction.from_address.in_(wallet_addresses),
+                Transaction.to_address.in_(wallet_addresses)
+            )
+        ).limit(1).first()
+        
+        # ================================================================
+        # ✨ AUTO-SYNC: If no transactions found, sync them!
+        # ================================================================
+        
+        if not tx_check and auto_sync:
+            logger.warning("⚠️ No transactions found in DB - triggering AUTO-SYNC")
+            logger.info("🔄 Auto-syncing transactions for all wallets...")
+            
+            try:
+                from app.core.otc_analysis.api.dependencies import sync_wallet_transactions_to_db
+                
+                # Sync top 10 wallets (most active)
+                top_wallets = sorted(
+                    wallets,
+                    key=lambda w: w.total_volume or 0,
+                    reverse=True
+                )[:10]
+                
+                sync_stats = {
+                    "wallets_synced": 0,
+                    "transactions_saved": 0,
+                    "total_fetched": 0
+                }
+                
+                for wallet in top_wallets:
+                    try:
+                        logger.info(f"   📡 Syncing {wallet.label or wallet.address[:10]}...")
+                        
+                        stats = await sync_wallet_transactions_to_db(
+                            db=db,
+                            wallet_address=wallet.address,
+                            max_transactions=100,
+                            force_refresh=False
+                        )
+                        
+                        sync_stats["wallets_synced"] += 1
+                        sync_stats["transactions_saved"] += stats["saved_count"]
+                        sync_stats["total_fetched"] += stats["fetched_count"]
+                        
+                        # Small delay to avoid rate limits
+                        import asyncio
+                        await asyncio.sleep(0.3)
+                        
+                    except Exception as sync_error:
+                        logger.error(f"   ⚠️ Error syncing {wallet.address[:10]}: {sync_error}")
+                        continue
+                
+                logger.info(
+                    f"✅ Auto-sync complete: "
+                    f"{sync_stats['wallets_synced']} wallets, "
+                    f"{sync_stats['transactions_saved']} transactions saved"
+                )
+                
+                # Refresh DB session to see new transactions
+                db.expire_all()
+                
+            except Exception as auto_sync_error:
+                logger.error(f"❌ Auto-sync failed: {auto_sync_error}", exc_info=True)
+                logger.warning("⚠️ Continuing with empty heatmap...")
+        
+        elif not tx_check and not auto_sync:
+            logger.warning("⚠️ No transactions found - auto_sync=false, returning empty heatmap")
+            logger.info("💡 Tip: Enable auto_sync=true or run: POST /admin/sync-all-transactions")
+            return _empty_heatmap_response(start, end)
+        
+        # ================================================================
+        # STEP 3: AGGREGATE TRANSACTIONS BY DAY/HOUR
+        # ================================================================
+        
+        logger.info(f"🔍 Step 3: Aggregating transactions...")
         
         # Query transactions grouped by day of week and hour
         results = db.query(
@@ -314,12 +408,15 @@ async def get_activity_heatmap(
             logger.info(f"📋 Sample results:")
             for r in results[:5]:
                 logger.info(f"   DOW={int(r.day)} Hour={int(r.hour)} Vol=${r.volume:,.0f} TXs={r.tx_count}")
+        else:
+            logger.warning("⚠️ Still no transactions after sync - returning empty heatmap")
+            return _empty_heatmap_response(start, end)
         
         # ================================================================
-        # STEP 3: BUILD 2D HEATMAP ARRAY
+        # STEP 4: BUILD 2D HEATMAP ARRAY
         # ================================================================
         
-        logger.info(f"🏗️ Step 3: Building 2D heatmap array...")
+        logger.info(f"🏗️ Step 4: Building 2D heatmap array...")
         
         # Create lookup: (postgres_dow, hour) -> volume
         volume_lookup = {}
@@ -370,10 +467,10 @@ async def get_activity_heatmap(
         logger.info(f"✅ Heatmap built: 7×24")
         
         # ================================================================
-        # STEP 4: DETECT PEAK HOURS
+        # STEP 5: DETECT PEAK HOURS
         # ================================================================
         
-        logger.info(f"🔍 Step 4: Detecting peaks...")
+        logger.info(f"🔍 Step 5: Detecting peaks...")
         
         peak_data.sort(key=lambda x: x[2], reverse=True)
         peak_hours = [
@@ -392,10 +489,10 @@ async def get_activity_heatmap(
             logger.info(f"   {i}. {peak['day_name']} {peak['hour']:02d}:00 - ${peak['value']:,.2f}")
         
         # ================================================================
-        # STEP 5: DETECT PATTERNS
+        # STEP 6: DETECT PATTERNS
         # ================================================================
         
-        logger.info(f"🔍 Step 5: Detecting patterns...")
+        logger.info(f"🔍 Step 6: Detecting patterns...")
         
         patterns = []
         
@@ -429,7 +526,7 @@ async def get_activity_heatmap(
             logger.info(f"   {p['icon']} {p['description']}")
         
         # ================================================================
-        # STEP 6: BUILD RESPONSE
+        # STEP 7: BUILD RESPONSE
         # ================================================================
         
         total_volume = sum(sum(day) for day in heatmap_2d)
@@ -452,12 +549,13 @@ async def get_activity_heatmap(
                 "total_cells": 168,
                 "non_zero_cells": non_zero_cells,
                 "data_source": "transactions_table",
-                "aggregation_method": "postgres_extract"
+                "aggregation_method": "postgres_extract",
+                "auto_sync_enabled": auto_sync  # ✨ NEW
             }
         }
         
         logger.info("=" * 80)
-        logger.info("✅ HEATMAP READY (TRANSACTION-BASED)")
+        logger.info("✅ HEATMAP READY (TRANSACTION-BASED + AUTO-SYNC)")
         logger.info(f"   Total volume: ${total_volume:,.2f}")
         logger.info(f"   Total TXs: {total_txs:,}")
         logger.info(f"   Active cells: {non_zero_cells}/168")
