@@ -942,6 +942,312 @@ async def discover_from_last_5_transactions(
         db.rollback()
         return []
 
+"""
+NEUE FUNKTION für dependencies.py einfügen (am Ende, vor __all__)
+
+Synced Blockchain-Transaktionen in die transactions Tabelle
+"""
+
+async def sync_wallet_transactions_to_db(
+    db: Session,
+    wallet_address: str,
+    max_transactions: int = 100,
+    force_refresh: bool = False
+) -> Dict[str, Any]:
+    """
+    Synchronisiert Transaktionen eines Wallets in die Datenbank.
+    
+    ✨ SMART SYNC:
+    - Prüft ob Transaktionen bereits in DB existieren
+    - Holt nur neue Transaktionen von der Blockchain
+    - Speichert in transactions Tabelle für Heatmap
+    
+    Args:
+        db: Database session
+        wallet_address: Ethereum address
+        max_transactions: Max TXs to fetch (default: 100)
+        force_refresh: Ignore cache, fetch all (default: False)
+    
+    Returns:
+        Dict with stats: {
+            "address": str,
+            "existing_count": int,
+            "fetched_count": int,
+            "saved_count": int,
+            "skipped_count": int,
+            "source": str  # "cache" or "blockchain"
+        }
+    """
+    from app.core.otc_analysis.models.transaction import Transaction
+    from datetime import datetime, timedelta
+    from sqlalchemy import and_, or_
+    
+    logger.info(f"🔄 Syncing transactions for {wallet_address[:10]}...")
+    
+    stats = {
+        "address": wallet_address,
+        "existing_count": 0,
+        "fetched_count": 0,
+        "saved_count": 0,
+        "skipped_count": 0,
+        "source": "unknown"
+    }
+    
+    try:
+        # ====================================================================
+        # STEP 1: CHECK EXISTING TRANSACTIONS IN DB
+        # ====================================================================
+        
+        if not force_refresh:
+            # Check if we have recent transactions
+            cutoff_time = datetime.now() - timedelta(hours=6)  # 6h cache
+            
+            existing_count = db.query(Transaction).filter(
+                or_(
+                    Transaction.from_address == wallet_address.lower(),
+                    Transaction.to_address == wallet_address.lower()
+                ),
+                Transaction.created_at >= cutoff_time
+            ).count()
+            
+            stats["existing_count"] = existing_count
+            
+            if existing_count > 0:
+                logger.info(f"   ✅ Found {existing_count} cached transactions (< 6h old)")
+                stats["source"] = "cache"
+                return stats
+            
+            logger.info(f"   ℹ️ No recent transactions in DB, fetching from blockchain...")
+        else:
+            logger.info(f"   🔄 Force refresh enabled, fetching from blockchain...")
+        
+        # ====================================================================
+        # STEP 2: FETCH FROM BLOCKCHAIN API
+        # ====================================================================
+        
+        logger.info(f"   📡 Fetching transactions via TransactionExtractor...")
+        
+        transactions = transaction_extractor.extract_wallet_transactions(
+            wallet_address,
+            include_internal=True,
+            include_tokens=True
+        )
+        
+        if not transactions:
+            logger.info(f"   ⚠️ No transactions returned from API")
+            stats["source"] = "blockchain"
+            return stats
+        
+        stats["fetched_count"] = len(transactions)
+        logger.info(f"   ✅ Fetched {len(transactions)} transactions from blockchain")
+        
+        # Limit to max_transactions
+        if len(transactions) > max_transactions:
+            logger.info(f"   📊 Limiting to {max_transactions} most recent transactions")
+            transactions = sorted(
+                transactions,
+                key=lambda x: x.get('timestamp', datetime.min),
+                reverse=True
+            )[:max_transactions]
+        
+        # ====================================================================
+        # STEP 3: ENRICH WITH USD VALUES
+        # ====================================================================
+        
+        logger.info(f"   💰 Enriching {len(transactions)} transactions with USD values...")
+        
+        transactions = transaction_extractor.enrich_with_usd_value(
+            transactions,
+            price_oracle,
+            max_transactions=len(transactions)
+        )
+        
+        # ====================================================================
+        # STEP 4: SAVE TO DATABASE
+        # ====================================================================
+        
+        logger.info(f"   💾 Saving transactions to database...")
+        
+        for tx in transactions:
+            try:
+                # Parse timestamp
+                tx_timestamp = tx.get('timestamp')
+                if isinstance(tx_timestamp, str):
+                    tx_timestamp = datetime.fromisoformat(tx_timestamp.replace('Z', '+00:00'))
+                elif isinstance(tx_timestamp, int):
+                    tx_timestamp = datetime.fromtimestamp(tx_timestamp)
+                elif not isinstance(tx_timestamp, datetime):
+                    tx_timestamp = datetime.now()
+                
+                # Get USD value
+                usd_value = tx.get('value_usd') or tx.get('valueUSD') or 0
+                if not usd_value and tx.get('value'):
+                    eth_value = float(tx.get('value', 0)) / 1e18
+                    usd_value = eth_value * 3500  # Fallback price
+                
+                # Get ETH value
+                value_wei = str(tx.get('value', '0'))
+                value_decimal = float(tx.get('value', 0)) / 1e18 if tx.get('value') else 0
+                
+                # Calculate OTC score (simple heuristic)
+                otc_score = 0.0
+                if usd_value > 100000:
+                    otc_score = min(usd_value / 1000000, 1.0)  # $1M = 1.0 score
+                
+                # Check if transaction already exists
+                existing_tx = db.query(Transaction).filter(
+                    Transaction.tx_hash == tx.get('hash') or Transaction.tx_hash == tx.get('tx_hash')
+                ).first()
+                
+                if existing_tx:
+                    stats["skipped_count"] += 1
+                    continue
+                
+                # Create new transaction record
+                new_tx = Transaction(
+                    tx_hash=tx.get('hash') or tx.get('tx_hash'),
+                    block_number=int(tx.get('blockNumber', 0) or tx.get('block_number', 0) or 0),
+                    timestamp=tx_timestamp,
+                    from_address=tx.get('from', '').lower(),
+                    to_address=tx.get('to', '').lower(),
+                    token_address=tx.get('tokenAddress') or tx.get('token_address'),
+                    value=value_wei,
+                    value_decimal=value_decimal,
+                    usd_value=usd_value,
+                    gas_used=int(tx.get('gasUsed', 0) or tx.get('gas_used', 0) or 0),
+                    gas_price=int(tx.get('gasPrice', 0) or tx.get('gas_price', 0) or 0),
+                    is_contract_interaction=tx.get('isContractInteraction', False),
+                    method_id=tx.get('methodId') or tx.get('method_id'),
+                    otc_score=otc_score,
+                    is_suspected_otc=otc_score > 0.7,
+                    chain_id=1,  # Ethereum mainnet
+                    created_at=datetime.now(),
+                    updated_at=datetime.now()
+                )
+                
+                db.add(new_tx)
+                stats["saved_count"] += 1
+                
+                # Commit in batches of 50
+                if stats["saved_count"] % 50 == 0:
+                    db.commit()
+                    logger.info(f"      ✅ Saved {stats['saved_count']} transactions...")
+                
+            except Exception as tx_error:
+                logger.debug(f"      ⚠️ Skipping transaction: {tx_error}")
+                stats["skipped_count"] += 1
+                continue
+        
+        # Final commit
+        db.commit()
+        stats["source"] = "blockchain"
+        
+        logger.info(
+            f"   ✅ Transaction sync complete: "
+            f"Saved {stats['saved_count']}, "
+            f"Skipped {stats['skipped_count']}"
+        )
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"❌ Error syncing transactions: {e}", exc_info=True)
+        db.rollback()
+        return stats
+
+
+async def sync_all_wallets_transactions(
+    db: Session,
+    max_wallets: int = 10,
+    max_transactions_per_wallet: int = 100
+) -> Dict[str, Any]:
+    """
+    Synchronisiert Transaktionen für alle aktiven Wallets.
+    
+    Holt Transaktionen für alle OTC Wallets in der DB und speichert sie.
+    Dadurch wird die Heatmap mit echten Daten gefüllt.
+    
+    Args:
+        db: Database session
+        max_wallets: Max number of wallets to sync (default: 10)
+        max_transactions_per_wallet: Max TXs per wallet (default: 100)
+    
+    Returns:
+        Dict with overall stats
+    """
+    from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
+    from datetime import datetime, timedelta
+    
+    logger.info("="*70)
+    logger.info("🔄 SYNCING TRANSACTIONS FOR ALL WALLETS")
+    logger.info("="*70)
+    
+    overall_stats = {
+        "wallets_processed": 0,
+        "total_fetched": 0,
+        "total_saved": 0,
+        "total_skipped": 0,
+        "errors": 0,
+        "start_time": datetime.now()
+    }
+    
+    try:
+        # Get active wallets
+        wallets = db.query(OTCWallet).filter(
+            OTCWallet.is_active == True,
+            OTCWallet.confidence_score >= 50.0
+        ).order_by(OTCWallet.total_volume.desc()).limit(max_wallets).all()
+        
+        logger.info(f"📊 Found {len(wallets)} active wallets to sync")
+        
+        for wallet in wallets:
+            try:
+                logger.info(f"\n🔄 Processing wallet {wallet.address[:10]}... ({wallet.label})")
+                
+                stats = await sync_wallet_transactions_to_db(
+                    db=db,
+                    wallet_address=wallet.address,
+                    max_transactions=max_transactions_per_wallet,
+                    force_refresh=False
+                )
+                
+                overall_stats["wallets_processed"] += 1
+                overall_stats["total_fetched"] += stats["fetched_count"]
+                overall_stats["total_saved"] += stats["saved_count"]
+                overall_stats["total_skipped"] += stats["skipped_count"]
+                
+                # Small delay to avoid rate limits
+                import asyncio
+                await asyncio.sleep(0.5)
+                
+            except Exception as wallet_error:
+                logger.error(f"❌ Error processing wallet {wallet.address[:10]}: {wallet_error}")
+                overall_stats["errors"] += 1
+                continue
+        
+        overall_stats["end_time"] = datetime.now()
+        overall_stats["duration_seconds"] = (
+            overall_stats["end_time"] - overall_stats["start_time"]
+        ).total_seconds()
+        
+        logger.info("\n" + "="*70)
+        logger.info("✅ TRANSACTION SYNC COMPLETE")
+        logger.info("="*70)
+        logger.info(f"Wallets processed: {overall_stats['wallets_processed']}")
+        logger.info(f"Transactions fetched: {overall_stats['total_fetched']}")
+        logger.info(f"Transactions saved: {overall_stats['total_saved']}")
+        logger.info(f"Transactions skipped: {overall_stats['total_skipped']}")
+        logger.info(f"Errors: {overall_stats['errors']}")
+        logger.info(f"Duration: {overall_stats['duration_seconds']:.1f}s")
+        logger.info("="*70)
+        
+        return overall_stats
+        
+    except Exception as e:
+        logger.error(f"❌ Overall sync failed: {e}", exc_info=True)
+        return overall_stats
+
+
 
 # ============================================================================
 # EXPORT ALL
@@ -978,6 +1284,10 @@ __all__ = [
     "statistics_service",
     "graph_builder",
     "link_builder",  # ✨ NEW
+
+    # ✨ NEW: Transaction Sync
+    "sync_wallet_transactions_to_db",
+    "sync_all_wallets_transactions",    
     
     # Helpers
     "ensure_registry_wallets_in_db",
