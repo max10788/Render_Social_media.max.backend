@@ -904,6 +904,237 @@ async def check_database_status():
             }
         )
 
+# ============================================================================
+# Transaction Sync Endpoints
+# ============================================================================
+
+@app.post("/admin/sync-transactions")
+async def sync_wallet_transactions(
+    wallet_address: str,
+    max_transactions: int = 100,
+    force_refresh: bool = False,
+    db: Session = Depends(get_db)
+):
+    """
+    🔄 Sync Transactions for Single Wallet
+    
+    Fetches transactions from blockchain and saves to database.
+    Smart caching: checks DB first, only fetches new data if needed.
+    
+    Args:
+        wallet_address: Ethereum address
+        max_transactions: Max TXs to fetch (default: 100)
+        force_refresh: Ignore cache (default: false)
+    
+    Returns:
+        Sync statistics
+    """
+    try:
+        from app.core.otc_analysis.api.dependencies import sync_wallet_transactions_to_db
+        
+        logger.info(f"🔄 Admin: Transaction sync requested for {wallet_address[:10]}...")
+        
+        # Validate address
+        from app.core.otc_analysis.api.validators import validate_ethereum_address
+        validated_address = validate_ethereum_address(wallet_address)
+        
+        # Sync transactions
+        stats = await sync_wallet_transactions_to_db(
+            db=db,
+            wallet_address=validated_address,
+            max_transactions=max_transactions,
+            force_refresh=force_refresh
+        )
+        
+        logger.info(
+            f"✅ Admin: Sync complete - "
+            f"Fetched: {stats['fetched_count']}, "
+            f"Saved: {stats['saved_count']}, "
+            f"Source: {stats['source']}"
+        )
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": f"Synced transactions for {validated_address[:10]}...",
+                "statistics": stats,
+                "next_steps": [
+                    "Test heatmap: GET /api/otc/heatmap",
+                    "Check transactions: SELECT COUNT(*) FROM transactions",
+                    f"View wallet TXs: SELECT * FROM transactions WHERE from_address='{validated_address}' OR to_address='{validated_address}'"
+                ]
+            }
+        )
+        
+    except ValueError as e:
+        logger.error(f"❌ Admin: Invalid address: {e}")
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": f"Invalid address: {str(e)}"}
+        )
+    except Exception as e:
+        logger.error(f"❌ Admin: Transaction sync failed: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": f"Sync failed: {str(e)}"}
+        )
+
+
+@app.post("/admin/sync-all-transactions")
+async def sync_all_wallet_transactions(
+    max_wallets: int = 10,
+    max_transactions_per_wallet: int = 100,
+    db: Session = Depends(get_db)
+):
+    """
+    🔄 Sync Transactions for ALL Wallets
+    
+    Fetches and saves transactions for all active OTC wallets.
+    This populates the transactions table for heatmap visualization.
+    
+    ⚠️ WARNING: Can take several minutes for many wallets!
+    
+    Args:
+        max_wallets: Max wallets to process (default: 10)
+        max_transactions_per_wallet: Max TXs per wallet (default: 100)
+    
+    Returns:
+        Overall sync statistics
+    """
+    try:
+        from app.core.otc_analysis.api.dependencies import sync_all_wallets_transactions
+        
+        logger.info(
+            f"🔄 Admin: Bulk transaction sync requested - "
+            f"max_wallets={max_wallets}, max_tx={max_transactions_per_wallet}"
+        )
+        
+        # Sync all wallets
+        stats = await sync_all_wallets_transactions(
+            db=db,
+            max_wallets=max_wallets,
+            max_transactions_per_wallet=max_transactions_per_wallet
+        )
+        
+        logger.info(
+            f"✅ Admin: Bulk sync complete - "
+            f"Processed: {stats['wallets_processed']}, "
+            f"Saved: {stats['total_saved']}, "
+            f"Duration: {stats.get('duration_seconds', 0):.1f}s"
+        )
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": f"Synced {stats['wallets_processed']} wallets",
+                "statistics": {
+                    "wallets_processed": stats["wallets_processed"],
+                    "transactions_fetched": stats["total_fetched"],
+                    "transactions_saved": stats["total_saved"],
+                    "transactions_skipped": stats["total_skipped"],
+                    "errors": stats["errors"],
+                    "duration_seconds": stats.get("duration_seconds", 0)
+                },
+                "next_steps": [
+                    "Test heatmap: GET /api/otc/heatmap",
+                    "Check total: SELECT COUNT(*) FROM transactions",
+                    "View recent: SELECT * FROM transactions ORDER BY timestamp DESC LIMIT 10"
+                ]
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Admin: Bulk sync failed: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": f"Bulk sync failed: {str(e)}"}
+        )
+
+
+@app.get("/admin/transactions-by-wallet/{wallet_address}")
+async def get_wallet_transactions(
+    wallet_address: str,
+    limit: int = 50,
+    db: Session = Depends(get_db)
+):
+    """
+    📊 Get Transactions for Specific Wallet
+    
+    Shows transactions from database for a given wallet.
+    Useful to verify sync worked correctly.
+    
+    Args:
+        wallet_address: Ethereum address
+        limit: Max transactions to return (default: 50)
+    
+    Returns:
+        List of transactions
+    """
+    try:
+        from app.core.otc_analysis.models.transaction import Transaction
+        from sqlalchemy import or_
+        
+        logger.info(f"📊 Admin: Fetching transactions for {wallet_address[:10]}...")
+        
+        # Validate address
+        from app.core.otc_analysis.api.validators import validate_ethereum_address
+        validated_address = validate_ethereum_address(wallet_address)
+        
+        # Query transactions
+        transactions = db.query(Transaction).filter(
+            or_(
+                Transaction.from_address == validated_address.lower(),
+                Transaction.to_address == validated_address.lower()
+            )
+        ).order_by(Transaction.timestamp.desc()).limit(limit).all()
+        
+        if not transactions:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "not_found",
+                    "message": f"No transactions found for {validated_address[:10]}...",
+                    "hint": f"Run: POST /admin/sync-transactions?wallet_address={validated_address}"
+                }
+            )
+        
+        # Format response
+        tx_list = [
+            {
+                "tx_hash": tx.tx_hash[:20] + "...",
+                "timestamp": tx.timestamp.isoformat(),
+                "from": tx.from_address[:10] + "...",
+                "to": tx.to_address[:10] + "...",
+                "usd_value": float(tx.usd_value) if tx.usd_value else 0,
+                "is_suspected_otc": tx.is_suspected_otc,
+                "otc_score": float(tx.otc_score) if tx.otc_score else 0
+            }
+            for tx in transactions
+        ]
+        
+        logger.info(f"✅ Admin: Found {len(transactions)} transactions")
+        
+        return {
+            "status": "success",
+            "wallet_address": validated_address,
+            "transaction_count": len(transactions),
+            "transactions": tx_list
+        }
+        
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": f"Invalid address: {str(e)}"}
+        )
+    except Exception as e:
+        logger.error(f"❌ Admin: Error fetching transactions: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": str(e)}
+        )
+
 # ------------------------------------------------------------------
 # Simulation Status Endpoints
 # ------------------------------------------------------------------
