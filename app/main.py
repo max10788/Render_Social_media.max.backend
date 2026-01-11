@@ -210,6 +210,20 @@ async def lifespan(app: FastAPI):
     
     logger.info("Starting Low-Cap Token Analyzer")
     
+    # ✅ NEU: Automatische Transaction Table Migration
+    logger.info("🔧 Running database migrations...")
+    migration_result = setup_database_on_startup()
+    
+    if migration_result["success"]:
+        logger.info("✅ Database migrations completed")
+        if migration_result.get("table_created"):
+            logger.info("📦 Created 'transactions' table with indexes")
+        else:
+            logger.info("📋 Table 'transactions' already exists")
+    else:
+        logger.error("⚠️ Database migrations had errors - app will continue")
+        logger.error(f"Errors: {migration_result.get('errors', [])}")
+    
     # ✅ Skip DatabaseManager - OTC nutzt database.py direkt
     db_manager = None
     logger.info("✅ Skipping DatabaseManager (OTC uses database.py directly)")
