@@ -13,6 +13,11 @@ This module handles all network-related endpoints:
 - Returns both Cytoscape and Sankey formats
 - 5-minute caching
 - Discovery + transaction data sources
+
+✅ FIXED IN v2.1:
+- Heatmap now returns 2D array structure (7×24)
+- Added peak_hours and patterns detection
+- Extensive logging for debugging
 """
 
 import logging
@@ -261,19 +266,19 @@ async def get_activity_heatmap(
     
     GET /api/otc/heatmap?start_date=2024-12-17&end_date=2024-12-24
     
+    ✅ FIXED: Now returns 2D array structure (7 days × 24 hours)
+    
     Returns:
-        heatmap: List of cells with day/hour/volume/count data
-        period: Time range for the heatmap
+        heatmap: 2D array [7 days][24 hours] with volume values
+        peak_hours: List of peak activity periods
+        patterns: Detected activity patterns
+        period: Time range metadata
     
     The heatmap shows wallet activity patterns across:
-    - 7 days (Monday to Sunday)
-    - 24 hours (0-23)
+    - 7 days (Monday to Sunday) - rows
+    - 24 hours (0-23) - columns
     
-    Each cell contains:
-    - day: Day of week (Mon, Tue, etc.)
-    - hour: Hour of day (0-23)
-    - volume: Total transaction volume in USD
-    - count: Number of active wallets
+    Each cell value represents total transaction volume in USD for that day/hour.
     
     This helps identify:
     - Peak trading hours
@@ -282,18 +287,26 @@ async def get_activity_heatmap(
     - Anomalous activity periods
     """
     try:
+        logger.info("=" * 80)
+        logger.info("🔥 HEATMAP REQUEST RECEIVED")
+        logger.info("=" * 80)
+        
         # Parse dates with timezone handling
         if start_date:
             start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            logger.info(f"📅 Start date (from params): {start.isoformat()}")
         else:
             start = datetime.now() - timedelta(days=7)
+            logger.info(f"📅 Start date (default): {start.isoformat()}")
         
         if end_date:
             end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            logger.info(f"📅 End date (from params): {end.isoformat()}")
         else:
             end = datetime.now()
+            logger.info(f"📅 End date (default): {end.isoformat()}")
         
-        logger.info(f"🔥 GET /heatmap: {start.date()} to {end.date()}")
+        logger.info(f"🔍 Querying wallets active between {start.date()} and {end.date()}")
         
         # Get all wallets active in the time range
         wallets = db.query(OTCWallet).filter(
@@ -301,50 +314,178 @@ async def get_activity_heatmap(
             OTCWallet.last_active <= end
         ).all()
         
-        # Create 7x24 heatmap grid (7 days × 24 hours = 168 cells)
-        days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-        heatmap = []
+        logger.info(f"✅ Found {len(wallets)} active wallets in date range")
         
-        for day_idx, day in enumerate(days):
+        if len(wallets) > 0:
+            total_volume = sum(w.total_volume or 0 for w in wallets)
+            logger.info(f"💰 Total volume: ${total_volume:,.2f}")
+            logger.info(f"📊 Sample wallets:")
+            for i, w in enumerate(wallets[:3]):
+                logger.info(
+                    f"   {i+1}. {w.address[:10]}... | "
+                    f"Volume: ${(w.total_volume or 0):,.2f} | "
+                    f"Last active: {w.last_active}"
+                )
+        else:
+            logger.warning("⚠️ No wallets found in date range!")
+        
+        # ====================================================================
+        # ✅ FIXED: Create 2D array structure (7 days × 24 hours)
+        # ====================================================================
+        
+        logger.info("🏗️ Building 2D heatmap array (7×24)...")
+        
+        days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        heatmap_2d = []  # Will be [[hour0, hour1, ..., hour23], [...], ...] for 7 days
+        
+        # Track peak hours
+        peak_data = []  # List of (day_idx, hour, volume) tuples
+        
+        for day_idx, day_name in enumerate(days):
+            day_row = []  # 24 hours for this day
+            
             for hour in range(24):
-                # Calculate volume for this day/hour combination
-                # Note: This is a simplified distribution model
-                # In production, you would:
-                # 1. Group transactions by actual timestamp
-                # 2. Extract day and hour from each transaction
-                # 3. Sum volumes for matching day/hour pairs
+                # Calculate volume for this specific day/hour combination
+                # Simplified distribution: divide wallet volume evenly across time
                 volume = sum(
-                    (w.total_volume or 0) / (7 * 24)  # Distribute evenly for now
+                    (w.total_volume or 0) / (7 * 24)  # Distribute evenly
                     for w in wallets
                     if w.last_active and w.last_active.weekday() == day_idx
                 )
                 
-                # Calculate wallet count for this day/hour
-                # Simplified: divide wallets evenly across hours
-                count = len([
-                    w for w in wallets 
-                    if w.last_active and w.last_active.weekday() == day_idx
-                ]) // 24
+                day_row.append(volume)
                 
-                heatmap.append({
-                    "day": day,
-                    "hour": hour,
-                    "volume": volume,
-                    "count": count
+                # Track for peak detection
+                if volume > 0:
+                    peak_data.append((day_idx, hour, volume))
+            
+            heatmap_2d.append(day_row)
+            logger.info(f"   ✓ {day_name}: {len(day_row)} hours, total=${sum(day_row):,.2f}")
+        
+        logger.info(f"✅ Heatmap 2D array built: {len(heatmap_2d)} days × {len(heatmap_2d[0]) if heatmap_2d else 0} hours")
+        
+        # ====================================================================
+        # ✅ DETECT PEAK HOURS
+        # ====================================================================
+        
+        logger.info("🔍 Detecting peak hours...")
+        
+        # Sort by volume and get top 5
+        peak_data.sort(key=lambda x: x[2], reverse=True)
+        peak_hours = [
+            {
+                "day": day_idx,
+                "day_name": days[day_idx],
+                "hour": hour,
+                "value": volume
+            }
+            for day_idx, hour, volume in peak_data[:5]
+            if volume > 0
+        ]
+        
+        logger.info(f"✅ Found {len(peak_hours)} peak hours")
+        for i, peak in enumerate(peak_hours[:3]):
+            logger.info(
+                f"   {i+1}. {peak['day_name']} {peak['hour']:02d}:00 - "
+                f"${peak['value']:,.2f}"
+            )
+        
+        # ====================================================================
+        # ✅ DETECT PATTERNS
+        # ====================================================================
+        
+        logger.info("🔍 Detecting activity patterns...")
+        
+        patterns = []
+        
+        # Pattern 1: Weekend vs Weekday
+        weekday_volume = sum(sum(heatmap_2d[i]) for i in range(5))  # Mon-Fri
+        weekend_volume = sum(sum(heatmap_2d[i]) for i in range(5, 7))  # Sat-Sun
+        
+        if weekday_volume > 0 or weekend_volume > 0:
+            if weekend_volume > weekday_volume * 1.2:
+                patterns.append({
+                    "icon": "📅",
+                    "description": "Higher activity on weekends"
+                })
+            elif weekday_volume > weekend_volume * 1.2:
+                patterns.append({
+                    "icon": "💼",
+                    "description": "Higher activity on weekdays"
                 })
         
-        logger.info(f"✅ Heatmap: {len(heatmap)} cells generated (7 days × 24 hours)")
+        # Pattern 2: Day vs Night
+        day_hours = sum(
+            sum(heatmap_2d[day][hour] for hour in range(6, 18))
+            for day in range(7)
+        )
+        night_hours = sum(
+            sum(heatmap_2d[day][hour] for hour in list(range(0, 6)) + list(range(18, 24)))
+            for day in range(7)
+        )
         
-        return {
-            "heatmap": heatmap,
+        if day_hours > 0 or night_hours > 0:
+            if night_hours > day_hours * 1.2:
+                patterns.append({
+                    "icon": "🌙",
+                    "description": "High activity during night hours (18:00-06:00)"
+                })
+            elif day_hours > night_hours * 1.2:
+                patterns.append({
+                    "icon": "☀️",
+                    "description": "High activity during day hours (06:00-18:00)"
+                })
+        
+        # Pattern 3: Consistent activity
+        non_zero_cells = sum(1 for day in heatmap_2d for hour in day if hour > 0)
+        if non_zero_cells > 120:  # More than 70% of cells have activity
+            patterns.append({
+                "icon": "🔄",
+                "description": "Consistent 24/7 activity across all days"
+            })
+        
+        logger.info(f"✅ Detected {len(patterns)} patterns:")
+        for pattern in patterns:
+            logger.info(f"   {pattern['icon']} {pattern['description']}")
+        
+        # ====================================================================
+        # ✅ BUILD RESPONSE
+        # ====================================================================
+        
+        response = {
+            "heatmap": heatmap_2d,  # ✅ 2D array: [[hour0...hour23], [...], ...] for 7 days
+            "peak_hours": peak_hours,
+            "patterns": patterns,
             "period": {
                 "start": start.isoformat(),
                 "end": end.isoformat()
+            },
+            "metadata": {
+                "total_wallets": len(wallets),
+                "total_volume": sum(w.total_volume or 0 for w in wallets),
+                "days": len(heatmap_2d),
+                "hours_per_day": len(heatmap_2d[0]) if heatmap_2d else 0,
+                "total_cells": len(heatmap_2d) * (len(heatmap_2d[0]) if heatmap_2d else 0),
+                "non_zero_cells": non_zero_cells
             }
         }
         
+        logger.info("=" * 80)
+        logger.info("✅ HEATMAP RESPONSE READY")
+        logger.info(f"   Structure: {len(response['heatmap'])} days × {len(response['heatmap'][0]) if response['heatmap'] else 0} hours")
+        logger.info(f"   Peak hours: {len(response['peak_hours'])}")
+        logger.info(f"   Patterns: {len(response['patterns'])}")
+        logger.info(f"   Total cells: {response['metadata']['total_cells']}")
+        logger.info(f"   Non-zero cells: {response['metadata']['non_zero_cells']}")
+        logger.info("=" * 80)
+        
+        return response
+        
     except Exception as e:
-        logger.error(f"❌ Error in /heatmap: {e}")
+        logger.error("=" * 80)
+        logger.error(f"❌ ERROR IN /heatmap: {e}")
+        logger.error("=" * 80)
+        logger.exception(e)  # Full stack trace
         raise HTTPException(status_code=500, detail=str(e))
 
 
