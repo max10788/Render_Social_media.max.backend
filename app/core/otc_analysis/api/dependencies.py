@@ -953,36 +953,16 @@ async def sync_wallet_transactions_to_db(
     wallet_address: str,
     max_transactions: int = 100,
     force_refresh: bool = False,
-    skip_enrichment: bool = False  # ✨ NEU: Option zum Überspringen
+    skip_enrichment: bool = False
 ) -> Dict[str, Any]:
     """
     Synchronisiert Transaktionen eines Wallets in die Datenbank.
     
-    ✨ IMPROVED VERSION - Smart USD Enrichment:
-    - Speichert ALLE Transaktionen (auch ohne USD-Wert)
-    - USD-Enrichment ist optional und wird nachträglich gemacht
-    - Markiert Transaktionen die noch enriched werden müssen
+    ✨ FIXED VERSION - Speichert ALLE Transaktionen:
+    - Speichert neue TXs auch ohne USD-Wert
+    - Updated existierende TXs die noch keinen USD-Wert haben
+    - Markiert fehlende Enrichments mit needs_enrichment Flag
     - Robuste Fehlerbehandlung bei Rate Limits
-    
-    Args:
-        db: Database session
-        wallet_address: Ethereum address
-        max_transactions: Max TXs to fetch (default: 100)
-        force_refresh: Ignore cache, fetch all (default: False)
-        skip_enrichment: Skip USD enrichment, only save raw TXs (default: False)
-    
-    Returns:
-        Dict with stats: {
-            "address": str,
-            "existing_count": int,
-            "fetched_count": int,
-            "saved_count": int,
-            "updated_count": int,
-            "skipped_count": int,
-            "enrichment_failed": int,
-            "needs_enrichment": int,
-            "source": str
-        }
     """
     from app.core.otc_analysis.models.transaction import Transaction
     from datetime import datetime, timedelta
@@ -1059,7 +1039,7 @@ async def sync_wallet_transactions_to_db(
             )[:max_transactions]
         
         # ====================================================================
-        # STEP 3: OPTIONAL USD ENRICHMENT (mit Rate Limit Protection)
+        # STEP 3: OPTIONAL USD ENRICHMENT (with Rate Limit Protection)
         # ====================================================================
         
         enriched_transactions = transactions
@@ -1074,8 +1054,8 @@ async def sync_wallet_transactions_to_db(
                     max_transactions=len(transactions)
                 )
                 
-                # Zähle erfolgreiche Enrichments
-                enriched_count = sum(1 for tx in enriched_transactions if tx.get('value_usd', 0) > 0)
+                # Count successful enrichments
+                enriched_count = sum(1 for tx in enriched_transactions if tx.get('value_usd', 0) > 0 or tx.get('valueUSD', 0) > 0 or tx.get('usd_value', 0) > 0)
                 failed_count = len(enriched_transactions) - enriched_count
                 
                 stats["enrichment_failed"] = failed_count
@@ -1096,7 +1076,7 @@ async def sync_wallet_transactions_to_db(
             stats["enrichment_failed"] = len(transactions)
         
         # ====================================================================
-        # STEP 4: SAVE TO DATABASE (IMMER, auch ohne USD-Wert!)
+        # STEP 4: SAVE TO DATABASE (ALLE TXs, auch ohne USD!)
         # ====================================================================
         
         logger.info(f"   💾 Saving transactions to database...")
@@ -1115,7 +1095,7 @@ async def sync_wallet_transactions_to_db(
                 elif not isinstance(tx_timestamp, datetime):
                     tx_timestamp = datetime.now()
                 
-                # ✨ VERBESSERUNG: Robuste USD-Value Extraktion
+                # ✅ ROBUSTE USD-VALUE EXTRAKTION
                 usd_value = None
                 if tx.get('value_usd'):
                     usd_value = float(tx['value_usd'])
@@ -1124,17 +1104,6 @@ async def sync_wallet_transactions_to_db(
                 elif tx.get('usd_value'):
                     usd_value = float(tx['usd_value'])
                 
-                # Fallback: Berechne aus ETH-Wert (grobe Schätzung)
-                if not usd_value or usd_value == 0:
-                    if tx.get('value'):
-                        try:
-                            eth_value = float(tx.get('value', 0)) / 1e18
-                            # Nur wenn > 0.01 ETH (vermeidet dust)
-                            if eth_value > 0.01:
-                                usd_value = None  # Wird später enriched
-                        except:
-                            pass
-                
                 # Get ETH value
                 value_wei = str(tx.get('value', '0'))
                 try:
@@ -1142,28 +1111,45 @@ async def sync_wallet_transactions_to_db(
                 except:
                     value_decimal = 0
                 
-                # Calculate OTC score (nur wenn USD-Wert bekannt)
+                # Calculate OTC score (only if USD value is known)
                 otc_score = 0.0
                 if usd_value and usd_value > 0:
                     if usd_value > 100000:
                         otc_score = min(usd_value / 1000000, 1.0)
                 
-                # ✨ VERBESSERUNG: Check ob TX existiert
+                # Get transaction hash
                 tx_hash = tx.get('hash') or tx.get('tx_hash')
                 
+                # ✅ CRITICAL FIX: Check if TX exists
                 existing_tx = db.query(Transaction).filter(
                     Transaction.tx_hash == tx_hash
                 ).first()
                 
+                # ====================================================================
+                # ✅ FIX: UPDATE EXISTING TXs WITHOUT USD VALUE
+                # ====================================================================
+                
                 if existing_tx:
-                    # ✨ UPDATE: Wenn existing TX keinen USD-Wert hat, aber wir einen haben
+                    # Check if we should update
+                    should_update = False
+                    
+                    # Case 1: Existing TX has no USD value, but we have one
                     if (not existing_tx.usd_value or existing_tx.usd_value == 0) and usd_value and usd_value > 0:
+                        should_update = True
                         existing_tx.usd_value = usd_value
                         existing_tx.otc_score = otc_score
                         existing_tx.is_suspected_otc = otc_score > 0.7
                         existing_tx.needs_enrichment = False
                         existing_tx.updated_at = datetime.now()
-                        
+                    
+                    # Case 2: Existing TX has no USD value, and we also don't have one → mark for enrichment
+                    elif (not existing_tx.usd_value or existing_tx.usd_value == 0) and (not usd_value or usd_value == 0) and value_decimal > 0.01:
+                        should_update = True
+                        existing_tx.needs_enrichment = True
+                        existing_tx.updated_at = datetime.now()
+                        stats["needs_enrichment"] += 1
+                    
+                    if should_update:
                         stats["updated_count"] += 1
                         
                         if stats["updated_count"] % 20 == 0:
@@ -1174,13 +1160,17 @@ async def sync_wallet_transactions_to_db(
                     
                     continue
                 
-                # ✨ VERBESSERUNG: Markiere TXs die enriched werden müssen
+                # ====================================================================
+                # ✅ CREATE NEW TRANSACTION (auch ohne USD!)
+                # ====================================================================
+                
+                # Determine if needs enrichment
                 needs_enrichment = (not usd_value or usd_value == 0) and value_decimal > 0.01
                 
                 if needs_enrichment:
                     stats["needs_enrichment"] += 1
                 
-                # ✨ CREATE: Speichere IMMER (auch ohne USD-Wert!)
+                # Create new transaction record
                 new_tx = Transaction(
                     tx_hash=tx_hash,
                     block_number=int(tx.get('blockNumber', 0) or tx.get('block_number', 0) or 0),
@@ -1190,14 +1180,14 @@ async def sync_wallet_transactions_to_db(
                     token_address=tx.get('tokenAddress') or tx.get('token_address'),
                     value=value_wei,
                     value_decimal=value_decimal,
-                    usd_value=usd_value,  # ✅ Kann NULL sein!
+                    usd_value=usd_value,  # ✅ Can be NULL!
                     gas_used=int(tx.get('gasUsed', 0) or tx.get('gas_used', 0) or 0),
                     gas_price=int(tx.get('gasPrice', 0) or tx.get('gas_price', 0) or 0),
                     is_contract_interaction=tx.get('isContractInteraction', False),
                     method_id=tx.get('methodId') or tx.get('method_id'),
                     otc_score=otc_score,
                     is_suspected_otc=otc_score > 0.7,
-                    needs_enrichment=needs_enrichment,  # ✨ Flag für später!
+                    needs_enrichment=needs_enrichment,  # ✅ Flag for later!
                     chain_id=1,
                     created_at=datetime.now(),
                     updated_at=datetime.now()
@@ -1212,7 +1202,7 @@ async def sync_wallet_transactions_to_db(
                     logger.info(f"      ✅ Saved {stats['saved_count']} transactions...")
                 
             except Exception as tx_error:
-                logger.debug(f"      ⚠️ Error saving transaction: {tx_error}")
+                logger.debug(f"      ⚠️ Error processing transaction: {tx_error}")
                 stats["skipped_count"] += 1
                 continue
         
