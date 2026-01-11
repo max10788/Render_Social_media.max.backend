@@ -19,7 +19,7 @@ Date: 2025-01-08
 """
 
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query, Depends, status
 from sqlalchemy.orm import Session
@@ -52,9 +52,14 @@ class OTCAddressCreate(BaseModel):
     tags: Optional[List[str]] = Field(default_factory=list, description="Custom tags")
     is_active: bool = Field(default=True, description="Is address active?")
     
+    # 🆕 NEU: Exchange Info
+    exchange_info: Optional[Dict[str, Any]] = Field(
+        None, 
+        description="Exchange-specific info (exchange_name, wallet_type, chain, supports_tokens, etc.)"
+    )
+    
     @validator('address')
     def validate_address(cls, v):
-        """Validate Ethereum address format"""
         try:
             return validate_ethereum_address(v)
         except Exception as e:
@@ -62,7 +67,6 @@ class OTCAddressCreate(BaseModel):
     
     @validator('entity_type')
     def validate_entity_type(cls, v):
-        """Validate entity type"""
         valid_types = ['otc_desk', 'market_maker', 'cex', 'prop_trading', 'whale', 'unknown', 'cold_wallet', 'hot_wallet']
         if v not in valid_types:
             raise ValueError(f"Invalid entity_type. Must be one of: {', '.join(valid_types)}")
@@ -70,7 +74,6 @@ class OTCAddressCreate(BaseModel):
     
     @validator('tags', pre=True, always=True)
     def validate_tags(cls, v):
-        """Ensure tags is always a list"""
         if v is None:
             return []
         if isinstance(v, list):
@@ -87,26 +90,20 @@ class OTCAddressUpdate(BaseModel):
     tags: Optional[List[str]] = None
     is_active: Optional[bool] = None
     
+    # 🆕 NEU: Exchange Info
+    exchange_info: Optional[Dict[str, Any]] = None
+    
     @validator('entity_type')
     def validate_entity_type(cls, v):
-        """Validate entity type"""
-        valid_types = [
-            'otc_desk', 
-            'market_maker', 
-            'cex', 
-            'prop_trading', 
-            'whale', 
-            'cold_wallet', 
-            'hot_wallet', 
-            'unknown'
-        ]
+        if v is None:
+            return v
+        valid_types = ['otc_desk', 'market_maker', 'cex', 'prop_trading', 'whale', 'cold_wallet', 'hot_wallet', 'unknown']
         if v not in valid_types:
             raise ValueError(f"Invalid entity_type. Must be one of: {', '.join(valid_types)}")
         return v
     
     @validator('tags', pre=True)
     def validate_tags(cls, v):
-        """Ensure tags is always a list if provided"""
         if v is None:
             return None
         if isinstance(v, list):
@@ -129,9 +126,11 @@ class OTCAddressResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     
+    # 🆕 NEU: Exchange Info
+    exchange_info: Optional[Dict[str, Any]] = None
+    
     @validator('tags', pre=True, always=True)
     def validate_tags(cls, v):
-        """Convert None to empty list"""
         if v is None:
             return []
         if isinstance(v, list):
@@ -140,12 +139,11 @@ class OTCAddressResponse(BaseModel):
     
     @validator('entity_name', 'label', 'notes', pre=True)
     def validate_optional_strings(cls, v):
-        """Handle None values for optional string fields"""
         return v if v is not None else None
     
     class Config:
-        from_attributes = True  # ✅ Pydantic v2
-        orm_mode = True  # ✅ Pydantic v1 compatibility
+        from_attributes = True
+        orm_mode = True
 
 
 # ============================================================================
@@ -194,28 +192,33 @@ async def create_otc_address(
     _admin: bool = Depends(verify_admin)
 ):
     """
-    ➕ Add new OTC address
+    ➕ Add new OTC address with optional exchange info
     
-    **Features:**
-    - ✅ Automatic duplicate check
-    - ✅ Address validation
-    - ✅ Auto-generate label if not provided
-    
-    **Example:**
+    **Example with Exchange Info:**
 ```json
     {
-        "address": "0x1151314c646Ce4E0eFD76d1aF4760aE66a9Fe30F",
-        "entity_type": "otc_desk",
-        "entity_name": "Wintermute",
-        "notes": "Main trading wallet",
-        "tags": ["verified", "high_volume"]
+        "address": "0x28C6c06298d514Db089934071355E5743bf21d60",
+        "entity_type": "cex",
+        "entity_name": "Binance",
+        "label": "Binance Hot Wallet #8",
+        "tags": ["binance", "hot_wallet", "verified"],
+        "exchange_info": {
+            "exchange_name": "Binance",
+            "wallet_type": "hot_wallet",
+            "chain": "ethereum",
+            "is_deposit_address": true,
+            "is_withdrawal_address": true,
+            "supports_tokens": ["ETH", "USDT", "USDC", "WBTC"],
+            "daily_limit_usd": 10000000,
+            "verified_by": "Etherscan"
+        }
     }
 ```
     """
     try:
         logger.info(f"➕ Admin: Adding OTC address {data.address[:10]}...")
         
-        # ✅ Check for duplicates
+        # Check for duplicates
         existing = db.query(OTCWallet).filter(
             OTCWallet.address == data.address
         ).first()
@@ -226,7 +229,7 @@ async def create_otc_address(
                 detail=f"Address {data.address} already exists in database"
             )
         
-        # ✅ Ensure tags is a list, never None
+        # Ensure tags is a list
         tags = data.tags if data.tags else []
         
         # Create wallet entry
@@ -236,10 +239,10 @@ async def create_otc_address(
             entity_name=data.entity_name,
             label=data.label or data.entity_name or f"{data.address[:8]}...",
             notes=data.notes,
-            tags=tags,  # ✅ Always a list
+            tags=tags,
             is_active=data.is_active,
-            # Initial values
-            confidence_score=100.0,  # Manual entry = high confidence
+            exchange_info=data.exchange_info,  # 🆕 NEU
+            confidence_score=100.0,
             total_volume=0.0,
             transaction_count=0,
             first_seen=datetime.utcnow(),
@@ -252,7 +255,6 @@ async def create_otc_address(
         db.commit()
         db.refresh(wallet)
         
-        # ✅ Ensure tags is not None after refresh
         if wallet.tags is None:
             wallet.tags = []
         
@@ -276,7 +278,6 @@ async def create_otc_address(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create address: {str(e)}"
         )
-
 
 @router.get(
     "/",
@@ -403,14 +404,17 @@ async def update_otc_address(
     _admin: bool = Depends(verify_admin)
 ):
     """
-    ✏️ Update OTC address
+    ✏️ Update OTC address including exchange info
     
     **Example:**
 ```json
     {
-        "entity_name": "Wintermute Trading",
-        "notes": "Updated notes",
-        "tags": ["verified", "high_volume", "market_maker"]
+        "tags": ["binance", "verified", "hot_wallet"],
+        "exchange_info": {
+            "exchange_name": "Binance",
+            "daily_limit_usd": 15000000,
+            "supports_tokens": ["ETH", "USDT", "USDC", "DAI"]
+        }
     }
 ```
     """
@@ -431,10 +435,17 @@ async def update_otc_address(
         # Update only provided fields
         update_data = data.dict(exclude_unset=True)
         
-        # ✅ Ensure tags is a list if provided
         if 'tags' in update_data:
             if update_data['tags'] is None:
                 update_data['tags'] = []
+        
+        # 🆕 NEU: Merge exchange_info with existing data
+        if 'exchange_info' in update_data and update_data['exchange_info']:
+            if wallet.exchange_info:
+                # Merge new info with existing
+                merged_info = wallet.exchange_info.copy()
+                merged_info.update(update_data['exchange_info'])
+                update_data['exchange_info'] = merged_info
         
         for field, value in update_data.items():
             setattr(wallet, field, value)
@@ -444,7 +455,6 @@ async def update_otc_address(
         db.commit()
         db.refresh(wallet)
         
-        # ✅ Ensure tags is not None after refresh
         if wallet.tags is None:
             wallet.tags = []
         
@@ -461,7 +471,6 @@ async def update_otc_address(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update address: {str(e)}"
         )
-
 
 @router.delete(
     "/{address}",
