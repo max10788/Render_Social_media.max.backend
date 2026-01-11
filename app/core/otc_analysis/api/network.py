@@ -29,6 +29,7 @@ from .dependencies import (
 
 from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
 from app.core.otc_analysis.models.transaction import Transaction  # ✅ NEW
+from sqlalchemy import func, or_, case  # ✅ case hinzugefügt!
 
 logger = logging.getLogger(__name__)
 
@@ -229,11 +230,11 @@ async def get_activity_heatmap(
     """
     Get 24x7 activity heatmap with REAL transaction aggregation.
     
-    ✅ ENHANCED IN v2.3:
-    - Auto-syncs transactions if DB is empty
+    ✅ ENHANCED IN v2.4:
+    - Shows ALL transactions (even without USD values)
+    - Tracks enrichment rate
+    - Auto-syncs if DB is empty
     - Uses Transaction table for accurate volumes
-    - SQL GROUP BY with EXTRACT(DOW/HOUR)
-    - Real hourly variation (not fake distribution)
     
     Parameters:
         start_date: Start date (ISO format)
@@ -241,14 +242,14 @@ async def get_activity_heatmap(
         auto_sync: Auto-fetch transactions if none found (default: true)
     
     Returns:
-        heatmap: 2D array [7 days][24 hours] with actual transaction volumes
+        heatmap: 2D array [7 days][24 hours] with transaction volumes
         peak_hours: Top 5 busiest day/hour combinations
         patterns: Detected activity patterns
         period: Time range metadata
     """
     try:
         logger.info("=" * 80)
-        logger.info("🔥 HEATMAP REQUEST (TRANSACTION-BASED v2.3 + AUTO-SYNC)")
+        logger.info("🔥 HEATMAP REQUEST (TRANSACTION-BASED v2.4 + AUTO-SYNC)")
         logger.info("=" * 80)
         
         # Parse dates
@@ -376,18 +377,20 @@ async def get_activity_heatmap(
         # STEP 3: AGGREGATE TRANSACTIONS BY DAY/HOUR
         # ================================================================
         
-        # ✨ VERBESSERTE QUERY: Zählt ALLE Transaktionen
+        logger.info(f"🔍 Step 3: Aggregating transactions...")
+        
+        # ✅ KORRIGIERTE QUERY mit case()
         results = db.query(
             func.extract('dow', Transaction.timestamp).label('day'),
             func.extract('hour', Transaction.timestamp).label('hour'),
-            func.count(Transaction.tx_hash).label('tx_count'),  # ✅ Zählt ALLE
-            func.coalesce(func.sum(Transaction.usd_value), 0).label('volume'),  # ✅ Volume oder 0
+            func.count(Transaction.tx_hash).label('tx_count'),
+            func.coalesce(func.sum(Transaction.usd_value), 0).label('volume'),
             func.sum(
-                func.case(
-                    [(Transaction.usd_value != None, 1)],
+                case(
+                    (Transaction.usd_value.isnot(None), 1),
                     else_=0
                 )
-            ).label('enriched_count')  # ✨ NEU: Wie viele haben USD-Wert?
+            ).label('enriched_count')
         ).filter(
             Transaction.timestamp >= start,
             Transaction.timestamp <= end,
@@ -412,12 +415,25 @@ async def get_activity_heatmap(
             logger.info(f"📊 Total transactions: {total_txs:,}")
             logger.info(f"💵 Enriched: {total_enriched:,} ({enrichment_rate:.1f}%)")
             
-            # ✨ Warning wenn viele TXs nicht enriched sind
-            if enrichment_rate < 50:
+            # Show sample results
+            logger.info(f"📋 Sample results:")
+            for r in results[:5]:
+                logger.info(
+                    f"   DOW={int(r.day)} Hour={int(r.hour)} "
+                    f"Vol=${r.volume:,.0f} TXs={r.tx_count} "
+                    f"Enriched={r.enriched_count}"
+                )
+            
+            # ✅ Warning wenn viele TXs nicht enriched sind
+            if enrichment_rate < 50 and total_txs > 10:
                 logger.warning(
                     f"⚠️ Low enrichment rate ({enrichment_rate:.1f}%) - "
-                    f"run POST /admin/enrich-missing-values"
+                    f"{total_txs - total_enriched} transactions need USD values"
                 )
+                logger.info(f"💡 Run: POST /admin/enrich-missing-values")
+        else:
+            logger.warning("⚠️ Still no transactions after sync - returning empty heatmap")
+            return _empty_heatmap_response(start, end)
         
         # ================================================================
         # STEP 4: BUILD 2D HEATMAP ARRAY
@@ -425,19 +441,24 @@ async def get_activity_heatmap(
         
         logger.info(f"🏗️ Step 4: Building 2D heatmap array...")
         
-        # Create lookup: (postgres_dow, hour) -> volume
-        volume_lookup = {}
+        # Create lookup: (postgres_dow, hour) -> (volume, tx_count)
+        cell_lookup = {}
         for r in results:
-            day_idx = int(r.day)  # PostgreSQL DOW: 0=Sun, 1=Mon, ..., 6=Sat
-            hour_idx = int(r.hour)  # 0-23
+            day_idx = int(r.day)
+            hour_idx = int(r.hour)
             volume = float(r.volume or 0)
-            volume_lookup[(day_idx, hour_idx)] = volume
+            tx_count = int(r.tx_count or 0)
+            enriched = int(r.enriched_count or 0)
+            
+            cell_lookup[(day_idx, hour_idx)] = {
+                'volume': volume,
+                'tx_count': tx_count,
+                'enriched_count': enriched
+            }
         
-        logger.info(f"📋 Created lookup with {len(volume_lookup)} entries")
+        logger.info(f"📋 Created lookup with {len(cell_lookup)} entries")
         
         # Map PostgreSQL DOW to our Monday-first index
-        # PostgreSQL: 0=Sun, 1=Mon, 2=Tue, ..., 6=Sat
-        # We want:    0=Mon, 1=Tue, 2=Wed, ..., 6=Sun
         dow_to_idx = {
             1: 0,  # Mon
             2: 1,  # Tue
@@ -459,11 +480,13 @@ async def get_activity_heatmap(
             pg_dow = [k for k, v in dow_to_idx.items() if v == our_day_idx][0]
             
             for hour in range(24):
-                volume = volume_lookup.get((pg_dow, hour), 0.0)
+                cell_data = cell_lookup.get((pg_dow, hour), {'volume': 0, 'tx_count': 0, 'enriched_count': 0})
+                volume = cell_data['volume']
+                
                 day_row.append(volume)
                 
-                if volume > 0:
-                    peak_data.append((our_day_idx, hour, volume))
+                if volume > 0 or cell_data['tx_count'] > 0:
+                    peak_data.append((our_day_idx, hour, volume, cell_data['tx_count']))
             
             heatmap_2d.append(day_row)
             
@@ -479,21 +502,27 @@ async def get_activity_heatmap(
         
         logger.info(f"🔍 Step 5: Detecting peaks...")
         
-        peak_data.sort(key=lambda x: x[2], reverse=True)
+        # Sort by volume (or tx_count if volume is 0)
+        peak_data.sort(key=lambda x: (x[2], x[3]), reverse=True)
+        
         peak_hours = [
             {
                 "day": day_idx,
                 "day_name": days[day_idx],
                 "hour": hour,
-                "value": volume
+                "value": volume,
+                "tx_count": tx_count
             }
-            for day_idx, hour, volume in peak_data[:5]
-            if volume > 0
+            for day_idx, hour, volume, tx_count in peak_data[:5]
+            if volume > 0 or tx_count > 0
         ]
         
         logger.info(f"✅ Found {len(peak_hours)} peaks:")
         for i, peak in enumerate(peak_hours[:3], 1):
-            logger.info(f"   {i}. {peak['day_name']} {peak['hour']:02d}:00 - ${peak['value']:,.2f}")
+            logger.info(
+                f"   {i}. {peak['day_name']} {peak['hour']:02d}:00 - "
+                f"${peak['value']:,.2f} ({peak['tx_count']} TXs)"
+            )
         
         # ================================================================
         # STEP 6: DETECT PATTERNS
@@ -536,9 +565,6 @@ async def get_activity_heatmap(
         # STEP 7: BUILD RESPONSE
         # ================================================================
         
-        total_volume = sum(sum(day) for day in heatmap_2d)
-        total_txs = sum(r.tx_count for r in results)
-        
         response = {
             "heatmap": heatmap_2d,
             "peak_hours": peak_hours,
@@ -551,13 +577,15 @@ async def get_activity_heatmap(
                 "total_wallets": len(wallets),
                 "total_volume": total_volume,
                 "total_transactions": total_txs,
+                "enriched_transactions": total_enriched,
+                "enrichment_rate": enrichment_rate,
                 "days": 7,
                 "hours_per_day": 24,
                 "total_cells": 168,
                 "non_zero_cells": non_zero_cells,
                 "data_source": "transactions_table",
                 "aggregation_method": "postgres_extract",
-                "auto_sync_enabled": auto_sync  # ✨ NEW
+                "auto_sync_enabled": auto_sync
             }
         }
         
@@ -565,6 +593,7 @@ async def get_activity_heatmap(
         logger.info("✅ HEATMAP READY (TRANSACTION-BASED + AUTO-SYNC)")
         logger.info(f"   Total volume: ${total_volume:,.2f}")
         logger.info(f"   Total TXs: {total_txs:,}")
+        logger.info(f"   Enriched: {total_enriched:,} ({enrichment_rate:.1f}%)")
         logger.info(f"   Active cells: {non_zero_cells}/168")
         logger.info("=" * 80)
         
