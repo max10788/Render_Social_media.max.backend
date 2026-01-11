@@ -65,6 +65,7 @@ from app.core.otc_analysis.api.websocket import handle_websocket_connection
 from app.core.otc_analysis.api.migration import router as otc_migration_router
 
 from scripts.init_otc_db import init_database
+from app.core.backend_crypto_tracker.config.database import get_db
 
 from scripts.setup_database import setup_database_on_startup
 
