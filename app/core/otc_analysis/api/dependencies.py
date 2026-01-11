@@ -952,21 +952,24 @@ async def sync_wallet_transactions_to_db(
     db: Session,
     wallet_address: str,
     max_transactions: int = 100,
-    force_refresh: bool = False
+    force_refresh: bool = False,
+    skip_enrichment: bool = False  # ✨ NEU: Option zum Überspringen
 ) -> Dict[str, Any]:
     """
     Synchronisiert Transaktionen eines Wallets in die Datenbank.
     
-    ✨ SMART SYNC:
-    - Prüft ob Transaktionen bereits in DB existieren
-    - Holt nur neue Transaktionen von der Blockchain
-    - Speichert in transactions Tabelle für Heatmap
+    ✨ IMPROVED VERSION - Smart USD Enrichment:
+    - Speichert ALLE Transaktionen (auch ohne USD-Wert)
+    - USD-Enrichment ist optional und wird nachträglich gemacht
+    - Markiert Transaktionen die noch enriched werden müssen
+    - Robuste Fehlerbehandlung bei Rate Limits
     
     Args:
         db: Database session
         wallet_address: Ethereum address
         max_transactions: Max TXs to fetch (default: 100)
         force_refresh: Ignore cache, fetch all (default: False)
+        skip_enrichment: Skip USD enrichment, only save raw TXs (default: False)
     
     Returns:
         Dict with stats: {
@@ -974,8 +977,11 @@ async def sync_wallet_transactions_to_db(
             "existing_count": int,
             "fetched_count": int,
             "saved_count": int,
+            "updated_count": int,
             "skipped_count": int,
-            "source": str  # "cache" or "blockchain"
+            "enrichment_failed": int,
+            "needs_enrichment": int,
+            "source": str
         }
     """
     from app.core.otc_analysis.models.transaction import Transaction
@@ -989,7 +995,10 @@ async def sync_wallet_transactions_to_db(
         "existing_count": 0,
         "fetched_count": 0,
         "saved_count": 0,
+        "updated_count": 0,
         "skipped_count": 0,
+        "enrichment_failed": 0,
+        "needs_enrichment": 0,
         "source": "unknown"
     }
     
@@ -999,8 +1008,7 @@ async def sync_wallet_transactions_to_db(
         # ====================================================================
         
         if not force_refresh:
-            # Check if we have recent transactions
-            cutoff_time = datetime.now() - timedelta(hours=6)  # 6h cache
+            cutoff_time = datetime.now() - timedelta(hours=6)
             
             existing_count = db.query(Transaction).filter(
                 or_(
@@ -1051,61 +1059,130 @@ async def sync_wallet_transactions_to_db(
             )[:max_transactions]
         
         # ====================================================================
-        # STEP 3: ENRICH WITH USD VALUES
+        # STEP 3: OPTIONAL USD ENRICHMENT (mit Rate Limit Protection)
         # ====================================================================
         
-        logger.info(f"   💰 Enriching {len(transactions)} transactions with USD values...")
+        enriched_transactions = transactions
         
-        transactions = transaction_extractor.enrich_with_usd_value(
-            transactions,
-            price_oracle,
-            max_transactions=len(transactions)
-        )
+        if not skip_enrichment:
+            logger.info(f"   💰 Enriching {len(transactions)} transactions with USD values...")
+            
+            try:
+                enriched_transactions = transaction_extractor.enrich_with_usd_value(
+                    transactions,
+                    price_oracle,
+                    max_transactions=len(transactions)
+                )
+                
+                # Zähle erfolgreiche Enrichments
+                enriched_count = sum(1 for tx in enriched_transactions if tx.get('value_usd', 0) > 0)
+                failed_count = len(enriched_transactions) - enriched_count
+                
+                stats["enrichment_failed"] = failed_count
+                
+                logger.info(
+                    f"   💵 Enrichment result: "
+                    f"{enriched_count} successful, "
+                    f"{failed_count} failed/skipped"
+                )
+                
+            except Exception as enrich_error:
+                logger.warning(f"   ⚠️ Enrichment failed: {enrich_error}")
+                logger.info(f"   ℹ️ Continuing with raw transaction data...")
+                enriched_transactions = transactions
+                stats["enrichment_failed"] = len(transactions)
+        else:
+            logger.info(f"   ⏭️ Skipping USD enrichment (skip_enrichment=True)")
+            stats["enrichment_failed"] = len(transactions)
         
         # ====================================================================
-        # STEP 4: SAVE TO DATABASE
+        # STEP 4: SAVE TO DATABASE (IMMER, auch ohne USD-Wert!)
         # ====================================================================
         
         logger.info(f"   💾 Saving transactions to database...")
         
-        for tx in transactions:
+        for tx in enriched_transactions:
             try:
                 # Parse timestamp
                 tx_timestamp = tx.get('timestamp')
                 if isinstance(tx_timestamp, str):
-                    tx_timestamp = datetime.fromisoformat(tx_timestamp.replace('Z', '+00:00'))
+                    try:
+                        tx_timestamp = datetime.fromisoformat(tx_timestamp.replace('Z', '+00:00'))
+                    except:
+                        tx_timestamp = datetime.now()
                 elif isinstance(tx_timestamp, int):
                     tx_timestamp = datetime.fromtimestamp(tx_timestamp)
                 elif not isinstance(tx_timestamp, datetime):
                     tx_timestamp = datetime.now()
                 
-                # Get USD value
-                usd_value = tx.get('value_usd') or tx.get('valueUSD') or 0
-                if not usd_value and tx.get('value'):
-                    eth_value = float(tx.get('value', 0)) / 1e18
-                    usd_value = eth_value * 3500  # Fallback price
+                # ✨ VERBESSERUNG: Robuste USD-Value Extraktion
+                usd_value = None
+                if tx.get('value_usd'):
+                    usd_value = float(tx['value_usd'])
+                elif tx.get('valueUSD'):
+                    usd_value = float(tx['valueUSD'])
+                elif tx.get('usd_value'):
+                    usd_value = float(tx['usd_value'])
+                
+                # Fallback: Berechne aus ETH-Wert (grobe Schätzung)
+                if not usd_value or usd_value == 0:
+                    if tx.get('value'):
+                        try:
+                            eth_value = float(tx.get('value', 0)) / 1e18
+                            # Nur wenn > 0.01 ETH (vermeidet dust)
+                            if eth_value > 0.01:
+                                usd_value = None  # Wird später enriched
+                        except:
+                            pass
                 
                 # Get ETH value
                 value_wei = str(tx.get('value', '0'))
-                value_decimal = float(tx.get('value', 0)) / 1e18 if tx.get('value') else 0
+                try:
+                    value_decimal = float(tx.get('value', 0)) / 1e18 if tx.get('value') else 0
+                except:
+                    value_decimal = 0
                 
-                # Calculate OTC score (simple heuristic)
+                # Calculate OTC score (nur wenn USD-Wert bekannt)
                 otc_score = 0.0
-                if usd_value > 100000:
-                    otc_score = min(usd_value / 1000000, 1.0)  # $1M = 1.0 score
+                if usd_value and usd_value > 0:
+                    if usd_value > 100000:
+                        otc_score = min(usd_value / 1000000, 1.0)
                 
-                # Check if transaction already exists
+                # ✨ VERBESSERUNG: Check ob TX existiert
+                tx_hash = tx.get('hash') or tx.get('tx_hash')
+                
                 existing_tx = db.query(Transaction).filter(
-                    Transaction.tx_hash == tx.get('hash') or Transaction.tx_hash == tx.get('tx_hash')
+                    Transaction.tx_hash == tx_hash
                 ).first()
                 
                 if existing_tx:
-                    stats["skipped_count"] += 1
+                    # ✨ UPDATE: Wenn existing TX keinen USD-Wert hat, aber wir einen haben
+                    if (not existing_tx.usd_value or existing_tx.usd_value == 0) and usd_value and usd_value > 0:
+                        existing_tx.usd_value = usd_value
+                        existing_tx.otc_score = otc_score
+                        existing_tx.is_suspected_otc = otc_score > 0.7
+                        existing_tx.needs_enrichment = False
+                        existing_tx.updated_at = datetime.now()
+                        
+                        stats["updated_count"] += 1
+                        
+                        if stats["updated_count"] % 20 == 0:
+                            db.commit()
+                            logger.info(f"      ✅ Updated {stats['updated_count']} transactions...")
+                    else:
+                        stats["skipped_count"] += 1
+                    
                     continue
                 
-                # Create new transaction record
+                # ✨ VERBESSERUNG: Markiere TXs die enriched werden müssen
+                needs_enrichment = (not usd_value or usd_value == 0) and value_decimal > 0.01
+                
+                if needs_enrichment:
+                    stats["needs_enrichment"] += 1
+                
+                # ✨ CREATE: Speichere IMMER (auch ohne USD-Wert!)
                 new_tx = Transaction(
-                    tx_hash=tx.get('hash') or tx.get('tx_hash'),
+                    tx_hash=tx_hash,
                     block_number=int(tx.get('blockNumber', 0) or tx.get('block_number', 0) or 0),
                     timestamp=tx_timestamp,
                     from_address=tx.get('from', '').lower(),
@@ -1113,14 +1190,15 @@ async def sync_wallet_transactions_to_db(
                     token_address=tx.get('tokenAddress') or tx.get('token_address'),
                     value=value_wei,
                     value_decimal=value_decimal,
-                    usd_value=usd_value,
+                    usd_value=usd_value,  # ✅ Kann NULL sein!
                     gas_used=int(tx.get('gasUsed', 0) or tx.get('gas_used', 0) or 0),
                     gas_price=int(tx.get('gasPrice', 0) or tx.get('gas_price', 0) or 0),
                     is_contract_interaction=tx.get('isContractInteraction', False),
                     method_id=tx.get('methodId') or tx.get('method_id'),
                     otc_score=otc_score,
                     is_suspected_otc=otc_score > 0.7,
-                    chain_id=1,  # Ethereum mainnet
+                    needs_enrichment=needs_enrichment,  # ✨ Flag für später!
+                    chain_id=1,
                     created_at=datetime.now(),
                     updated_at=datetime.now()
                 )
@@ -1128,13 +1206,13 @@ async def sync_wallet_transactions_to_db(
                 db.add(new_tx)
                 stats["saved_count"] += 1
                 
-                # Commit in batches of 50
+                # Commit in batches
                 if stats["saved_count"] % 50 == 0:
                     db.commit()
                     logger.info(f"      ✅ Saved {stats['saved_count']} transactions...")
                 
             except Exception as tx_error:
-                logger.debug(f"      ⚠️ Skipping transaction: {tx_error}")
+                logger.debug(f"      ⚠️ Error saving transaction: {tx_error}")
                 stats["skipped_count"] += 1
                 continue
         
@@ -1145,8 +1223,15 @@ async def sync_wallet_transactions_to_db(
         logger.info(
             f"   ✅ Transaction sync complete: "
             f"Saved {stats['saved_count']}, "
+            f"Updated {stats['updated_count']}, "
             f"Skipped {stats['skipped_count']}"
         )
+        
+        if stats["needs_enrichment"] > 0:
+            logger.info(
+                f"   ⏳ {stats['needs_enrichment']} transactions need USD enrichment "
+                f"(run background job later)"
+            )
         
         return stats
         
@@ -1155,6 +1240,182 @@ async def sync_wallet_transactions_to_db(
         db.rollback()
         return stats
 
+async def enrich_missing_usd_values(
+    db: Session,
+    batch_size: int = 100,
+    delay_between_calls: float = 1.2,
+    max_batches: int = 10
+) -> Dict[str, Any]:
+    """
+    Enriched Transaktionen die usd_value = NULL oder 0 haben.
+    
+    ✨ SMART ENRICHMENT:
+    - Priorisiert große Transaktionen (> 0.1 ETH)
+    - Rate Limit Protection mit Delays
+    - Batch Processing mit Commits
+    - Stoppt bei zu vielen Fehlern
+    
+    Args:
+        db: Database session
+        batch_size: Anzahl TXs pro Batch (default: 100)
+        delay_between_calls: Verzögerung zwischen API-Calls (default: 1.2s)
+        max_batches: Max Anzahl Batches (default: 10)
+    
+    Returns:
+        Dict with stats
+    """
+    from app.core.otc_analysis.models.transaction import Transaction
+    from datetime import datetime
+    import asyncio
+    
+    logger.info("="*70)
+    logger.info("💰 ENRICHING MISSING USD VALUES")
+    logger.info("="*70)
+    
+    stats = {
+        "total_checked": 0,
+        "enriched": 0,
+        "failed": 0,
+        "skipped": 0,
+        "batches_processed": 0,
+        "rate_limit_hits": 0,
+        "start_time": datetime.now()
+    }
+    
+    try:
+        for batch_num in range(max_batches):
+            logger.info(f"\n📦 Processing batch {batch_num + 1}/{max_batches}...")
+            
+            # ✨ OPTIMIERTE QUERY: Priorisiere große TXs
+            transactions = db.query(Transaction).filter(
+                (Transaction.usd_value == None) | (Transaction.usd_value == 0),
+                Transaction.value_decimal > 0.01,  # Nur > 0.01 ETH
+                Transaction.needs_enrichment == True
+            ).order_by(
+                Transaction.value_decimal.desc()  # Größte zuerst
+            ).limit(batch_size).all()
+            
+            if not transactions:
+                logger.info("   ✅ No more transactions to enrich")
+                break
+            
+            logger.info(f"   Found {len(transactions)} transactions needing enrichment")
+            stats["total_checked"] += len(transactions)
+            
+            for tx in transactions:
+                try:
+                    # Determine token
+                    if tx.token_address and tx.token_address.lower() != '0x' * 20:
+                        token_symbol = tx.token_address  # Will be resolved by price oracle
+                    else:
+                        token_symbol = "ETH"
+                    
+                    # ✨ Get price with retry logic
+                    price = None
+                    retry_count = 0
+                    max_retries = 3
+                    
+                    while retry_count < max_retries and not price:
+                        try:
+                            price = await price_oracle.get_token_price_at_time(
+                                token_symbol,
+                                tx.timestamp
+                            )
+                            
+                            if price and price > 0:
+                                break
+                            
+                            # Delay between retries
+                            if retry_count < max_retries - 1:
+                                await asyncio.sleep(delay_between_calls * (retry_count + 1))
+                            
+                        except Exception as price_error:
+                            error_msg = str(price_error).lower()
+                            
+                            if 'rate' in error_msg or 'limit' in error_msg or '429' in error_msg:
+                                stats["rate_limit_hits"] += 1
+                                logger.warning(f"      ⏱️ Rate limit hit, waiting {delay_between_calls * 2}s...")
+                                await asyncio.sleep(delay_between_calls * 2)
+                            
+                            retry_count += 1
+                    
+                    if price and price > 0:
+                        # Calculate USD value
+                        usd_value = tx.value_decimal * price
+                        
+                        # Update transaction
+                        tx.usd_value = usd_value
+                        tx.otc_score = min(usd_value / 1000000, 1.0) if usd_value > 100000 else 0.0
+                        tx.is_suspected_otc = tx.otc_score > 0.7
+                        tx.needs_enrichment = False
+                        tx.updated_at = datetime.now()
+                        
+                        stats["enriched"] += 1
+                        
+                        # Commit in small batches
+                        if stats["enriched"] % 10 == 0:
+                            db.commit()
+                            logger.info(
+                                f"      ✅ Enriched {stats['enriched']} transactions "
+                                f"(latest: ${usd_value:,.2f})"
+                            )
+                        
+                        # Delay between successful calls
+                        await asyncio.sleep(delay_between_calls)
+                        
+                    else:
+                        # Mark as failed (don't retry in next batch)
+                        tx.needs_enrichment = False
+                        tx.updated_at = datetime.now()
+                        stats["failed"] += 1
+                    
+                except Exception as tx_error:
+                    logger.debug(f"      ⚠️ Error enriching TX {tx.tx_hash[:10]}: {tx_error}")
+                    stats["failed"] += 1
+                    
+                    # Stop batch if too many consecutive failures
+                    if stats["failed"] > 20 and stats["enriched"] == 0:
+                        logger.error("   ❌ Too many failures, stopping batch")
+                        break
+                    
+                    continue
+            
+            # Commit batch
+            db.commit()
+            stats["batches_processed"] += 1
+            
+            logger.info(
+                f"   ✅ Batch {batch_num + 1} complete: "
+                f"{stats['enriched']} enriched, "
+                f"{stats['failed']} failed"
+            )
+            
+            # Delay between batches
+            if batch_num < max_batches - 1:
+                await asyncio.sleep(delay_between_calls * 2)
+        
+        stats["end_time"] = datetime.now()
+        stats["duration_seconds"] = (
+            stats["end_time"] - stats["start_time"]
+        ).total_seconds()
+        
+        logger.info("\n" + "="*70)
+        logger.info("✅ ENRICHMENT COMPLETE")
+        logger.info("="*70)
+        logger.info(f"Total checked: {stats['total_checked']}")
+        logger.info(f"Successfully enriched: {stats['enriched']}")
+        logger.info(f"Failed: {stats['failed']}")
+        logger.info(f"Rate limit hits: {stats['rate_limit_hits']}")
+        logger.info(f"Batches processed: {stats['batches_processed']}")
+        logger.info(f"Duration: {stats['duration_seconds']:.1f}s")
+        logger.info("="*70)
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"❌ Enrichment failed: {e}", exc_info=True)
+        db.rollback()
+        return stats
 
 async def sync_all_wallets_transactions(
     db: Session,
