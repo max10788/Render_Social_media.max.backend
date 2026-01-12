@@ -15,6 +15,7 @@ Date: 2025-01-12
 from typing import List, Dict, Optional
 from datetime import datetime
 import logging
+from app.core.otc_analysis.discovery.wallet_tagger import WalletTagger
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class HighVolumeAnalyzer:
         self.wallet_profiler = wallet_profiler
         self.price_oracle = price_oracle
         self.wallet_stats_api = wallet_stats_api
+        self.wallet_tagger = WalletTagger()  # ✅ NEU
     
     def discover_high_volume_counterparties(
         self,
@@ -305,6 +307,31 @@ class HighVolumeAnalyzer:
             logger.info(
                 f"✅ Transaction Processing: "
                 f"${result['total_volume']:,.0f} volume"
+            )
+            
+            # ✅ NEU: Generate comprehensive tags
+            logger.info(f"   🏷️  Generating characteristic tags...")
+            
+            categorized_tags = self.wallet_tagger.generate_comprehensive_tags(
+                address=counterparty_address,
+                transactions=cp_transactions,
+                profile=profile,
+                scoring_metrics={
+                    'total_volume': result['total_volume'],
+                    'avg_transaction': result['avg_transaction'],
+                    'tx_count': result['transaction_count'],
+                    'token_diversity': profile.get('token_diversity', 0),
+                    'unique_counterparties': profile.get('unique_counterparties', 0),
+                    'large_transfer_count': profile.get('large_transfer_count', 0)
+                }
+            )
+            
+            # Add categorized tags to result
+            result['categorized_tags'] = categorized_tags
+            
+            logger.info(
+                f"✅ Analysis complete with {len(categorized_tags['all'])} tags "
+                f"across {len([k for k in categorized_tags.keys() if k != 'all'])} categories"
             )
             
             return result
