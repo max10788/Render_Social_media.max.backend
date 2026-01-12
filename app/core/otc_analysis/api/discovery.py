@@ -9,6 +9,7 @@ import logging
 
 from app.core.backend_crypto_tracker.config.database import get_db
 from app.core.otc_analysis.api.dependencies import discover_new_otc_desks, discover_from_last_5_transactions
+from app.core.otc_analysis.api.dependencies import discover_high_volume_from_transactions
 
 router = APIRouter(tags=["Discovery"])
 logger = logging.getLogger(__name__)
