@@ -46,12 +46,14 @@ from app.core.otc_analysis.data_sources.price_oracle import PriceOracle
 from app.core.otc_analysis.data_sources.otc_desks import OTCDeskRegistry
 from app.core.otc_analysis.data_sources.wallet_labels import WalletLabelingService
 from app.core.otc_analysis.discovery.discovery_scorer import DiscoveryScorer
+from app.core.otc_analysis.discovery.volume_scorer import VolumeScorer
 
 # Analysis Services
 from app.core.otc_analysis.analysis.statistics_service import StatisticsService
 from app.core.otc_analysis.analysis.graph_builder import GraphBuilderService
 from app.core.otc_analysis.analysis.network_graph import NetworkAnalysisService
 from app.core.otc_analysis.analysis.link_builder import LinkBuilder  # ✨ NEW
+from app.core.otc_analysis.discovery.high_volume_analyzer import HighVolumeAnalyzer
 
 # Database Models
 from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
