@@ -166,7 +166,7 @@ class HighVolumeAnalyzer:
             counterparty_address: Address to analyze
             
         Returns:
-            Analysis result with volume metrics
+            Analysis result with volume metrics + categorized tags
         """
         logger.info(f"🔬 Analyzing volume profile {counterparty_address[:10]}...")
         
@@ -230,7 +230,7 @@ class HighVolumeAnalyzer:
                         'unique_counterparties': len(unique_counterparties),
                         'token_diversity': len(token_diversity),
                         'transfer_count': len(transfers),
-                        'avg_transfer_usd': total_volume_usd / len(transfers),
+                        'avg_transfer_usd': total_volume_usd / len(transfers) if len(transfers) > 0 else 0,
                         'large_transfer_count': large_transfers,
                         'first_seen': transfers[-1].get('block_timestamp') if transfers else None,
                         'last_seen': transfers[0].get('block_timestamp') if transfers else None,
@@ -242,7 +242,7 @@ class HighVolumeAnalyzer:
                         'address': counterparty_address,
                         'total_volume': total_volume_usd,
                         'transaction_count': len(transfers),
-                        'avg_transaction': total_volume_usd / len(transfers),
+                        'avg_transaction': total_volume_usd / len(transfers) if len(transfers) > 0 else 0,
                         'first_seen': profile['first_seen'],
                         'last_seen': profile['last_seen'],
                         'profile': profile,
@@ -255,6 +255,44 @@ class HighVolumeAnalyzer:
                         f"${total_volume_usd:,.0f} volume, "
                         f"{len(token_diversity)} tokens, "
                         f"{large_transfers} large transfers"
+                    )
+                    
+                    # ✅ Generate comprehensive tags (for Moralis path)
+                    logger.info(f"   🏷️  Generating characteristic tags...")
+                    
+                    # Convert transfers to transaction format for tagger
+                    transactions_for_tagger = []
+                    for transfer in transfers:
+                        transactions_for_tagger.append({
+                            'from_address': transfer.get('from_address'),
+                            'to_address': transfer.get('to_address'),
+                            'token_symbol': transfer.get('token_symbol'),
+                            'timestamp': transfer.get('block_timestamp'),
+                            'usd_value': (float(transfer.get('value', 0) or 0) / (10 ** int(transfer.get('token_decimals', 18) or 18)))
+                                        if transfer.get('token_symbol') in ['USDT', 'USDC', 'DAI', 'BUSD']
+                                        else 0
+                        })
+                    
+                    categorized_tags = self.wallet_tagger.generate_comprehensive_tags(
+                        address=counterparty_address,
+                        transactions=transactions_for_tagger,
+                        profile=profile,
+                        scoring_metrics={
+                            'total_volume': result['total_volume'],
+                            'avg_transaction': result['avg_transaction'],
+                            'tx_count': result['transaction_count'],
+                            'token_diversity': profile.get('token_diversity', 0),
+                            'unique_counterparties': profile.get('unique_counterparties', 0),
+                            'large_transfer_count': profile.get('large_transfer_count', 0)
+                        }
+                    )
+                    
+                    # Add categorized tags to result
+                    result['categorized_tags'] = categorized_tags
+                    
+                    logger.info(
+                        f"✅ Moralis Analysis complete with {len(categorized_tags['all'])} tags "
+                        f"across {len([k for k in categorized_tags.keys() if k != 'all'])} categories"
                     )
                     
                     return result
@@ -309,12 +347,12 @@ class HighVolumeAnalyzer:
                 f"${result['total_volume']:,.0f} volume"
             )
             
-            # ✅ NEU: Generate comprehensive tags
+            # ✅ Generate comprehensive tags (for fallback path)
             logger.info(f"   🏷️  Generating characteristic tags...")
             
             categorized_tags = self.wallet_tagger.generate_comprehensive_tags(
                 address=counterparty_address,
-                transactions=cp_transactions,
+                transactions=transactions,  # ✅ FIXED: Use 'transactions' not 'cp_transactions'
                 profile=profile,
                 scoring_metrics={
                     'total_volume': result['total_volume'],
