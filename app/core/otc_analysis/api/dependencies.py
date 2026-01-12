@@ -944,6 +944,201 @@ async def discover_from_last_5_transactions(
         db.rollback()
         return []
 
+async def discover_high_volume_from_transactions(
+    db: Session,
+    source_address: str,
+    num_transactions: int = 5,
+    min_volume_threshold: float = 1_000_000,
+    filter_known_entities: bool = True
+) -> List[Dict]:
+    """
+    🔍 Discover high-volume wallets from last N transactions.
+    
+    ✅ VOLUME-FOCUSED (not OTC-specific):
+    - Same counterparty extraction as OTC discovery
+    - Volume-based scoring (not OTC patterns)
+    - Saves to DB with entity_type='high_volume_wallet'
+    - Individual tags per wallet
+    
+    Args:
+        db: Database session
+        source_address: Source wallet to analyze
+        num_transactions: Number of recent transactions to check
+        min_volume_threshold: Minimum USD volume to save (default: $1M)
+        filter_known_entities: Filter out known exchanges/protocols
+        
+    Returns:
+        List of discovered high-volume wallets with metadata
+    """
+    from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
+    from datetime import datetime
+    
+    logger.info(f"🔍 High Volume Discovery: Last {num_transactions} TXs from {source_address[:10]}...")
+    logger.info(f"   💰 Min volume threshold: ${min_volume_threshold:,.0f}")
+    
+    if filter_known_entities:
+        logger.info("   🏷️ Moralis label filtering: ENABLED")
+    else:
+        logger.info("   🏷️ Moralis label filtering: DISABLED")
+    
+    try:
+        # Initialize analyzer
+        analyzer = HighVolumeAnalyzer(
+            db=db,
+            transaction_extractor=transaction_extractor,
+            wallet_profiler=wallet_profiler,
+            price_oracle=price_oracle,
+            wallet_stats_api=wallet_stats_api
+        )
+        
+        # Initialize scorer
+        volume_scorer = VolumeScorer(min_volume_threshold=min_volume_threshold)
+        
+        # Get counterparties from last N transactions
+        counterparties_data = analyzer.discover_high_volume_counterparties(
+            source_address=source_address,
+            num_transactions=num_transactions,
+            filter_known_entities=filter_known_entities
+        )
+        
+        if not counterparties_data:
+            logger.info("ℹ️ No valid counterparties found")
+            return []
+        
+        logger.info(f"📊 Analyzing {len(counterparties_data)} counterparties...")
+        
+        # Analyze each counterparty
+        discovered = []
+        
+        for cp_data in counterparties_data:
+            address = cp_data['address']
+            
+            # Skip if already in DB
+            existing = db.query(OTCWallet).filter(
+                OTCWallet.address == address
+            ).first()
+            
+            if existing:
+                logger.info(
+                    f"   ⚠️ {address[:10]}... already exists "
+                    f"(type: {existing.entity_type}, score: {existing.confidence_score:.1f}%)"
+                )
+                continue
+            
+            logger.info(f"   🔍 Analyzing {address[:10]}...")
+            
+            # Analyze volume profile
+            analysis = analyzer.analyze_volume_profile(address)
+            
+            if not analysis:
+                logger.info(f"      ⚠️ Analysis failed")
+                continue
+            
+            # Get full transactions for scoring
+            cp_transactions = transaction_extractor.extract_wallet_transactions(
+                address,
+                include_internal=True,
+                include_tokens=True
+            )
+            
+            # Score the wallet
+            scoring_result = volume_scorer.score_high_volume_wallet(
+                address=address,
+                transactions=cp_transactions,
+                counterparty_data=cp_data,
+                profile=analysis.get('profile', {})
+            )
+            
+            volume_score = scoring_result['score']
+            classification = scoring_result['classification']
+            total_volume = analysis['total_volume']
+            
+            logger.info(
+                f"      📊 Scores: Volume={volume_score}/100, "
+                f"Total=${total_volume:,.0f}"
+            )
+            
+            if cp_data.get('moralis_label'):
+                logger.info(
+                    f"      🏷️ Moralis: {cp_data['moralis_label']} "
+                    f"(Entity: {cp_data.get('moralis_entity', 'N/A')})"
+                )
+            
+            logger.info(f"      💡 Classification: {classification['classification']}")
+            
+            # Check if meets threshold
+            if not scoring_result['meets_threshold']:
+                logger.info(
+                    f"      ⚠️ Below volume threshold "
+                    f"(${total_volume:,.0f} < ${min_volume_threshold:,.0f})"
+                )
+                continue
+            
+            # Check minimum score (40/100)
+            if volume_score < 40:
+                logger.info(f"      ⚠️ Score too low ({volume_score}/100)")
+                continue
+            
+            # Prepare tags
+            tags = [
+                'discovered',
+                'high_volume',
+                'volume_analysis'
+            ] + classification['tags']
+            
+            if cp_data.get('moralis_label'):
+                tags.append(f"moralis:{cp_data['moralis_label'][:30]}")
+            
+            # Save to DB
+            wallet = OTCWallet(
+                address=address,
+                label=cp_data.get('moralis_label') or f"High Volume {address[:8]}",
+                entity_type='high_volume_wallet',  # ✅ NEW entity type
+                entity_name=cp_data.get('moralis_label') or f"High Volume {address[:8]}",
+                confidence_score=volume_score,  # Use volume score as confidence
+                total_volume=total_volume,
+                transaction_count=analysis['transaction_count'],
+                first_seen=analysis['first_seen'],
+                last_active=analysis['last_seen'],
+                is_active=True,
+                tags=tags,
+                created_at=datetime.now(),
+                updated_at=datetime.now()
+            )
+            
+            db.add(wallet)
+            db.commit()
+            
+            discovered.append({
+                'address': address,
+                'volume_score': volume_score,
+                'total_volume': total_volume,
+                'tx_count': analysis['transaction_count'],
+                'avg_transaction': analysis['avg_transaction'],
+                'classification': classification['classification'],
+                'tags': tags,
+                'counterparty_data': cp_data,
+                'volume_breakdown': scoring_result['breakdown'],
+                'moralis_label': cp_data.get('moralis_label'),
+                'moralis_entity': cp_data.get('moralis_entity')
+            })
+            
+            logger.info(
+                f"      ✅ Saved to DB "
+                f"(type: high_volume_wallet, score: {volume_score}/100)"
+            )
+        
+        logger.info(
+            f"✅ High Volume Discovery complete: {len(discovered)} wallets found "
+            f"(threshold: ${min_volume_threshold:,.0f})"
+        )
+        
+        return discovered
+        
+    except Exception as e:
+        logger.error(f"❌ High volume discovery failed: {e}", exc_info=True)
+        db.rollback()
+
 """
 NEUE FUNKTION für dependencies.py einfügen (am Ende, vor __all__)
 
@@ -1550,6 +1745,7 @@ __all__ = [
     "statistics_service",
     "graph_builder",
     "link_builder",  # ✨ NEW
+    "discover_high_volume_from_transactions",
 
     # ✨ NEW: Transaction Sync
     "sync_wallet_transactions_to_db",
