@@ -100,10 +100,15 @@ async def get_network_graph(
     use_discovery: bool = Query(True, description="Use discovery data for edge generation"),
     use_transactions: bool = Query(False, description="Use blockchain transactions (slower)"),
     min_flow_size: float = Query(100000, description="Minimum flow value for edges (USD)"),
+    include_high_volume_wallets: bool = Query(True, description="Include high-volume wallets"),  # ✅ NEW
     db: Session = Depends(get_db),
     link_builder = Depends(get_link_builder)
 ):
-    """Get network graph data for NetworkGraph and SankeyFlow components."""
+    """
+    Get network graph data for NetworkGraph component.
+    
+    ✅ ENHANCED: Now includes high-volume wallets with classifications
+    """
     try:
         await ensure_registry_wallets_in_db(db, max_to_fetch=5)
         
@@ -119,22 +124,78 @@ async def get_network_graph(
             end = datetime.now()
         
         logger.info(f"🌐 GET /network: {start.date()} to {end.date()}, max_nodes={max_nodes}")
-        logger.info(f"   • generate_edges={generate_edges}, use_discovery={use_discovery}")
+        logger.info(f"   • generate_edges={generate_edges}, include_wallets={include_high_volume_wallets}")
         
-        # Query wallets
-        wallets = db.query(OTCWallet).filter(
+        # ====================================================================
+        # ✅ NEW: Query OTC Wallets + High-Volume Wallets
+        # ====================================================================
+        
+        # Base query for OTC desks
+        otc_query = db.query(OTCWallet).filter(
             OTCWallet.last_active >= start,
-            OTCWallet.last_active <= end
-        ).order_by(OTCWallet.total_volume.desc()).limit(max_nodes).all()
+            OTCWallet.last_active <= end,
+            OTCWallet.entity_type != 'high_volume_wallet'  # Exclude wallets
+        )
         
-        logger.info(f"   Found {len(wallets)} wallets for network")
+        otc_wallets = otc_query.order_by(
+            OTCWallet.total_volume.desc()
+        ).limit(max_nodes).all()
         
-        # Format nodes
+        logger.info(f"   Found {len(otc_wallets)} OTC wallets")
+        
+        # ✅ NEW: Query High-Volume Wallets separately
+        wallet_nodes = []
+        
+        if include_high_volume_wallets:
+            wallet_query = db.query(OTCWallet).filter(
+                OTCWallet.entity_type == 'high_volume_wallet',
+                OTCWallet.last_active >= start,
+                OTCWallet.last_active <= end
+            )
+            
+            high_volume_wallets = wallet_query.order_by(
+                OTCWallet.total_volume.desc()
+            ).limit(100).all()  # Limit wallets separately
+            
+            logger.info(f"   Found {len(high_volume_wallets)} high-volume wallets")
+            
+            # ✅ Format wallet nodes with special fields
+            for w in high_volume_wallets:
+                # Extract classification from tags
+                classification = None
+                for tag in (w.tags or []):
+                    if tag in ['mega_whale', 'whale', 'institutional', 'large_wallet', 'medium_wallet']:
+                        classification = tag
+                        break
+                
+                # Categorize tags by type
+                categorized_tags = _categorize_wallet_tags(w.tags or [])
+                
+                wallet_nodes.append({
+                    "address": w.address,
+                    "label": w.label or f"{w.address[:6]}...{w.address[-4:]}",
+                    "entity_type": w.entity_type,
+                    "node_type": "high_volume_wallet",  # ✅ Special type
+                    "classification": classification,  # ✅ Wallet classification
+                    "entity_name": w.entity_name or "",
+                    "total_volume_usd": float(w.total_volume or 0),
+                    "transaction_count": w.transaction_count or 0,
+                    "confidence_score": float(w.confidence_score or 0),
+                    "volume_score": float(w.confidence_score or 0),  # Use confidence as volume score
+                    "is_active": w.is_active if w.is_active is not None else False,
+                    "tags": w.tags or [],
+                    "categorized_tags": categorized_tags,  # ✅ NEW
+                    "first_seen": w.first_seen.isoformat() if w.first_seen else None,
+                    "last_active": w.last_active.isoformat() if w.last_active else None
+                })
+        
+        # ✅ Format OTC nodes (existing logic)
         cytoscape_nodes = [
             {
                 "address": w.address,
                 "label": w.label or f"{w.address[:6]}...{w.address[-4:]}",
                 "entity_type": w.entity_type or "unknown",
+                "node_type": "otc_desk",  # ✅ Standard type
                 "entity_name": w.entity_name or "",
                 "total_volume_usd": float(w.total_volume or 0),
                 "transaction_count": w.transaction_count or 0,
@@ -142,9 +203,13 @@ async def get_network_graph(
                 "is_active": w.is_active if w.is_active is not None else False,
                 "tags": w.tags or []
             }
-            for w in wallets
+            for w in otc_wallets
         ]
         
+        # ✅ Combine both types
+        cytoscape_nodes.extend(wallet_nodes)
+        
+        # Sankey nodes (only OTC desks, not wallets)
         sankey_nodes = [
             {
                 "name": w.label or f"{w.address[:8]}...",
@@ -153,21 +218,21 @@ async def get_network_graph(
                 "address": w.address,
                 "confidence": float(w.confidence_score or 0)
             }
-            for w in wallets
+            for w in otc_wallets
         ]
         
-        # Generate edges
+        # Generate edges (only between OTC desks, not wallets)
         cytoscape_edges = []
         sankey_links = []
         edge_metadata = {}
         
-        if generate_edges and len(wallets) > 1:
+        if generate_edges and len(otc_wallets) > 1:
             try:
                 logger.info(f"   🔗 Generating edges using LinkBuilder...")
                 
                 result = link_builder.build_links(
                     db=db,
-                    wallets=wallets,
+                    wallets=otc_wallets,  # Only OTC desks get edges
                     start_date=start,
                     end_date=end,
                     min_flow_size=min_flow_size,
@@ -187,7 +252,11 @@ async def get_network_graph(
             except Exception as edge_error:
                 logger.error(f"   ⚠️ Error generating edges: {edge_error}", exc_info=True)
         
-        logger.info(f"✅ Network: {len(cytoscape_nodes)} nodes, {len(cytoscape_edges)} edges")
+        logger.info(
+            f"✅ Network: {len(cytoscape_nodes)} nodes "
+            f"({len(otc_wallets)} OTC, {len(wallet_nodes)} wallets), "
+            f"{len(cytoscape_edges)} edges"
+        )
         
         return {
             "nodes": cytoscape_nodes,
@@ -196,6 +265,8 @@ async def get_network_graph(
             "sankeyLinks": sankey_links,
             "metadata": {
                 "node_count": len(cytoscape_nodes),
+                "otc_desk_count": len(otc_wallets),
+                "wallet_count": len(wallet_nodes),  # ✅ NEW
                 "edge_count": len(cytoscape_edges),
                 "link_count": len(sankey_links),
                 "period": {
@@ -212,6 +283,56 @@ async def get_network_graph(
     except Exception as e:
         logger.error(f"❌ Error in /network: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ✅ NEW: Helper function to categorize wallet tags
+def _categorize_wallet_tags(tags: List[str]) -> Dict[str, List[str]]:
+    """
+    Categorize wallet tags by type for better UI display.
+    
+    Categories: volume, activity, tokens, behavior, network, risk, temporal
+    """
+    categories = {
+        "volume": [],
+        "activity": [],
+        "tokens": [],
+        "behavior": [],
+        "network": [],
+        "risk": [],
+        "temporal": []
+    }
+    
+    # Define tag categories
+    volume_tags = ['very_high_volume', 'high_volume', 'large_transactions', 'mega_whale', 'whale']
+    activity_tags = ['hyperactive', 'active_trader', 'consistent', 'sporadic']
+    token_tags = ['multi_token', 'token_diversity', 'defi_native', 'stablecoin_dominant']
+    behavior_tags = ['institutional', 'systematic', 'concentrated_bets', 'diversified']
+    network_tags = ['well_connected', 'hub_wallet', 'isolated']
+    risk_tags = ['systemic_risk_potential', 'material_market_impact', 'high_risk_sizing']
+    temporal_tags = ['24/7_active', 'business_hours', 'after_hours']
+    
+    for tag in tags:
+        tag_lower = tag.lower()
+        
+        if any(t in tag_lower for t in volume_tags):
+            categories["volume"].append(tag)
+        elif any(t in tag_lower for t in activity_tags):
+            categories["activity"].append(tag)
+        elif any(t in tag_lower for t in token_tags):
+            categories["tokens"].append(tag)
+        elif any(t in tag_lower for t in behavior_tags):
+            categories["behavior"].append(tag)
+        elif any(t in tag_lower for t in network_tags):
+            categories["network"].append(tag)
+        elif any(t in tag_lower for t in risk_tags):
+            categories["risk"].append(tag)
+        elif any(t in tag_lower for t in temporal_tags):
+            categories["temporal"].append(tag)
+    
+    # Add "all" category with all tags
+    categories["all"] = tags
+    
+    return categories
 
 
 """
