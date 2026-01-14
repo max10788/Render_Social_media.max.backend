@@ -949,10 +949,16 @@ async def discover_high_volume_from_transactions(
     source_address: str,
     num_transactions: int = 5,
     min_volume_threshold: float = 1_000_000,
-    filter_known_entities: bool = True
+    filter_known_entities: bool = True,
+    auto_sync_transactions: bool = True  # ✅ NEW Parameter
 ) -> List[Dict]:
     """
     🔍 Discover high-volume wallets from last N transactions.
+    
+    ✅ ENHANCED v2: AUTO-SYNC TRANSACTIONS
+    - Speichert entdeckte Wallets in DB
+    - Synct automatisch deren Transaktionen (wenn auto_sync_transactions=True)
+    - Ermöglicht sofort Wallet ↔ OTC Edges im Graph
     
     ✅ VOLUME-FOCUSED (not OTC-specific):
     - Same counterparty extraction as OTC discovery
@@ -966,6 +972,7 @@ async def discover_high_volume_from_transactions(
         num_transactions: Number of recent transactions to check
         min_volume_threshold: Minimum USD volume to save (default: $1M)
         filter_known_entities: Filter out known exchanges/protocols
+        auto_sync_transactions: Auto-sync transactions for discovered wallets (default: True)
         
     Returns:
         List of discovered high-volume wallets with metadata
@@ -975,6 +982,7 @@ async def discover_high_volume_from_transactions(
     
     logger.info(f"🔍 High Volume Discovery: Last {num_transactions} TXs from {source_address[:10]}...")
     logger.info(f"   💰 Min volume threshold: ${min_volume_threshold:,.0f}")
+    logger.info(f"   🔄 Auto-sync TXs: {auto_sync_transactions}")
     
     if filter_known_entities:
         logger.info("   🏷️ Moralis label filtering: ENABLED")
@@ -1089,7 +1097,10 @@ async def discover_high_volume_from_transactions(
             if cp_data.get('moralis_label'):
                 tags.append(f"moralis:{cp_data['moralis_label'][:30]}")
             
-            # Save to DB
+            # ====================================================================
+            # ✅ STEP 1: Save Wallet to DB
+            # ====================================================================
+            
             wallet = OTCWallet(
                 address=address,
                 label=cp_data.get('moralis_label') or f"High Volume {address[:8]}",
@@ -1109,6 +1120,44 @@ async def discover_high_volume_from_transactions(
             db.add(wallet)
             db.commit()
             
+            logger.info(
+                f"      ✅ Saved to DB "
+                f"(type: high_volume_wallet, score: {volume_score}/100)"
+            )
+            
+            # ====================================================================
+            # ✅ STEP 2: AUTO-SYNC TRANSACTIONS (NEW!)
+            # ====================================================================
+            
+            if auto_sync_transactions:
+                logger.info(f"      🔄 Auto-syncing transactions for {address[:10]}...")
+                
+                try:
+                    sync_stats = await sync_wallet_transactions_to_db(
+                        db=db,
+                        wallet_address=address,
+                        max_transactions=100,
+                        force_refresh=False,
+                        skip_enrichment=False
+                    )
+                    
+                    logger.info(
+                        f"         ✅ Synced {sync_stats['saved_count']} transactions "
+                        f"({sync_stats['updated_count']} updated, "
+                        f"{sync_stats['skipped_count']} skipped)"
+                    )
+                    
+                    # Add sync stats to response
+                    cp_data['tx_sync'] = sync_stats
+                    
+                except Exception as sync_error:
+                    logger.error(f"         ⚠️ TX sync failed: {sync_error}")
+                    cp_data['tx_sync'] = {"error": str(sync_error)}
+            
+            # ====================================================================
+            # Add to discovered list
+            # ====================================================================
+            
             discovered.append({
                 'address': address,
                 'volume_score': volume_score,
@@ -1122,22 +1171,23 @@ async def discover_high_volume_from_transactions(
                 'moralis_label': cp_data.get('moralis_label'),
                 'moralis_entity': cp_data.get('moralis_entity')
             })
-            
-            logger.info(
-                f"      ✅ Saved to DB "
-                f"(type: high_volume_wallet, score: {volume_score}/100)"
-            )
         
         logger.info(
             f"✅ High Volume Discovery complete: {len(discovered)} wallets found "
             f"(threshold: ${min_volume_threshold:,.0f})"
         )
         
+        if auto_sync_transactions and len(discovered) > 0:
+            logger.info(
+                f"   💾 Transactions synced for all {len(discovered)} discovered wallets"
+            )
+        
         return discovered
         
     except Exception as e:
         logger.error(f"❌ High volume discovery failed: {e}", exc_info=True)
         db.rollback()
+        return []
 
 """
 NEUE FUNKTION für dependencies.py einfügen (am Ende, vor __all__)
