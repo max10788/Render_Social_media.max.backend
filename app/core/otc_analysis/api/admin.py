@@ -226,33 +226,174 @@ async def get_detailed_stats(
 
 @router.post("/admin/sync-all-transactions")
 async def sync_all_transactions(
-    max_wallets: int = Query(20, le=100),
+    max_wallets: int = Query(20, le=100, description="Max number of wallets to sync"),
+    max_transactions_per_wallet: int = Query(100, le=500, description="Max TXs per wallet"),
     db: Session = Depends(get_db)
 ):
     """
-    🔄 Synct Transaktionen für alle Wallets in die DB.
+    🔄 Synchronisiert Transaktionen für alle aktiven Wallets in die DB.
     
-    Holt Transaktionen via Blockchain API und speichert sie in transactions Tabelle.
+    **Process:**
+    1. Holt Top N volumenstärkste Wallets aus DB
+    2. Fetched Transaktionen via Blockchain API
+    3. Speichert sie in transactions Tabelle
+    4. Enriched USD values (soweit möglich)
+    
+    **Use Cases:**
+    - Initial Setup: Erstmaliges Befüllen der TX-Tabelle
+    - Maintenance: Regelmäßiges Update aller Wallets
+    - Graph Edges: Ermöglicht Wallet ↔ OTC Verbindungen
+    
+    **Performance:**
+    - 20 Wallets × 100 TXs = ~2000 Transaktionen
+    - Dauer: ca. 2-5 Minuten (abhängig von API Rate Limits)
+    
+    **Returns:**
+    - wallets_processed: Anzahl erfolgreich verarbeiteter Wallets
+    - total_saved: Neu gespeicherte Transaktionen
+    - total_fetched: Von API geholte Transaktionen
+    - errors: Anzahl Fehler
     """
     from app.core.otc_analysis.api.dependencies import sync_all_wallets_transactions
     
-    logger.info(f"🔄 Syncing transactions for {max_wallets} wallets...")
+    logger.info("="*70)
+    logger.info(f"🔄 ADMIN: Syncing transactions for {max_wallets} wallets")
+    logger.info("="*70)
     
     try:
         stats = await sync_all_wallets_transactions(
             db=db,
             max_wallets=max_wallets,
-            max_transactions_per_wallet=100
+            max_transactions_per_wallet=max_transactions_per_wallet
         )
         
         return {
             "success": True,
             "stats": stats,
-            "message": f"Synced transactions for {stats['wallets_processed']} wallets"
+            "message": (
+                f"✅ Synced {stats['total_saved']} transactions "
+                f"for {stats['wallets_processed']} wallets "
+                f"({stats['errors']} errors)"
+            ),
+            "recommendations": [
+                "Run /api/admin/enrich-missing-values to add USD values to transactions without them",
+                "Check /api/discover/debug/transaction-count to verify data",
+                "Reload /api/network to see new edges"
+            ]
         }
         
     except Exception as e:
         logger.error(f"❌ Sync failed: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
+
+
+@router.post("/admin/sync-wallet-transactions")
+async def sync_single_wallet_transactions(
+    wallet_address: str = Query(..., description="Wallet address to sync"),
+    max_transactions: int = Query(100, le=500, description="Max transactions to fetch"),
+    force_refresh: bool = Query(False, description="Force refresh even if cached"),
+    db: Session = Depends(get_db)
+):
+    """
+    🔄 Synchronisiert Transaktionen für ein einzelnes Wallet.
+    
+    **Use Cases:**
+    - Targeted Sync: Nur ein bestimmtes Wallet updaten
+    - New Wallet: Erstmalig Transaktionen holen
+    - Force Refresh: Cache ignorieren und neu fetchen
+    
+    **Examples:**
+```
+    POST /api/admin/sync-wallet-transactions?wallet_address=0x59abc82208ca435773608eb70f4035fc2ea861da
+    POST /api/admin/sync-wallet-transactions?wallet_address=0x8d05d9924fe935bd533a844271a1b2078eae6fcf&force_refresh=true
+```
+    """
+    from app.core.otc_analysis.api.dependencies import sync_wallet_transactions_to_db
+    
+    logger.info(f"🔄 ADMIN: Syncing transactions for {wallet_address[:10]}...")
+    
+    try:
+        stats = await sync_wallet_transactions_to_db(
+            db=db,
+            wallet_address=wallet_address,
+            max_transactions=max_transactions,
+            force_refresh=force_refresh
+        )
+        
+        return {
+            "success": True,
+            "wallet": wallet_address,
+            "stats": stats,
+            "message": (
+                f"✅ Saved {stats['saved_count']} new transactions "
+                f"(updated {stats['updated_count']}, skipped {stats['skipped_count']})"
+            )
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Sync failed: {e}", exc_info=True)
+        return {
+            "success": False,
+            "wallet": wallet_address,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
+
+
+@router.post("/admin/enrich-missing-values")
+async def enrich_missing_usd_values(
+    batch_size: int = Query(100, le=500, description="Transactions per batch"),
+    max_batches: int = Query(10, le=50, description="Max batches to process"),
+    db: Session = Depends(get_db)
+):
+    """
+    💰 Enriched Transaktionen ohne USD-Wert.
+    
+    Holt USD-Preise für Transaktionen die nur ETH-Wert haben
+    und berechnet den USD-Wert retrospektiv.
+    
+    **Process:**
+    1. Findet TXs mit usd_value = NULL oder 0
+    2. Holt historische Token-Preise
+    3. Berechnet USD-Wert
+    4. Updated Transaktionen in DB
+    
+    **Performance:**
+    - Rate Limited: 1.2s delay zwischen Calls
+    - Batch Processing: 100 TXs pro Batch
+    - Smart Priorisierung: Große TXs zuerst
+    
+    **Use After:**
+    - Initial sync (many TXs without USD)
+    - Partial enrichment failures
+    - New token transactions
+    """
+    from app.core.otc_analysis.api.dependencies import enrich_missing_usd_values
+    
+    logger.info("💰 ADMIN: Enriching missing USD values...")
+    
+    try:
+        stats = await enrich_missing_usd_values(
+            db=db,
+            batch_size=batch_size,
+            max_batches=max_batches
+        )
+        
+        return {
+            "success": True,
+            "stats": stats,
+            "message": (
+                f"✅ Enriched {stats['enriched']} transactions "
+                f"({stats['failed']} failed, {stats['rate_limit_hits']} rate limits)"
+            )
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Enrichment failed: {e}", exc_info=True)
         return {
             "success": False,
             "error": str(e)
