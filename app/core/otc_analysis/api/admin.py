@@ -224,7 +224,7 @@ async def get_detailed_stats(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/admin/sync-all-transactions")
+@router.post("/sync-all-transactions")
 async def sync_all_transactions(
     max_wallets: int = Query(20, le=100, description="Max number of wallets to sync"),
     max_transactions_per_wallet: int = Query(100, le=500, description="Max TXs per wallet"),
@@ -291,7 +291,7 @@ async def sync_all_transactions(
         }
 
 
-@router.post("/admin/sync-wallet-transactions")
+@router.post("/sync-wallet-transactions")
 async def sync_single_wallet_transactions(
     wallet_address: str = Query(..., description="Wallet address to sync"),
     max_transactions: int = Query(100, le=500, description="Max transactions to fetch"),
@@ -344,7 +344,7 @@ async def sync_single_wallet_transactions(
         }
 
 
-@router.post("/admin/enrich-missing-values")
+@router.post("/enrich-missing-values")
 async def enrich_missing_usd_values(
     batch_size: int = Query(100, le=500, description="Transactions per batch"),
     max_batches: int = Query(10, le=50, description="Max batches to process"),
