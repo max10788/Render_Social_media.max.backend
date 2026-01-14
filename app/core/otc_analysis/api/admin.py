@@ -223,3 +223,37 @@ async def get_detailed_stats(
         logger.error(f"❌ Failed to fetch stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("/admin/sync-all-transactions")
+async def sync_all_transactions(
+    max_wallets: int = Query(20, le=100),
+    db: Session = Depends(get_db)
+):
+    """
+    🔄 Synct Transaktionen für alle Wallets in die DB.
+    
+    Holt Transaktionen via Blockchain API und speichert sie in transactions Tabelle.
+    """
+    from app.core.otc_analysis.api.dependencies import sync_all_wallets_transactions
+    
+    logger.info(f"🔄 Syncing transactions for {max_wallets} wallets...")
+    
+    try:
+        stats = await sync_all_wallets_transactions(
+            db=db,
+            max_wallets=max_wallets,
+            max_transactions_per_wallet=100
+        )
+        
+        return {
+            "success": True,
+            "stats": stats,
+            "message": f"Synced transactions for {stats['wallets_processed']} wallets"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Sync failed: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
