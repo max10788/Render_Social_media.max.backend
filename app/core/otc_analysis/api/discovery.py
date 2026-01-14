@@ -29,24 +29,32 @@ async def discover_high_volume_wallets(
         True, 
         description="Filter out known exchanges/protocols via Moralis labels"
     ),
+    auto_sync_transactions: bool = Query(
+        True,
+        description="Automatically sync transactions for discovered wallets to enable graph edges"
+    ),
     db: Session = Depends(get_db)
 ) -> Dict:
     """
     🔍 Discover high-volume wallets from recent transactions.
     
-    ✅ VOLUME-FOCUSED DISCOVERY (not OTC-specific):
+    ✅ ENHANCED v2 - AUTO TRANSACTION SYNC:
+    Now automatically syncs transactions for discovered wallets,
+    enabling immediate Wallet ↔ OTC edges in the network graph!
     
     **Process:**
     1. Extract counterparties from last N transactions (with Moralis labels)
     2. Filter known exchanges/protocols (optional)
     3. Analyze volume patterns using Moralis ERC20 transfers
-    4. Score based on:
-       - Total USD volume
-       - Average transaction size
-       - Transaction frequency
-       - Token diversity
-       - Large transfer count
+    4. Score based on volume, transaction size, frequency, diversity
     5. Save wallets meeting threshold with 'high_volume_wallet' entity type
+    6. **🆕 Auto-sync transactions to DB (if auto_sync_transactions=True)**
+    
+    **NEW Parameter:**
+    - `auto_sync_transactions`: Enable/disable auto-sync (default: true)
+      - When enabled: Fetches & stores transactions for discovered wallets
+      - Benefits: Immediate graph edges, better analysis
+      - Cost: Slower response (+ 1-3s per wallet)
     
     **Classifications:**
     - `mega_whale`: $100M+ volume, $1M+ avg transaction
@@ -56,59 +64,47 @@ async def discover_high_volume_wallets(
     - `active_trader`: 200+ transactions, $2M+ volume
     - `moderate_volume`: Meets threshold ($1M+)
     
-    **Scoring Breakdown (0-100):**
-    - Total Volume: 0-30 points
-    - Avg Transaction Size: 0-25 points
-    - Transaction Frequency: 0-20 points
-    - Token Diversity: 0-15 points
-    - Large Transfers ($100K+): 0-10 points
-    
-    **Minimum Requirements:**
-    - Volume Score: ≥40/100
-    - Total Volume: ≥ min_volume_threshold
-    
-    **Example Response:**
-    ```json
+    **Response Includes:**
+```json
     {
-      "success": true,
-      "source_address": "0x...",
-      "transactions_analyzed": 5,
-      "min_volume_threshold": 1000000,
-      "discovered_count": 2,
       "wallets": [
         {
           "address": "0x...",
           "volume_score": 75,
           "total_volume": 25000000,
           "classification": "whale",
-          "tags": ["whale", "very_high_volume", "large_transactions"],
-          "moralis_label": "Wallet Name",
-          "volume_breakdown": {...}
+          "counterparty_info": {
+            "tx_sync": {
+              "saved_count": 98,
+              "updated_count": 2,
+              "source": "blockchain"
+            }
+          }
         }
       ]
     }
-    ```
+```
     """
     logger.info(
         f"🔍 High Volume Discovery: {source_address[:10]}... "
-        f"last {num_transactions} TXs (threshold: ${min_volume_threshold:,.0f})"
+        f"last {num_transactions} TXs (threshold: ${min_volume_threshold:,.0f}, "
+        f"auto_sync: {auto_sync_transactions})"
     )
     
     try:
-        # Import here to avoid circular imports
-        from app.core.otc_analysis.api.dependencies import discover_high_volume_from_transactions
-        
         # Discover high-volume wallets
         discovered = await discover_high_volume_from_transactions(
             db=db,
             source_address=source_address,
             num_transactions=num_transactions,
             min_volume_threshold=min_volume_threshold,
-            filter_known_entities=filter_known_entities
+            filter_known_entities=filter_known_entities,
+            auto_sync_transactions=auto_sync_transactions  # ✅ Pass parameter
         )
         
         # Build detailed response
         wallets_response = []
+        total_txs_synced = 0
         
         for wallet in discovered:
             wallet_data = {
@@ -137,6 +133,12 @@ async def discover_high_volume_wallets(
                     "first_interaction": cp_data.get("first_seen"),
                     "last_interaction": cp_data.get("last_seen")
                 }
+                
+                # ✅ Include TX sync stats
+                if cp_data.get("tx_sync"):
+                    wallet_data["counterparty_info"]["tx_sync"] = cp_data["tx_sync"]
+                    if "saved_count" in cp_data["tx_sync"]:
+                        total_txs_synced += cp_data["tx_sync"]["saved_count"]
             
             wallets_response.append(wallet_data)
         
@@ -154,7 +156,8 @@ async def discover_high_volume_wallets(
             summary = {
                 "total_volume_discovered": total_volume,
                 "average_score": round(avg_score, 1),
-                "classifications": classifications
+                "classifications": classifications,
+                "total_transactions_synced": total_txs_synced  # ✅ NEW
             }
         else:
             summary = None
@@ -165,6 +168,7 @@ async def discover_high_volume_wallets(
             "transactions_analyzed": num_transactions,
             "min_volume_threshold": min_volume_threshold,
             "filter_enabled": filter_known_entities,
+            "auto_sync_enabled": auto_sync_transactions,  # ✅ NEW
             "discovered_count": len(discovered),
             "wallets": wallets_response,
             "summary": summary,
@@ -172,8 +176,14 @@ async def discover_high_volume_wallets(
                 f"Analyzed last {num_transactions} transactions, "
                 f"found {len(discovered)} high-volume wallets "
                 f"(threshold: ${min_volume_threshold:,.0f}, "
-                f"filter: {'enabled' if filter_known_entities else 'disabled'})"
-            )
+                f"filter: {'enabled' if filter_known_entities else 'disabled'}, "
+                f"synced: {total_txs_synced} transactions)"  # ✅ NEW
+            ),
+            "recommendations": [
+                "Check /api/network to see new wallet edges",
+                "Use /api/discover/debug/transaction-count to verify TX count",
+                "Disable auto_sync_transactions if response is too slow"
+            ] if auto_sync_transactions and len(discovered) > 0 else []
         }
         
     except Exception as e:
