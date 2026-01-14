@@ -91,198 +91,248 @@ def _empty_heatmap_response(start: datetime, end: datetime) -> dict:
 # NETWORK ENDPOINTS
 # ============================================================================
 
-@network_router.get("/network")
-async def get_network_graph(
-    start_date: Optional[str] = Query(None),
-    end_date: Optional[str] = Query(None),
-    max_nodes: int = Query(500, le=1000),
-    generate_edges: bool = Query(True, description="Generate edges between wallets"),
-    use_discovery: bool = Query(True, description="Use discovery data for edge generation"),
-    use_transactions: bool = Query(False, description="Use blockchain transactions (slower)"),
-    min_flow_size: float = Query(100000, description="Minimum flow value for edges (USD)"),
-    include_high_volume_wallets: bool = Query(True, description="Include high-volume wallets"),  # ✅ NEW
-    db: Session = Depends(get_db),
-    link_builder = Depends(get_link_builder)
-):
-    """
-    Get network graph data for NetworkGraph component.
-    
-    ✅ ENHANCED: Now includes high-volume wallets with classifications
-    """
-    try:
-        await ensure_registry_wallets_in_db(db, max_to_fetch=5)
-        
-        # Parse dates
-        if start_date:
-            start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-        else:
-            start = datetime.now() - timedelta(days=30)
-        
-        if end_date:
-            end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-        else:
-            end = datetime.now()
-        
-        logger.info(f"🌐 GET /network: {start.date()} to {end.date()}, max_nodes={max_nodes}")
-        logger.info(f"   • generate_edges={generate_edges}, include_wallets={include_high_volume_wallets}")
-        
-        # ====================================================================
-        # ✅ NEW: Query OTC Wallets + High-Volume Wallets
-        # ====================================================================
-        
-        # Base query for OTC desks
-        otc_query = db.query(OTCWallet).filter(
-            OTCWallet.last_active >= start,
-            OTCWallet.last_active <= end,
-            OTCWallet.entity_type != 'high_volume_wallet'  # Exclude wallets
-        )
-        
-        otc_wallets = otc_query.order_by(
-            OTCWallet.total_volume.desc()
-        ).limit(max_nodes).all()
-        
-        logger.info(f"   Found {len(otc_wallets)} OTC wallets")
-        
-        # ✅ NEW: Query High-Volume Wallets separately
-        wallet_nodes = []
-        
-        if include_high_volume_wallets:
-            wallet_query = db.query(OTCWallet).filter(
-                OTCWallet.entity_type == 'high_volume_wallet',
+    @network_router.get("/network")
+    async def get_network_graph(
+        start_date: Optional[str] = Query(None),
+        end_date: Optional[str] = Query(None),
+        max_nodes: int = Query(500, le=1000),
+        generate_edges: bool = Query(True, description="Generate edges between wallets"),
+        use_discovery: bool = Query(True, description="Use discovery data for edge generation"),
+        use_transactions: bool = Query(True, description="Use blockchain transactions"),  # ✅ Changed to True
+        min_flow_size: float = Query(100000, description="Minimum flow value for edges (USD)"),
+        include_high_volume_wallets: bool = Query(True, description="Include high-volume wallets"),
+        db: Session = Depends(get_db),
+        link_builder = Depends(get_link_builder)
+    ):
+        """
+        ✅ ENHANCED: Network graph with high-volume wallets AND transaction-based edges
+        """
+        try:
+            await ensure_registry_wallets_in_db(db, max_to_fetch=5)
+            
+            # Parse dates
+            if start_date:
+                start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            else:
+                start = datetime.now() - timedelta(days=30)
+            
+            if end_date:
+                end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            else:
+                end = datetime.now()
+            
+            logger.info(f"🌐 GET /network: {start.date()} to {end.date()}, max_nodes={max_nodes}")
+            
+            # ====================================================================
+            # STEP 1: Query OTC Desks
+            # ====================================================================
+            
+            otc_query = db.query(OTCWallet).filter(
                 OTCWallet.last_active >= start,
-                OTCWallet.last_active <= end
+                OTCWallet.last_active <= end,
+                OTCWallet.entity_type != 'high_volume_wallet'
             )
             
-            high_volume_wallets = wallet_query.order_by(
+            otc_wallets = otc_query.order_by(
                 OTCWallet.total_volume.desc()
-            ).limit(100).all()  # Limit wallets separately
+            ).limit(max_nodes).all()
             
-            logger.info(f"   Found {len(high_volume_wallets)} high-volume wallets")
+            logger.info(f"   Found {len(otc_wallets)} OTC desks")
             
-            # ✅ Format wallet nodes with special fields
-            for w in high_volume_wallets:
-                # Extract classification from tags
-                classification = None
-                for tag in (w.tags or []):
-                    if tag in ['mega_whale', 'whale', 'institutional', 'large_wallet', 'medium_wallet']:
-                        classification = tag
-                        break
+            # ====================================================================
+            # ✅ STEP 2: Query High-Volume Wallets (IGNORE TIME FILTER!)
+            # ====================================================================
+            
+            wallet_nodes = []
+            
+            if include_high_volume_wallets:
+                # ✅ FIX: Load ALL wallets, regardless of last_active
+                wallet_query = db.query(OTCWallet).filter(
+                    OTCWallet.entity_type == 'high_volume_wallet'
+                )
                 
-                # Categorize tags by type
-                categorized_tags = _categorize_wallet_tags(w.tags or [])
+                high_volume_wallets = wallet_query.order_by(
+                    OTCWallet.total_volume.desc()
+                ).limit(100).all()
                 
-                wallet_nodes.append({
+                logger.info(f"   Found {len(high_volume_wallets)} high-volume wallets (ignoring time filter)")
+                
+                for w in high_volume_wallets:
+                    # Extract classification from tags
+                    classification = None
+                    for tag in (w.tags or []):
+                        if tag in ['mega_whale', 'whale', 'institutional', 'large_wallet', 'medium_wallet']:
+                            classification = tag
+                            break
+                    
+                    # Categorize tags
+                    categorized_tags = _categorize_wallet_tags(w.tags or [])
+                    
+                    wallet_nodes.append({
+                        "address": w.address,
+                        "label": w.label or f"{w.address[:6]}...{w.address[-4:]}",
+                        "entity_type": w.entity_type,
+                        "node_type": "high_volume_wallet",
+                        "classification": classification,
+                        "entity_name": w.entity_name or "",
+                        "total_volume_usd": float(w.total_volume or 0),
+                        "transaction_count": w.transaction_count or 0,
+                        "confidence_score": float(w.confidence_score or 0),
+                        "volume_score": float(w.confidence_score or 0),
+                        "is_active": w.is_active if w.is_active is not None else False,
+                        "tags": w.tags or [],
+                        "categorized_tags": categorized_tags,
+                        "first_seen": w.first_seen.isoformat() if w.first_seen else None,
+                        "last_active": w.last_active.isoformat() if w.last_active else None
+                    })
+            
+            # Format OTC nodes
+            cytoscape_nodes = [
+                {
                     "address": w.address,
                     "label": w.label or f"{w.address[:6]}...{w.address[-4:]}",
-                    "entity_type": w.entity_type,
-                    "node_type": "high_volume_wallet",  # ✅ Special type
-                    "classification": classification,  # ✅ Wallet classification
+                    "entity_type": w.entity_type or "unknown",
+                    "node_type": "otc_desk",
                     "entity_name": w.entity_name or "",
                     "total_volume_usd": float(w.total_volume or 0),
                     "transaction_count": w.transaction_count or 0,
                     "confidence_score": float(w.confidence_score or 0),
-                    "volume_score": float(w.confidence_score or 0),  # Use confidence as volume score
                     "is_active": w.is_active if w.is_active is not None else False,
-                    "tags": w.tags or [],
-                    "categorized_tags": categorized_tags,  # ✅ NEW
-                    "first_seen": w.first_seen.isoformat() if w.first_seen else None,
-                    "last_active": w.last_active.isoformat() if w.last_active else None
-                })
-        
-        # ✅ Format OTC nodes (existing logic)
-        cytoscape_nodes = [
-            {
-                "address": w.address,
-                "label": w.label or f"{w.address[:6]}...{w.address[-4:]}",
-                "entity_type": w.entity_type or "unknown",
-                "node_type": "otc_desk",  # ✅ Standard type
-                "entity_name": w.entity_name or "",
-                "total_volume_usd": float(w.total_volume or 0),
-                "transaction_count": w.transaction_count or 0,
-                "confidence_score": float(w.confidence_score or 0),
-                "is_active": w.is_active if w.is_active is not None else False,
-                "tags": w.tags or []
+                    "tags": w.tags or []
+                }
+                for w in otc_wallets
+            ]
+            
+            # ✅ Combine both types
+            cytoscape_nodes.extend(wallet_nodes)
+            
+            # Sankey nodes (only OTC desks)
+            sankey_nodes = [
+                {
+                    "name": w.label or f"{w.address[:8]}...",
+                    "category": _get_category_from_wallet(w),
+                    "value": float(w.total_volume or 0),
+                    "address": w.address,
+                    "confidence": float(w.confidence_score or 0)
+                }
+                for w in otc_wallets
+            ]
+            
+            # ====================================================================
+            # ✅ STEP 3: Generate Edges (OTC ↔ OTC + Wallet ↔ OTC)
+            # ====================================================================
+            
+            cytoscape_edges = []
+            sankey_links = []
+            edge_metadata = {}
+            
+            if generate_edges and (len(otc_wallets) > 1 or len(wallet_nodes) > 0):
+                try:
+                    logger.info(f"   🔗 Generating edges...")
+                    
+                    # ✅ Generate OTC ↔ OTC edges
+                    if len(otc_wallets) > 1:
+                        result = link_builder.build_links(
+                            db=db,
+                            wallets=otc_wallets,
+                            start_date=start,
+                            end_date=end,
+                            min_flow_size=min_flow_size,
+                            use_discovery=use_discovery,
+                            use_transactions=use_transactions
+                        )
+                        
+                        cytoscape_edges = result.get("cytoscape_edges", [])
+                        sankey_links = result.get("sankey_links", [])
+                        edge_metadata = result.get("metadata", {})
+                    
+                    # ====================================================================
+                    # ✅ NEW: Generate Wallet ↔ OTC Edges from Transactions
+                    # ====================================================================
+                    
+                    if len(wallet_nodes) > 0 and use_transactions:
+                        wallet_addresses = [w['address'].lower() for w in wallet_nodes]
+                        otc_addresses = [w.address.lower() for w in otc_wallets]
+                        
+                        logger.info(f"   🔗 Generating Wallet ↔ OTC edges from transactions...")
+                        
+                        # Query transactions between wallets and OTC desks
+                        wallet_edges_query = db.query(
+                            Transaction.from_address,
+                            Transaction.to_address,
+                            func.count(Transaction.tx_hash).label('tx_count'),
+                            func.coalesce(func.sum(Transaction.usd_value), 0).label('total_volume')
+                        ).filter(
+                            Transaction.timestamp >= start,
+                            Transaction.timestamp <= end,
+                            or_(
+                                # Wallet → OTC
+                                and_(
+                                    Transaction.from_address.in_(wallet_addresses),
+                                    Transaction.to_address.in_(otc_addresses)
+                                ),
+                                # OTC → Wallet
+                                and_(
+                                    Transaction.from_address.in_(otc_addresses),
+                                    Transaction.to_address.in_(wallet_addresses)
+                                )
+                            )
+                        ).group_by(
+                            Transaction.from_address,
+                            Transaction.to_address
+                        ).having(
+                            func.coalesce(func.sum(Transaction.usd_value), 0) >= min_flow_size
+                        ).all()
+                        
+                        # Add wallet edges
+                        for edge in wallet_edges_query:
+                            cytoscape_edges.append({
+                                "data": {
+                                    "source": edge.from_address,
+                                    "target": edge.to_address,
+                                    "transfer_amount_usd": float(edge.total_volume or 0),
+                                    "transaction_count": edge.tx_count,
+                                    "is_suspected_otc": False,
+                                    "edge_source": "transactions"  # ✅ Mark as transaction-based
+                                }
+                            })
+                        
+                        logger.info(f"   ✅ Added {len(wallet_edges_query)} Wallet ↔ OTC edges")
+                    
+                except Exception as edge_error:
+                    logger.error(f"   ⚠️ Error generating edges: {edge_error}", exc_info=True)
+            
+            logger.info(
+                f"✅ Network: {len(cytoscape_nodes)} nodes "
+                f"({len(otc_wallets)} OTC, {len(wallet_nodes)} wallets), "
+                f"{len(cytoscape_edges)} edges"
+            )
+            
+            return {
+                "nodes": cytoscape_nodes,
+                "edges": cytoscape_edges,
+                "sankeyNodes": sankey_nodes,
+                "sankeyLinks": sankey_links,
+                "metadata": {
+                    "node_count": len(cytoscape_nodes),
+                    "otc_desk_count": len(otc_wallets),
+                    "wallet_count": len(wallet_nodes),
+                    "edge_count": len(cytoscape_edges),
+                    "link_count": len(sankey_links),
+                    "period": {
+                        "start": start.isoformat(),
+                        "end": end.isoformat()
+                    },
+                    "edges_generated": generate_edges,
+                    "edge_source": edge_metadata.get("source", "mixed"),
+                    "edge_cached": edge_metadata.get("cached", False),
+                    "min_flow_size": min_flow_size
+                }
             }
-            for w in otc_wallets
-        ]
-        
-        # ✅ Combine both types
-        cytoscape_nodes.extend(wallet_nodes)
-        
-        # Sankey nodes (only OTC desks, not wallets)
-        sankey_nodes = [
-            {
-                "name": w.label or f"{w.address[:8]}...",
-                "category": _get_category_from_wallet(w),
-                "value": float(w.total_volume or 0),
-                "address": w.address,
-                "confidence": float(w.confidence_score or 0)
-            }
-            for w in otc_wallets
-        ]
-        
-        # Generate edges (only between OTC desks, not wallets)
-        cytoscape_edges = []
-        sankey_links = []
-        edge_metadata = {}
-        
-        if generate_edges and len(otc_wallets) > 1:
-            try:
-                logger.info(f"   🔗 Generating edges using LinkBuilder...")
-                
-                result = link_builder.build_links(
-                    db=db,
-                    wallets=otc_wallets,  # Only OTC desks get edges
-                    start_date=start,
-                    end_date=end,
-                    min_flow_size=min_flow_size,
-                    use_discovery=use_discovery,
-                    use_transactions=use_transactions
-                )
-                
-                cytoscape_edges = result.get("cytoscape_edges", [])
-                sankey_links = result.get("sankey_links", [])
-                edge_metadata = result.get("metadata", {})
-                
-                logger.info(
-                    f"   ✅ LinkBuilder: {len(cytoscape_edges)} edges, {len(sankey_links)} links "
-                    f"(source: {edge_metadata.get('source', 'unknown')})"
-                )
-                
-            except Exception as edge_error:
-                logger.error(f"   ⚠️ Error generating edges: {edge_error}", exc_info=True)
-        
-        logger.info(
-            f"✅ Network: {len(cytoscape_nodes)} nodes "
-            f"({len(otc_wallets)} OTC, {len(wallet_nodes)} wallets), "
-            f"{len(cytoscape_edges)} edges"
-        )
-        
-        return {
-            "nodes": cytoscape_nodes,
-            "edges": cytoscape_edges,
-            "sankeyNodes": sankey_nodes,
-            "sankeyLinks": sankey_links,
-            "metadata": {
-                "node_count": len(cytoscape_nodes),
-                "otc_desk_count": len(otc_wallets),
-                "wallet_count": len(wallet_nodes),  # ✅ NEW
-                "edge_count": len(cytoscape_edges),
-                "link_count": len(sankey_links),
-                "period": {
-                    "start": start.isoformat(),
-                    "end": end.isoformat()
-                },
-                "edges_generated": generate_edges,
-                "edge_source": edge_metadata.get("source", "none"),
-                "edge_cached": edge_metadata.get("cached", False),
-                "min_flow_size": min_flow_size
-            }
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Error in /network: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+            
+        except Exception as e:
+            logger.error(f"❌ Error in /network: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 # ✅ NEW: Helper function to categorize wallet tags
