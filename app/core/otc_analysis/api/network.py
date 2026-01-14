@@ -18,7 +18,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Query, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime, timedelta
 
 from .dependencies import (
