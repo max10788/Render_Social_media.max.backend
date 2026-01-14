@@ -9,6 +9,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 from datetime import datetime
+from typing import Dict, Any, List
 
 from .dependencies import get_db, get_otc_detector, get_cache_manager
 
