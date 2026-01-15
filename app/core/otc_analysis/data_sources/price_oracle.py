@@ -550,6 +550,108 @@ class PriceOracle:
             self.last_error = f"{type(e).__name__}: {str(e)}"
             self.error_count += 1
             return None
+
+    def _fetch_price_by_contract(
+        self,
+        token_address: str,
+        timestamp: datetime
+    ) -> Optional[float]:
+        """
+        ✅ NEW: Fetch price using CoinGecko Contract API.
+        
+        This is the fallback when token is not in our ID maps.
+        Uses: /coins/ethereum/contract/{address}/market_chart/range
+        
+        Docs: https://docs.coingecko.com/v3.0.1/reference/coins-contract-address-market-chart-range
+        
+        Args:
+            token_address: Token contract address
+            timestamp: Historical timestamp
+            
+        Returns:
+            USD price or None
+        """
+        self._rate_limit()
+        
+        # Calculate time range (24h window around timestamp)
+        from_timestamp = int((timestamp - timedelta(days=1)).timestamp())
+        to_timestamp = int((timestamp + timedelta(days=1)).timestamp())
+        
+        url = f"{self.coingecko_base}/coins/ethereum/contract/{token_address.lower()}/market_chart/range"
+        params = {
+            'vs_currency': 'usd',
+            'from': from_timestamp,
+            'to': to_timestamp
+        }
+        
+        try:
+            logger.debug(f"   🔍 Contract API: {token_address[:10]}...")
+            
+            response = self.session.get(url, params=params, timeout=15)
+            
+            logger.debug(f"   📡 HTTP {response.status_code}")
+            
+            if response.status_code == 404:
+                logger.debug(f"   ❌ Contract not found in CoinGecko")
+                self.last_error = f"Contract {token_address} not found"
+                self.error_count += 1
+                return None
+            
+            if response.status_code == 429:
+                logger.warning(f"   ⏱️  Rate limited")
+                self.last_error = "Rate limit exceeded"
+                self.error_count += 1
+                return None
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            # Response format: {'prices': [[timestamp_ms, price], ...]}
+            prices = data.get('prices', [])
+            
+            if not prices:
+                logger.debug(f"   ❌ No price data in range")
+                self.last_error = f"No price data for contract {token_address}"
+                self.error_count += 1
+                return None
+            
+            # Find closest price to target timestamp
+            target_ts = int(timestamp.timestamp() * 1000)  # CoinGecko uses ms
+            
+            closest_price = None
+            min_diff = float('inf')
+            
+            for price_point in prices:
+                ts_ms, price = price_point
+                diff = abs(ts_ms - target_ts)
+                
+                if diff < min_diff:
+                    min_diff = diff
+                    closest_price = price
+            
+            if closest_price:
+                logger.debug(f"   ✅ Contract API price: ${closest_price:,.4f}")
+                self.success_count += 1
+                self.last_error = None
+                return closest_price
+            else:
+                logger.debug(f"   ❌ Could not find closest price")
+                self.last_error = "No matching price point"
+                self.error_count += 1
+                return None
+                
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response else 'unknown'
+            logger.debug(f"   ❌ HTTP {status}")
+            self.last_error = f"Contract API HTTP {status}"
+            self.error_count += 1
+            return None
+            
+        except Exception as e:
+            logger.debug(f"   ❌ Error: {str(e)}")
+            self.last_error = f"Contract API: {str(e)}"
+            self.error_count += 1
+            return None
     
     # ========================================================================
     # FALLBACK METHODS
