@@ -519,8 +519,7 @@ class TransactionExtractor:
         """
         Add USD values to transactions using price oracle.
         
-        ✅ ENHANCED: Detailed error tracking
-        ✅ NEW: Stablecoin fallback ($1.00 for USDT, USDC, DAI)
+        ✅ ENHANCED v2: Pass token_symbol to price_oracle for better lookup
         """
         if not transactions:
             return []
@@ -552,7 +551,7 @@ class TransactionExtractor:
             'other': []
         }
         
-        # ✅ Stablecoin list
+        # Stablecoin list
         STABLECOINS = {
             'USDT': 1.0,
             'USDC': 1.0,
@@ -583,7 +582,6 @@ class TransactionExtractor:
                     if token_address is None and tx_type in ['normal', 'internal']:
                         value_wei = tx.get('value', '0')
                         amount = self.wei_to_eth(value_wei)
-                        logger.debug(f"⚠️ value_decimal missing for ETH TX {tx_hash}...")
                     else:
                         logger.warning(f"❌ value_decimal missing for {token_symbol} TX {tx_hash}...")
                         tx['usd_value'] = None
@@ -636,13 +634,17 @@ class TransactionExtractor:
                     price_usd = price_cache[cache_key]
                     cached_count += 1
                 else:
-                    # Fetch price
-                    logger.debug(f"🔍 Fetching price: {token_symbol} for date: {date_key}")
+                    # ====================================================================
+                    # ✅ FIX: Pass token_symbol to price_oracle!
+                    # ====================================================================
+                    logger.debug(f"🔍 Fetching price: {token_symbol} @ {date_key}")
                     
                     try:
+                        # ✅ NEW: Pass both address AND symbol
                         price_usd = price_oracle.get_historical_price(
                             token_address,
-                            timestamp
+                            timestamp,
+                            token_symbol=token_symbol  # ✅ THIS IS THE KEY FIX!
                         )
                         
                         if price_usd:
@@ -651,7 +653,7 @@ class TransactionExtractor:
                         else:
                             logger.debug(f"   ❌ Price API returned None")
                             
-                            # ✅ STABLECOIN FALLBACK
+                            # Stablecoin fallback
                             if token_symbol in STABLECOINS:
                                 price_usd = STABLECOINS[token_symbol]
                                 price_cache[cache_key] = price_usd
@@ -682,7 +684,7 @@ class TransactionExtractor:
                     except Exception as e:
                         logger.debug(f"   ❌ Exception: {str(e)}")
                         
-                        # ✅ STABLECOIN FALLBACK ON EXCEPTION
+                        # Stablecoin fallback on exception
                         if token_symbol in STABLECOINS:
                             price_usd = STABLECOINS[token_symbol]
                             price_cache[cache_key] = price_usd
@@ -772,6 +774,16 @@ class TransactionExtractor:
         total_usd = sum(tx.get('usd_value', 0) for tx in txs_to_enrich if tx.get('usd_value'))
         avg_usd = total_usd / enriched_count if enriched_count > 0 else 0
         logger.info(f"💵 Enriched Volume: ${total_usd:,.2f} total, ${avg_usd:,.2f} average")
+        
+        # ✅ NEW: Show failure breakdown if significant
+        if failed_count > 10:
+            logger.warning(f"\n⚠️ ENRICHMENT FAILURES BREAKDOWN:")
+            for reason, failures in failure_reasons.items():
+                if failures:
+                    logger.warning(f"   • {reason}: {len(failures)} transactions")
+                    if len(failures) <= 3:
+                        for failure in failures:
+                            logger.warning(f"      - {failure}")
         
         return txs_to_enrich + remaining_txs
     
