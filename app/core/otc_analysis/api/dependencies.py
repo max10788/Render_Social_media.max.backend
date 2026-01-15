@@ -1788,7 +1788,8 @@ __all__ = [
     "get_price_oracle",
     "get_wallet_profiler",
     "get_otc_detector",
-    "get_link_builder",  # ✨ NEW
+    "get_link_builder",
+    "get_balance_fetcher",  # ✨ NEW
     
     # Services
     "cache_manager",
@@ -1807,7 +1808,8 @@ __all__ = [
     "block_scanner",
     "statistics_service",
     "graph_builder",
-    "link_builder",  # ✨ NEW
+    "link_builder",
+    "balance_fetcher",  # ✨ NEW
     "discover_high_volume_from_transactions",
 
     # ✨ NEW: Transaction Sync
