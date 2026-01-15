@@ -397,40 +397,137 @@ class PriceOracle:
     def get_historical_price(
         self,
         token_address: Optional[str],
-        timestamp: datetime
+        timestamp: datetime,
+        token_symbol: Optional[str] = None
     ) -> Optional[float]:
         """
         Get historical USD price for a token at a specific timestamp.
         
-        ✅ ENHANCED: Detailed error tracking and logging
-        """
-        token_id = self._get_token_id(token_address)
+        ✅ ENHANCED: Multi-tier fallback strategy:
+        1. Cache lookup
+        2. Token ID by address/symbol → CoinGecko history API
+        3. Contract address → CoinGecko contract API
+        4. Fallback prices (stablecoins, major tokens)
         
+        Args:
+            token_address: Token contract address
+            timestamp: Historical timestamp
+            token_symbol: Token symbol (helps with lookup)
+            
+        Returns:
+            USD price or None
+        """
         # CoinGecko requires date string DD-MM-YYYY
         date_str = timestamp.strftime('%d-%m-%Y')
         
-        # Check cache
+        # ====================================================================
+        # STEP 1: Check cache
+        # ====================================================================
         cache_key = f"{token_address or 'ETH'}:{date_str}"
         if self.cache:
             cached_price = self.cache.get(cache_key, prefix='historical_price')
             if cached_price is not None:
-                logger.debug(f"💾 Cached: {token_id} @ {date_str} = ${cached_price:,.2f}")
+                logger.debug(f"💾 Cached: {token_symbol or token_address[:10]} @ {date_str} = ${cached_price:,.2f}")
                 return cached_price
         
-        # Fetch from API
-        logger.debug(f"🔍 Fetching historical: {token_id} @ {date_str}")
-        price = self._fetch_historical_price(token_id, date_str, token_address)
+        # ====================================================================
+        # STEP 2: Get token ID (with multi-tier lookup)
+        # ====================================================================
+        token_id, lookup_method = self._get_token_id(token_address, token_symbol)
         
-        # Validate
-        if price and not self._validate_price(token_id, price):
-            logger.warning(f"⚠️ Validation failed: {token_id} @ {date_str}, using fallback")
-            price = self._get_fallback_price(token_id, timestamp.year)
+        logger.debug(
+            f"🔍 Historical: {token_symbol or token_address[:10] or 'ETH'} @ {date_str} "
+            f"(method: {lookup_method})"
+        )
         
-        # Cache
-        if price and self.cache:
-            self.cache.set(cache_key, price, ttl=86400, prefix='historical_price')
+        price = None
+        
+        # ====================================================================
+        # STEP 3: Try appropriate API method
+        # ====================================================================
+        
+        if token_id and lookup_method in ['address', 'symbol', 'native']:
+            # Use standard CoinGecko history API
+            price = self._fetch_historical_price(token_id, date_str, token_address)
+        
+        elif lookup_method == 'contract' and token_address:
+            # Use CoinGecko contract API (fallback for unknown tokens)
+            logger.debug(f"   → Trying contract API for {token_address[:10]}...")
+            price = self._fetch_price_by_contract(token_address, timestamp)
+        
+        # ====================================================================
+        # STEP 4: Validate price
+        # ====================================================================
+        
+        if price and token_id:
+            if not self._validate_price(token_id, price):
+                logger.warning(f"⚠️ Validation failed, trying fallback")
+                price = self._get_fallback_price(token_id, timestamp.year, token_symbol)
+        
+        # ====================================================================
+        # STEP 5: Last resort - stablecoin or major token fallback
+        # ====================================================================
+        
+        if not price and token_symbol:
+            price = self._get_fallback_price_by_symbol(token_symbol, timestamp.year)
+            if price:
+                logger.info(f"   💵 Using fallback for {token_symbol}: ${price:,.2f}")
+        
+        # ====================================================================
+        # STEP 6: Cache result (even if None to avoid repeated API calls)
+        # ====================================================================
+        
+        if self.cache:
+            # Cache successful prices for 24h, failures for 1h
+            ttl = 86400 if price else 3600
+            self.cache.set(cache_key, price, ttl=ttl, prefix='historical_price')
+        
+        if price:
+            logger.debug(f"   ✅ Final price: ${price:,.2f}")
+        else:
+            logger.debug(f"   ❌ Could not find price")
         
         return price
+    
+    
+    def _get_fallback_price_by_symbol(
+        self,
+        symbol: str,
+        year: Optional[int] = None
+    ) -> Optional[float]:
+        """
+        ✅ NEW: Get fallback price by symbol.
+        
+        Used when all API methods fail but we know it's a common token.
+        """
+        symbol_upper = symbol.upper()
+        
+        # Stablecoins - always $1
+        if symbol_upper in ['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDD', 'FRAX']:
+            return 1.0
+        
+        # Major tokens - use reasonable fallback
+        fallbacks = {
+            'ETH': 3400.0,
+            'WETH': 3400.0,
+            'WBTC': 60000.0,
+            'LINK': 15.0,
+            'UNI': 10.0,
+            'MATIC': 1.0,
+            'AAVE': 150.0,
+            'COMP': 80.0,
+            'MKR': 2000.0,
+            'SNX': 5.0,
+            'CRV': 1.0,
+            'BAL': 15.0,
+        }
+        
+        if symbol_upper in fallbacks:
+            price = fallbacks[symbol_upper]
+            logger.debug(f"   💵 Fallback for {symbol_upper}: ${price:,.2f}")
+            return price
+        
+        return None
     
     def _fetch_historical_price(self, token_id: str, date: str, token_address: Optional[str] = None) -> Optional[float]:
         """
