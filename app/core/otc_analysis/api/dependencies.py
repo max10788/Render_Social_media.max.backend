@@ -1887,9 +1887,11 @@ __all__ = [
     "get_wallet_profiler",
     "get_otc_detector",
     "get_link_builder",
-    "get_balance_fetcher",  # ✨ NEW
+    "get_balance_fetcher",      # ✨ NEW
+    "get_activity_analyzer",    # ✨ NEW
+    "get_balance_scorer",       # ✨ NEW
     
-    # Services
+# Services
     "cache_manager",
     "otc_registry",
     "labeling_service",
@@ -1907,7 +1909,9 @@ __all__ = [
     "statistics_service",
     "graph_builder",
     "link_builder",
-    "balance_fetcher",  # ✨ NEW
+    "balance_fetcher",      # ✨ NEW
+    "activity_analyzer",    # ✨ NEW
+    "balance_scorer",       # ✨ NEW
     "discover_high_volume_from_transactions",
 
     # ✨ NEW: Transaction Sync
