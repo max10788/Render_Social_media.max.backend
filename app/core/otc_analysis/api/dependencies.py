@@ -115,6 +115,15 @@ balance_fetcher = BalanceFetcher(
     cache_ttl=300  # 5 minutes
 )
 
+# ✨ NEW: Activity & Balance Analysis Services
+activity_analyzer = ActivityAnalyzer(
+    dormancy_threshold_days=90
+)
+
+balance_scorer = BalanceScorer(
+    min_active_balance_usd=10_000
+)
+
 # Other services
 otc_registry = OTCDeskRegistry(cache_manager)
 labeling_service = WalletLabelingService(cache_manager)
@@ -136,7 +145,8 @@ logger.info(f"   • WalletStatsAPI: Multi-tier fallback")
 logger.info(f"   • TransactionExtractor: Moralis enabled")
 logger.info(f"   • LinkBuilder: Fast link generation with caching")
 logger.info(f"   • BalanceFetcher: Current balance tracking (5min cache)")  # ✨ NEW
-
+logger.info(f"   • ActivityAnalyzer: Temporal pattern analysis (90d threshold)")  # ✨ NEW
+logger.info(f"   • BalanceScorer: Combined balance + activity scoring")  # ✨ NEW
 
 # ============================================================================
 # DEPENDENCY FUNCTIONS
@@ -189,6 +199,16 @@ def get_link_builder():
 def get_balance_fetcher():
     """Dependency: Get balance fetcher service."""
     return balance_fetcher
+
+
+def get_activity_analyzer():
+    """Dependency: Get activity analyzer service."""
+    return activity_analyzer
+
+
+def get_balance_scorer():
+    """Dependency: Get balance scorer service."""
+    return balance_scorer
 
 # ============================================================================
 # ✨ IMPROVED: ALWAYS USE QUICK STATS FIRST
