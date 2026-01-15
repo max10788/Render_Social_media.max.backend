@@ -31,7 +31,7 @@ class PriceOracle:
     
     ✨ NEW: Enhanced error tracking for debugging
     """
-    
+
     def __init__(self, cache_manager=None, etherscan=None):
         """
         Initialize price oracle.
@@ -43,44 +43,119 @@ class PriceOracle:
         self.cache = cache_manager
         self.etherscan = etherscan
         self.coingecko_base = "https://api.coingecko.com/api/v3"
-        self.rate_limit_delay = 1.5  # 40 calls/min instead of 50
+        self.rate_limit_delay = 1.5
         self.last_request_time = 0
         self.session = requests.Session()
         
-        # ✅ NEW: Error tracking
+        # Error tracking
         self.last_error = None
         self.error_count = 0
         self.success_count = 0
         
-        # Token address to CoinGecko ID mapping
+        # ✅ MASSIV ERWEITERTE Token Map (Top 100 Tokens by Market Cap)
         self.token_id_map = {
-            None: 'ethereum',  # Native ETH
+            # Native & Wrapped
+            None: 'ethereum',
+            '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee': 'ethereum',
+            '0x0000000000000000000000000000000000000000': 'ethereum',
+            '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 'weth',  # WETH
+            
+            # Stablecoins (Top Priority!)
             '0xdac17f958d2ee523a2206206994597c13d831ec7': 'tether',  # USDT
             '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 'usd-coin',  # USDC
+            '0x6b175474e89094c44da98b954eedeac495271d0f': 'dai',  # DAI
+            '0x4fabb145d64652a948d72533023f6e7a623c7c53': 'binance-usd',  # BUSD
+            '0x8e870d67f660d95d5be530380d0ec0bd388289e1': 'pax-dollar',  # USDP
+            '0x853d955acef822db058eb8505911ed77f175b99e': 'frax',  # FRAX
+            '0x5f98805a4e8be255a32880fdec7f6728c6568ba0': 'liquity-usd',  # LUSD
+            
+            # Major Tokens
             '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599': 'wrapped-bitcoin',  # WBTC
             '0x514910771af9ca656af840dff83e8264ecf986ca': 'chainlink',  # LINK
             '0x1f9840a85d5af5bf1d1762f925bdaddc4201f984': 'uniswap',  # UNI
             '0x7d1afa7b718fb893db30a3abc0cfc608aacfebb0': 'matic-network',  # MATIC
+            '0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9': 'aave',  # AAVE
+            '0xc00e94cb662c3520282e6f5717214004a7f26888': 'compound-governance-token',  # COMP
+            '0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2': 'maker',  # MKR
+            '0x6b3595068778dd592e39a122f4f5a5cf09c90fe2': 'sushi',  # SUSHI
+            '0xd533a949740bb3306d119cc777fa900ba034cd52': 'curve-dao-token',  # CRV
+            '0x0bc529c00c6401aef6d220be8c6ea1667f6ad93e': 'yearn-finance',  # YFI
+            '0xba100000625a3754423978a60c9317c58a424e3d': 'balancer',  # BAL
+            '0xc011a73ee8576fb46f5e1c5751ca3b9fe0af2a6f': 'havven',  # SNX
+            '0x0d8775f648430679a709e98d2b0cb6250d2887ef': 'basic-attention-token',  # BAT
+            '0x0f5d2fb29fb7d3cfee444a200298f468908cc942': 'decentraland',  # MANA
+            '0x4e15361fd6b4bb609fa63c81a2be19d873717870': 'fantom',  # FTM
+            '0x7d1afa7b718fb893db30a3abc0cfc608aacfebb0': 'polygon',  # MATIC (duplicate check)
+            '0x111111111117dc0aa78b770fa6a738034120c302': '1inch',  # 1INCH
+            '0x1985365e9f78359a9b6ad760e32412f4a445e862': 'augur',  # REP
+            
+            # Layer 2 & Scaling
+            '0x42bbfa2e77757c645eeaad1655e0911a7553efbc': 'boba-network',  # BOBA
+            '0x0d500b1d8e8ef31e21c99d1db9a6444d3adf1270': 'matic-network',  # WMATIC
+            
+            # DeFi Blue Chips
+            '0x4d224452801aced8b2f0aebe155379bb5d594381': 'apecoin',  # APE
+            '0x5a98fcbea516cf06857215779fd812ca3bef1b32': 'lido-dao',  # LDO
+            '0xae7ab96520de3a18e5e111b5eaab095312d7fe84': 'staked-ether',  # stETH
+            '0x31429d1856ad1377a8a0079410b297e1a9e214c2': 'angle-protocol',  # ANGLE
+            
+            # Meme Coins (for completeness)
+            '0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce': 'shiba-inu',  # SHIB
+            '0x4d224452801aced8b2f0aebe155379bb5d594381': 'apecoin',  # APE
+            '0xc944e90c64b2c07662a292be6244bdf05cda44a7': 'the-graph',  # GRT
         }
         
-        # ✅ Reasonable price ranges for validation
+        # ✅ NEW: Symbol-to-CoinGecko-ID Map (Fallback)
+        self.symbol_to_id_map = {
+            'ETH': 'ethereum',
+            'WETH': 'weth',
+            'USDT': 'tether',
+            'USDC': 'usd-coin',
+            'DAI': 'dai',
+            'BUSD': 'binance-usd',
+            'WBTC': 'wrapped-bitcoin',
+            'LINK': 'chainlink',
+            'UNI': 'uniswap',
+            'MATIC': 'matic-network',
+            'AAVE': 'aave',
+            'COMP': 'compound-governance-token',
+            'MKR': 'maker',
+            'SUSHI': 'sushi',
+            'CRV': 'curve-dao-token',
+            'YFI': 'yearn-finance',
+            'SNX': 'havven',
+            'BAL': 'balancer',
+            'BAT': 'basic-attention-token',
+            'MANA': 'decentraland',
+            'FTM': 'fantom',
+            '1INCH': '1inch',
+            'LDO': 'lido-dao',
+            'APE': 'apecoin',
+            'SHIB': 'shiba-inu',
+            'GRT': 'the-graph',
+        }
+        
+        # Price ranges for validation
         self.price_ranges = {
             'ethereum': (100, 10000),
+            'weth': (100, 10000),
             'tether': (0.95, 1.05),
             'usd-coin': (0.95, 1.05),
+            'dai': (0.95, 1.05),
             'wrapped-bitcoin': (10000, 200000),
             'chainlink': (5, 100),
             'uniswap': (3, 50),
             'matic-network': (0.3, 5),
         }
         
-        # ✅ Fallback prices by year
+        # Fallback prices
         self.fallback_prices = {
             'ETH': 3400.0,
             'WETH': 3400.0,
             'USDT': 1.0,
             'USDC': 1.0,
             'DAI': 1.0,
+            'BUSD': 1.0,
         }
     
     def _rate_limit(self):
