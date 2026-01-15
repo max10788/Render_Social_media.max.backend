@@ -103,6 +103,14 @@ transaction_extractor = TransactionExtractor(
     use_moralis=True
 )
 
+# ✨ NEW: BalanceFetcher for current wallet balances
+balance_fetcher = BalanceFetcher(
+    cache_manager=cache_manager,
+    price_oracle=price_oracle,
+    chain="eth",
+    cache_ttl=300  # 5 minutes
+)
+
 # Other services
 otc_registry = OTCDeskRegistry(cache_manager)
 labeling_service = WalletLabelingService(cache_manager)
