@@ -42,6 +42,10 @@ from app.core.otc_analysis.blockchain.transaction_extractor import TransactionEx
 from app.core.otc_analysis.blockchain.balance_fetcher import BalanceFetcher  # ✨ NEW
 from app.core.otc_analysis.blockchain.etherscan import EtherscanAPI
 
+# ✨ NEW: Activity & Balance Analysis
+from app.core.otc_analysis.discovery.activity_analyzer import ActivityAnalyzer
+from app.core.otc_analysis.discovery.balance_scorer import BalanceScorer
+
 # Data Sources
 from app.core.otc_analysis.data_sources.price_oracle import PriceOracle
 from app.core.otc_analysis.data_sources.otc_desks import OTCDeskRegistry
