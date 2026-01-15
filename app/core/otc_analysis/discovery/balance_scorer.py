@@ -102,6 +102,8 @@ class BalanceScorer:
         """
         Classify wallet balance status.
         
+        ✅ FIXED: Reduced penalties to prevent destroying scores
+        
         Status types:
         - depleted: < 1% of historical volume remains
         - minimal: 1-10% remains, below active threshold
@@ -132,9 +134,12 @@ class BalanceScorer:
             )
         
         # ====================================================================
-        # STATUS 1: Depleted (< 1%)
+        # ✅ FIX: REDUCED PENALTIES (was -50, now -30 max)
         # ====================================================================
+        
+        # STATUS 1: Depleted (< 1%)
         if balance_ratio < self.depletion_threshold:
+            # ✅ FIX: -30 statt -50
             return {
                 'status': 'depleted',
                 'confidence': 0.95,
@@ -142,14 +147,13 @@ class BalanceScorer:
                 'risk_level': 'high',
                 'balance_ratio': balance_ratio,
                 'tags': ['empty', 'depleted', 'high_risk'],
-                'score_penalty': -50  # Major penalty
+                'score_penalty': -30  # ✅ WAS: -50
             }
         
-        # ====================================================================
         # STATUS 2: Minimal (1-10%)
-        # ====================================================================
         if balance_ratio < 0.10:
             risk = 'high' if current_balance_usd < self.min_active_balance else 'medium'
+            # ✅ FIX: -15 statt -30
             return {
                 'status': 'minimal',
                 'confidence': 0.9,
@@ -157,12 +161,10 @@ class BalanceScorer:
                 'risk_level': risk,
                 'balance_ratio': balance_ratio,
                 'tags': ['low_balance', 'potentially_inactive'],
-                'score_penalty': -30
+                'score_penalty': -15  # ✅ WAS: -30
             }
         
-        # ====================================================================
         # STATUS 3: Active (10-50%)
-        # ====================================================================
         if balance_ratio < 0.50:
             if current_balance_usd >= self.min_active_balance:
                 return {
@@ -172,9 +174,10 @@ class BalanceScorer:
                     'risk_level': 'low',
                     'balance_ratio': balance_ratio,
                     'tags': ['active', 'operational'],
-                    'score_penalty': 0
+                    'score_penalty': 0  # ✅ No penalty for active
                 }
             else:
+                # ✅ FIX: -5 statt -10
                 return {
                     'status': 'active_low',
                     'confidence': 0.75,
@@ -182,12 +185,10 @@ class BalanceScorer:
                     'risk_level': 'medium',
                     'balance_ratio': balance_ratio,
                     'tags': ['active', 'low_funds'],
-                    'score_penalty': -10
+                    'score_penalty': -5  # ✅ WAS: -10
                 }
         
-        # ====================================================================
         # STATUS 4: Growing (50-100%)
-        # ====================================================================
         if balance_ratio < 1.00:
             return {
                 'status': 'growing',
@@ -200,9 +201,7 @@ class BalanceScorer:
                 'score_bonus': 10
             }
         
-        # ====================================================================
         # STATUS 5: Accumulating (> 100%)
-        # ====================================================================
         return {
             'status': 'accumulating',
             'confidence': 0.95,
@@ -222,6 +221,8 @@ class BalanceScorer:
     ) -> float:
         """
         Calculate balance health score (0-100).
+        
+        ✅ FIXED: Softer absolute balance penalties
         
         Factors:
         - Balance status (depleted to accumulating)
@@ -244,8 +245,9 @@ class BalanceScorer:
         base_score += penalty + bonus
         
         # ====================================================================
-        # FACTOR 1: Absolute Balance Amount (max +20, max -20)
+        # ✅ FIX: SOFTER ABSOLUTE BALANCE PENALTIES
         # ====================================================================
+        
         if current_balance_usd >= 10_000_000:  # $10M+
             amount_score = 20
         elif current_balance_usd >= 1_000_000:  # $1M+
@@ -257,15 +259,16 @@ class BalanceScorer:
         elif current_balance_usd >= 1_000:  # $1K+
             amount_score = 0
         elif current_balance_usd >= 100:  # $100+
-            amount_score = -10
+            amount_score = -5  # ✅ WAS: -10 (softer)
         else:  # < $100
-            amount_score = -20
+            amount_score = -10  # ✅ WAS: -20 (softer)
         
         base_score += amount_score
         
         # ====================================================================
-        # FACTOR 2: Balance Ratio Multiplier
+        # ✅ FIX: SOFTER RATIO PENALTIES
         # ====================================================================
+        
         balance_ratio = balance_status.get('balance_ratio', 0)
         
         if balance_ratio >= 1.0:
@@ -278,11 +281,11 @@ class BalanceScorer:
             # Active - neutral
             ratio_score = 0
         elif balance_ratio >= 0.01:
-            # Minimal - penalty
-            ratio_score = -15
+            # Minimal - small penalty
+            ratio_score = -10  # ✅ WAS: -15 (softer)
         else:
-            # Depleted - major penalty
-            ratio_score = -25
+            # Depleted - penalty
+            ratio_score = -15  # ✅ WAS: -25 (softer)
         
         base_score += ratio_score
         
@@ -295,7 +298,6 @@ class BalanceScorer:
         )
         
         return final_score
-    
     
     def combine_balance_and_activity(
         self,
