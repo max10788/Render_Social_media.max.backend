@@ -40,7 +40,6 @@ from app.core.otc_analysis.blockchain.node_provider import NodeProvider
 from app.core.otc_analysis.blockchain.block_scanner import BlockScanner
 from app.core.otc_analysis.blockchain.transaction_extractor import TransactionExtractor
 from app.core.otc_analysis.blockchain.balance_fetcher import BalanceFetcher  # ✨ NEW
-from app.core.otc_analysis.blockchain.transaction_extractor import TransactionExtractor
 from app.core.otc_analysis.blockchain.etherscan import EtherscanAPI
 
 # Data Sources
