@@ -182,6 +182,9 @@ def get_link_builder():
     """Dependency: Get link builder service."""
     return link_builder
 
+def get_balance_fetcher():
+    """Dependency: Get balance fetcher service."""
+    return balance_fetcher
 
 # ============================================================================
 # ✨ IMPROVED: ALWAYS USE QUICK STATS FIRST
