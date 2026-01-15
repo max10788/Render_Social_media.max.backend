@@ -130,7 +130,8 @@ logger.info(f"   • Strategy: ALWAYS Quick Stats First (15x faster)")
 logger.info(f"   • WalletProfiler: with PriceOracle + WalletStatsAPI")
 logger.info(f"   • WalletStatsAPI: Multi-tier fallback")
 logger.info(f"   • TransactionExtractor: Moralis enabled")
-logger.info(f"   • LinkBuilder: Fast link generation with caching")  # ✨ NEW
+logger.info(f"   • LinkBuilder: Fast link generation with caching")
+logger.info(f"   • BalanceFetcher: Current balance tracking (5min cache)")  # ✨ NEW
 
 
 # ============================================================================
