@@ -167,21 +167,52 @@ class PriceOracle:
             time.sleep(self.rate_limit_delay - time_since_last)
         
         self.last_request_time = time.time()
-    
-    def _get_token_id(self, token_address: Optional[str]) -> str:
-        """Convert token address to CoinGecko ID."""
+
+    def _get_token_id(
+        self, 
+        token_address: Optional[str],
+        token_symbol: Optional[str] = None
+    ) -> tuple[str, str]:
+        """
+        Convert token address/symbol to CoinGecko ID.
+        
+        ✅ NEW: Multi-tier lookup strategy:
+        1. Try by contract address (most accurate)
+        2. Fallback to symbol lookup
+        3. Fallback to 'ethereum' (last resort)
+        
+        Args:
+            token_address: Token contract address
+            token_symbol: Token symbol (e.g., 'USDT')
+            
+        Returns:
+            Tuple of (token_id, lookup_method)
+        """
+        # Native ETH
         if token_address is None:
-            return 'ethereum'
+            return ('ethereum', 'native')
         
+        # Normalize address
         token_lower = token_address.lower()
-        token_id = self.token_id_map.get(token_lower, None)
         
-        # ✅ NEW: Log if token not in map
-        if token_id is None:
-            logger.debug(f"⚠️ Token address {token_lower[:10]}... not in token_id_map, defaulting to 'ethereum'")
-            return 'ethereum'
+        # 1️⃣ PRIMARY: Lookup by address
+        if token_lower in self.token_id_map:
+            token_id = self.token_id_map[token_lower]
+            logger.debug(f"✅ Token ID by address: {token_address[:10]}... → {token_id}")
+            return (token_id, 'address')
         
-        return token_id
+        # 2️⃣ SECONDARY: Lookup by symbol
+        if token_symbol:
+            symbol_upper = token_symbol.upper()
+            if symbol_upper in self.symbol_to_id_map:
+                token_id = self.symbol_to_id_map[symbol_upper]
+                logger.debug(f"✅ Token ID by symbol: {symbol_upper} → {token_id}")
+                return (token_id, 'symbol')
+        
+        # 3️⃣ TERTIARY: Try CoinGecko contract lookup API
+        # (Will be implemented in _fetch_price_by_contract)
+        logger.debug(f"⚠️ Token {token_address[:10]}... not in maps, will try contract API")
+        return (None, 'contract')  # Signal to use contract API
     
     def _validate_price(self, token_id: str, price: float) -> bool:
         """
