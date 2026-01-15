@@ -73,9 +73,12 @@ class ActivityAnalyzer:
         """
         Analyze activity window from transaction history.
         
+        ✅ FIXED: Timezone-aware datetime handling to prevent
+        "can't subtract offset-naive and offset-aware datetimes" error
+        
         Args:
             transactions: List of transactions with 'timestamp' field
-            current_time: Reference time (default: now)
+            current_time: Reference time (default: now with UTC timezone)
             
         Returns:
             {
@@ -86,14 +89,21 @@ class ActivityAnalyzer:
                 'is_dormant': bool,
                 'total_transactions': int,
                 'transactions_per_day': float,
-                'activity_density': float  # transactions per day of activity
+                'activity_density': float
             }
         """
         if not transactions:
             logger.warning("⚠️ No transactions provided for activity analysis")
             return self._empty_activity_metrics()
         
-        current_time = current_time or datetime.now()
+        # ✅ FIX: Make current_time timezone-aware
+        from datetime import timezone
+        
+        if current_time is None:
+            current_time = datetime.now(timezone.utc)
+        elif current_time.tzinfo is None:
+            # Make naive datetime timezone-aware (assume UTC)
+            current_time = current_time.replace(tzinfo=timezone.utc)
         
         # Extract timestamps
         timestamps = []
@@ -103,13 +113,20 @@ class ActivityAnalyzer:
             # Parse timestamp if string
             if isinstance(ts, str):
                 try:
+                    # Parse ISO format (handles both Z and +00:00)
                     ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                except:
+                except Exception as e:
+                    logger.debug(f"⚠️ Could not parse timestamp '{ts}': {e}")
                     continue
             elif isinstance(ts, int):
-                ts = datetime.fromtimestamp(ts)
+                # Unix timestamp - make timezone-aware
+                ts = datetime.fromtimestamp(ts, tz=timezone.utc)
             
+            # ✅ FIX: Ensure all timestamps are timezone-aware
             if isinstance(ts, datetime):
+                if ts.tzinfo is None:
+                    # Make naive datetime timezone-aware (assume UTC)
+                    ts = ts.replace(tzinfo=timezone.utc)
                 timestamps.append(ts)
         
         if not timestamps:
@@ -122,11 +139,10 @@ class ActivityAnalyzer:
         first_seen = timestamps[0]
         last_seen = timestamps[-1]
         
-        # Calculate activity window
+        # ✅ FIX: Now all datetimes are timezone-aware, subtraction works!
         activity_window = (last_seen - first_seen).days
-        
-        # Calculate dormancy
         dormant_days = (current_time - last_seen).days
+        
         is_dormant = dormant_days >= self.dormancy_threshold
         
         # Calculate activity density
