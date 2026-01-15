@@ -987,21 +987,17 @@ async def discover_high_volume_from_transactions(
     num_transactions: int = 5,
     min_volume_threshold: float = 1_000_000,
     filter_known_entities: bool = True,
-    auto_sync_transactions: bool = True  # ✅ NEW Parameter
+    auto_sync_transactions: bool = True  # ✅ Parameter
 ) -> List[Dict]:
     """
     🔍 Discover high-volume wallets from last N transactions.
     
-    ✅ ENHANCED v2: AUTO-SYNC TRANSACTIONS
-    - Speichert entdeckte Wallets in DB
-    - Synct automatisch deren Transaktionen (wenn auto_sync_transactions=True)
-    - Ermöglicht sofort Wallet ↔ OTC Edges im Graph
-    
-    ✅ VOLUME-FOCUSED (not OTC-specific):
-    - Same counterparty extraction as OTC discovery
-    - Volume-based scoring (not OTC patterns)
-    - Saves to DB with entity_type='high_volume_wallet'
-    - Individual tags per wallet
+    ✨ ENHANCED v3: BALANCE + ACTIVITY INTEGRATION
+    - Auto-sync transactions (wenn enabled)
+    - Current balance analysis via BalanceFetcher
+    - Activity pattern analysis via ActivityAnalyzer
+    - Combined scoring via BalanceScorer
+    - Accurate classification (active vs dormant)
     
     Args:
         db: Database session
@@ -1009,17 +1005,18 @@ async def discover_high_volume_from_transactions(
         num_transactions: Number of recent transactions to check
         min_volume_threshold: Minimum USD volume to save (default: $1M)
         filter_known_entities: Filter out known exchanges/protocols
-        auto_sync_transactions: Auto-sync transactions for discovered wallets (default: True)
+        auto_sync_transactions: Auto-sync transactions for discovered wallets
         
     Returns:
-        List of discovered high-volume wallets with metadata
+        List of discovered high-volume wallets with enhanced metadata
     """
     from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
     from datetime import datetime
     
-    logger.info(f"🔍 High Volume Discovery: Last {num_transactions} TXs from {source_address[:10]}...")
+    logger.info(f"🔍 High Volume Discovery v3: Last {num_transactions} TXs from {source_address[:10]}...")
     logger.info(f"   💰 Min volume threshold: ${min_volume_threshold:,.0f}")
     logger.info(f"   🔄 Auto-sync TXs: {auto_sync_transactions}")
+    logger.info(f"   🎯 Balance + Activity analysis: ENABLED")
     
     if filter_known_entities:
         logger.info("   🏷️ Moralis label filtering: ENABLED")
@@ -1027,13 +1024,19 @@ async def discover_high_volume_from_transactions(
         logger.info("   🏷️ Moralis label filtering: DISABLED")
     
     try:
-        # Initialize analyzer
+        # ====================================================================
+        # ✨ INITIALIZE ANALYZER WITH NEW SERVICES
+        # ====================================================================
+        
         analyzer = HighVolumeAnalyzer(
             db=db,
             transaction_extractor=transaction_extractor,
             wallet_profiler=wallet_profiler,
             price_oracle=price_oracle,
-            wallet_stats_api=wallet_stats_api
+            wallet_stats_api=wallet_stats_api,
+            balance_fetcher=balance_fetcher,      # ✨ NEW
+            activity_analyzer=activity_analyzer,  # ✨ NEW
+            balance_scorer=balance_scorer         # ✨ NEW
         )
         
         # Initialize scorer
@@ -1072,8 +1075,15 @@ async def discover_high_volume_from_transactions(
             
             logger.info(f"   🔍 Analyzing {address[:10]}...")
             
-            # Analyze volume profile
-            analysis = analyzer.analyze_volume_profile(address)
+            # ================================================================
+            # ✨ ANALYZE WITH BALANCE + ACTIVITY (NEW!)
+            # ================================================================
+            
+            analysis = analyzer.analyze_volume_profile(
+                address,
+                include_balance_analysis=True,   # ✨ NEW
+                include_activity_analysis=True   # ✨ NEW
+            )
             
             if not analysis:
                 logger.info(f"      ⚠️ Analysis failed")
@@ -1086,22 +1096,44 @@ async def discover_high_volume_from_transactions(
                 include_tokens=True
             )
             
-            # Score the wallet
+            # ================================================================
+            # ✨ SCORE WITH BALANCE + ACTIVITY (NEW!)
+            # ================================================================
+            
             scoring_result = volume_scorer.score_high_volume_wallet(
                 address=address,
                 transactions=cp_transactions,
                 counterparty_data=cp_data,
-                profile=analysis.get('profile', {})
+                profile=analysis.get('profile', {}),
+                balance_analysis=analysis.get('balance_analysis'),      # ✨ NEW
+                activity_analysis=analysis.get('activity_analysis'),    # ✨ NEW
+                combined_scoring=analysis.get('combined_scoring')       # ✨ NEW
             )
             
             volume_score = scoring_result['score']
+            base_score = scoring_result.get('base_score', volume_score)
             classification = scoring_result['classification']
             total_volume = analysis['total_volume']
             
+            # ================================================================
+            # LOG RESULTS
+            # ================================================================
+            
             logger.info(
-                f"      📊 Scores: Volume={volume_score}/100, "
-                f"Total=${total_volume:,.0f}"
+                f"      📊 Scores: Final={volume_score:.1f}/100, "
+                f"Base={base_score}/100, "
+                f"Volume=${total_volume:,.0f}"
             )
+            
+            # Log balance info
+            if analysis.get('balance_analysis'):
+                balance = analysis['balance_analysis']['total_balance_usd']
+                logger.info(f"      💰 Balance: ${balance:,.2f}")
+            
+            # Log activity info
+            if analysis.get('activity_analysis'):
+                pattern = analysis['activity_analysis']['pattern']['pattern']
+                logger.info(f"      📅 Activity: {pattern} pattern")
             
             if cp_data.get('moralis_label'):
                 logger.info(
@@ -1111,7 +1143,11 @@ async def discover_high_volume_from_transactions(
             
             logger.info(f"      💡 Classification: {classification['classification']}")
             
-            # Check if meets threshold
+            # ================================================================
+            # CHECK THRESHOLDS
+            # ================================================================
+            
+            # Check volume threshold
             if not scoring_result['meets_threshold']:
                 logger.info(
                     f"      ⚠️ Below volume threshold "
@@ -1119,31 +1155,54 @@ async def discover_high_volume_from_transactions(
                 )
                 continue
             
-            # Check minimum score (40/100)
-            if volume_score < 40:
-                logger.info(f"      ⚠️ Score too low ({volume_score}/100)")
+            # ✨ ADJUSTED MINIMUM SCORE (accounts for modifiers)
+            min_score = 30  # Lower threshold due to modifiers
+            
+            if volume_score < min_score:
+                logger.info(f"      ⚠️ Score too low ({volume_score:.1f}/100, min: {min_score})")
                 continue
             
-            # Prepare tags
+            # ================================================================
+            # PREPARE TAGS
+            # ================================================================
+            
             tags = [
                 'discovered',
                 'high_volume',
                 'volume_analysis'
-            ] + classification['tags']
+            ] + classification.get('tags', [])
             
             if cp_data.get('moralis_label'):
                 tags.append(f"moralis:{cp_data['moralis_label'][:30]}")
             
-            # ====================================================================
+            # ✨ Add enhanced tags
+            if analysis.get('balance_analysis'):
+                balance_ratio = (
+                    analysis['balance_analysis']['total_balance_usd'] / total_volume 
+                    if total_volume > 0 else 0
+                )
+                if balance_ratio < 0.01:
+                    tags.append('depleted')
+                elif balance_ratio >= 1.0:
+                    tags.append('accumulating')
+            
+            if analysis.get('activity_analysis'):
+                pattern = analysis['activity_analysis']['pattern']['pattern']
+                if pattern == 'dormant':
+                    tags.append('dormant')
+                elif pattern in ['sustained', 'active']:
+                    tags.append('active')
+            
+            # ================================================================
             # ✅ STEP 1: Save Wallet to DB
-            # ====================================================================
+            # ================================================================
             
             wallet = OTCWallet(
                 address=address,
                 label=cp_data.get('moralis_label') or f"High Volume {address[:8]}",
-                entity_type='high_volume_wallet',  # ✅ NEW entity type
+                entity_type='high_volume_wallet',
                 entity_name=cp_data.get('moralis_label') or f"High Volume {address[:8]}",
-                confidence_score=volume_score,  # Use volume score as confidence
+                confidence_score=volume_score,  # Use final score (with modifiers)
                 total_volume=total_volume,
                 transaction_count=analysis['transaction_count'],
                 first_seen=analysis['first_seen'],
@@ -1159,12 +1218,12 @@ async def discover_high_volume_from_transactions(
             
             logger.info(
                 f"      ✅ Saved to DB "
-                f"(type: high_volume_wallet, score: {volume_score}/100)"
+                f"(type: high_volume_wallet, score: {volume_score:.1f}/100)"
             )
             
-            # ====================================================================
-            # ✅ STEP 2: AUTO-SYNC TRANSACTIONS (NEW!)
-            # ====================================================================
+            # ================================================================
+            # ✅ STEP 2: AUTO-SYNC TRANSACTIONS
+            # ================================================================
             
             if auto_sync_transactions:
                 logger.info(f"      🔄 Auto-syncing transactions for {address[:10]}...")
@@ -1191,22 +1250,28 @@ async def discover_high_volume_from_transactions(
                     logger.error(f"         ⚠️ TX sync failed: {sync_error}")
                     cp_data['tx_sync'] = {"error": str(sync_error)}
             
-            # ====================================================================
+            # ================================================================
             # Add to discovered list
-            # ====================================================================
+            # ================================================================
             
             discovered.append({
                 'address': address,
                 'volume_score': volume_score,
+                'base_score': base_score,
                 'total_volume': total_volume,
                 'tx_count': analysis['transaction_count'],
                 'avg_transaction': analysis['avg_transaction'],
                 'classification': classification['classification'],
                 'tags': tags,
                 'counterparty_data': cp_data,
-                'volume_breakdown': scoring_result['breakdown'],
+                'volume_breakdown': scoring_result.get('breakdown', {}),
+                'score_modifiers': scoring_result.get('modifiers', {}),  # ✨ NEW
                 'moralis_label': cp_data.get('moralis_label'),
-                'moralis_entity': cp_data.get('moralis_entity')
+                'moralis_entity': cp_data.get('moralis_entity'),
+                # ✨ NEW: Enhanced analysis data
+                'has_balance_data': analysis.get('balance_analysis') is not None,
+                'has_activity_data': analysis.get('activity_analysis') is not None,
+                'enhanced_classification': analysis.get('enhanced_classification')
             })
         
         logger.info(
@@ -1219,13 +1284,22 @@ async def discover_high_volume_from_transactions(
                 f"   💾 Transactions synced for all {len(discovered)} discovered wallets"
             )
         
+        # ✨ Log enhancement stats
+        balance_count = sum(1 for w in discovered if w['has_balance_data'])
+        activity_count = sum(1 for w in discovered if w['has_activity_data'])
+        
+        logger.info(
+            f"   🎯 Enhanced analysis: "
+            f"{balance_count} with balance, "
+            f"{activity_count} with activity"
+        )
+        
         return discovered
         
     except Exception as e:
         logger.error(f"❌ High volume discovery failed: {e}", exc_info=True)
         db.rollback()
         return []
-
 """
 NEUE FUNKTION für dependencies.py einfügen (am Ende, vor __all__)
 
