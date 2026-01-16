@@ -2,6 +2,10 @@
 Volume Scorer - Scores wallets based on transaction volume and patterns
 ========================================================================
 
+✅ FIXED v2.1 - Division by Zero Protection:
+- Safe division checks in all balance ratio calculations
+- Prevents crashes when total_volume = 0
+
 ✅ ENHANCED v2.0 - Balance + Activity Integration:
 - Original volume-based scoring
 - **NEW**: Balance-aware adjustments
@@ -18,8 +22,8 @@ Volume Scorer - Scores wallets based on transaction volume and patterns
 - **NEW**: Current balance ratio
 - **NEW**: Temporal activity patterns
 
-Version: 2.0
-Date: 2025-01-15
+Version: 2.1 (FIXED)
+Date: 2025-01-16
 """
 
 from typing import Dict, List, Optional
@@ -32,8 +36,8 @@ class VolumeScorer:
     """
     Scores wallets based on volume and transaction patterns.
     
-    ✨ ENHANCED v2.0:
-    Now considers current balance and activity patterns for accurate scoring.
+    ✅ FIXED v2.1: Division by zero protection added.
+    ✨ ENHANCED v2.0: Considers current balance and activity patterns for accurate scoring.
     Prevents over-scoring of dormant/depleted wallets.
     """
     
@@ -64,8 +68,8 @@ class VolumeScorer:
         """
         Score a wallet for high-volume characteristics.
         
-        ✨ ENHANCED v2.0:
-        Now accepts balance and activity data for intelligent scoring.
+        ✅ FIXED v2.1: Protected against division by zero.
+        ✨ ENHANCED v2.0: Accepts balance and activity data for intelligent scoring.
         
         Args:
             address: Wallet address
@@ -178,7 +182,7 @@ class VolumeScorer:
             meets_threshold = metrics['total_volume'] >= self.min_volume_threshold
             
             # ================================================================
-            # LOG RESULTS
+            # LOG RESULTS (WITH SAFE DIVISION)
             # ================================================================
             
             logger.info(f"   📊 Final Score: {final_score:.1f}/100 (base: {base_score}/100)")
@@ -188,10 +192,15 @@ class VolumeScorer:
             logger.info(f"   🏷️  Classification: {classification['classification']}")
             logger.info(f"   ✅ Meets threshold: {meets_threshold}")
             
+            # ✅ SAFE DIVISION FIX: Check if volume > 0 before calculating ratio
             if balance_analysis:
+                balance_ratio = (
+                    balance_analysis['total_balance_usd'] / metrics['total_volume'] 
+                    if metrics['total_volume'] > 0 else 0
+                )
                 logger.info(
                     f"   💵 Balance: ${balance_analysis['total_balance_usd']:,.2f} "
-                    f"(ratio: {balance_analysis['total_balance_usd'] / metrics['total_volume']:.2%})"
+                    f"(ratio: {balance_ratio:.2%})"
                 )
             
             if activity_analysis:
@@ -375,6 +384,7 @@ class VolumeScorer:
         """
         current_balance = balance_analysis.get('total_balance_usd', 0)
         
+        # ✅ SAFE: Already protected
         if historical_volume <= 0:
             return 0
         
@@ -563,6 +573,7 @@ class VolumeScorer:
         
         if balance_analysis:
             current_balance = balance_analysis.get('total_balance_usd', 0)
+            # ✅ SAFE: Already protected with ternary operator
             balance_ratio = current_balance / total_volume if total_volume > 0 else 0
             
             if balance_ratio < 0.01:
