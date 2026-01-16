@@ -2,6 +2,11 @@
 High Volume Wallet Discovery - Counterparty Analysis
 ====================================================
 
+✅ FIXED v2.1 - Accurate Volume Calculation:
+- FALLBACK no longer uses wallet_profiler (Quick Stats $0 issue)
+- Direct volume calculation from enriched transactions
+- Proper USD enrichment before volume calculation
+
 ✅ ENHANCED v2.0 - Balance + Activity Integration:
 - Current balance tracking via BalanceFetcher
 - Temporal activity analysis via ActivityAnalyzer
@@ -17,8 +22,8 @@ High Volume Wallet Discovery - Counterparty Analysis
 - **NEW**: Activity pattern detection
 - **NEW**: Risk assessment based on current state
 
-Version: 2.0
-Date: 2025-01-15
+Version: 2.1 (FIXED)
+Date: 2025-01-16
 """
 
 from typing import List, Dict, Optional
@@ -38,8 +43,8 @@ class HighVolumeAnalyzer:
     """
     Discovers high-volume wallets through counterparty analysis.
     
-    ✨ ENHANCED v2.0:
-    Now includes balance and activity analysis for accurate classification.
+    ✅ FIXED v2.1: FALLBACK calculates volume directly (no Quick Stats dependency)
+    ✨ ENHANCED v2.0: Includes balance and activity analysis for accurate classification.
     Prevents misclassification of dormant/depleted wallets.
     """
     
@@ -198,8 +203,8 @@ class HighVolumeAnalyzer:
         """
         Analyze a counterparty for high-volume characteristics.
         
-        ✨ ENHANCED v2.0:
-        Now includes balance and activity analysis for accurate classification.
+        ✅ FIXED v2.1: FALLBACK calculates volume directly (no Quick Stats)
+        ✨ ENHANCED v2.0: Includes balance and activity analysis for accurate classification.
         
         Args:
             counterparty_address: Address to analyze
@@ -393,14 +398,15 @@ class HighVolumeAnalyzer:
             return None
     
     # ========================================================================
-    # ✨ NEW HELPER METHODS
+    # ✨ HELPER METHODS
     # ========================================================================
     
     def _get_volume_data(self, address: str) -> Optional[Dict]:
         """
         Get volume data via Moralis or fallback.
         
-        Extracted from original analyze_volume_profile for cleaner structure.
+        ✅ FIXED v2.1: FALLBACK calculates volume directly from enriched transactions.
+        No longer uses wallet_profiler (which has Quick Stats $0 volume issue).
         """
         # ================================================================
         # PRIORITY 1: MORALIS ERC20 TRANSFERS FOR VOLUME
@@ -494,7 +500,7 @@ class HighVolumeAnalyzer:
                 logger.warning(f"   ⚠️ No ERC20 transfers found via Moralis")
         
         # ================================================================
-        # FALLBACK: Transaction Processing
+        # ✅ FIXED FALLBACK: Direct Transaction Processing
         # ================================================================
         
         logger.info(f"   📊 FALLBACK: Processing transactions manually")
@@ -510,30 +516,78 @@ class HighVolumeAnalyzer:
             logger.warning(f"⚠️ No transactions for {address[:10]}")
             return None
         
-        # Enrich with USD
+        # ✅ FIX: Enrich with USD BEFORE calculating volume
+        # This ensures we have accurate volume data!
+        logger.info(f"   💰 Enriching top {len(transactions)} of {len(transactions)} transactions...")
+        
         transactions = self.transaction_extractor.enrich_with_usd_value(
             transactions,
             self.price_oracle,
-            max_transactions=50
+            max_transactions=len(transactions)
         )
         
-        # Create profile
-        profile = self.wallet_profiler.create_profile(
-            address,
-            transactions,
-            labels={}
+        # ✅ FIX: Calculate volume DIRECTLY from enriched transactions
+        # Don't rely on wallet_profiler which uses Quick Stats with $0 volume!
+        total_volume_usd = 0
+        unique_counterparties = set()
+        token_diversity = set()
+        large_tx_count = 0
+        
+        normalized_address = address.lower().strip()
+        
+        for tx in transactions:
+            # Get USD value (check multiple possible keys)
+            usd_value = tx.get('usd_value') or tx.get('valueUSD') or tx.get('value_usd') or 0
+            
+            if usd_value > 0:
+                total_volume_usd += usd_value
+                
+                if usd_value >= 100_000:
+                    large_tx_count += 1
+            
+            # Track counterparties
+            from_addr = str(tx.get('from_address', '')).lower().strip()
+            to_addr = str(tx.get('to_address', '')).lower().strip()
+            
+            if from_addr == normalized_address and to_addr:
+                unique_counterparties.add(to_addr)
+            elif to_addr == normalized_address and from_addr:
+                unique_counterparties.add(from_addr)
+            
+            # Track token diversity
+            token_symbol = tx.get('token_symbol') or 'ETH'
+            token_diversity.add(token_symbol)
+        
+        # ✅ FIX: Build profile from ACTUAL calculated data
+        profile = {
+            'address': address,
+            'total_volume_usd': total_volume_usd,
+            'unique_counterparties': len(unique_counterparties),
+            'token_diversity': len(token_diversity),
+            'transfer_count': len(transactions),
+            'avg_transfer_usd': total_volume_usd / len(transactions) if len(transactions) > 0 else 0,
+            'large_transfer_count': large_tx_count,
+            'first_seen': min((tx.get('timestamp', datetime.now()) for tx in transactions), default=datetime.now()),
+            'last_seen': max((tx.get('timestamp', datetime.now()) for tx in transactions), default=datetime.now()),
+            'data_quality': 'medium',
+            'profile_method': 'direct_tx_processing'
+        }
+        
+        logger.info(
+            f"   ✅ Calculated volume: ${total_volume_usd:,.2f} "
+            f"from {len(transactions)} transactions"
         )
         
         return {
             'address': address,
-            'total_volume': profile.get('total_volume_usd', 0),
+            'total_volume': total_volume_usd,
             'transaction_count': len(transactions),
-            'avg_transaction': profile.get('avg_transaction_usd', 0),
-            'first_seen': profile.get('first_seen'),
-            'last_seen': profile.get('last_seen'),
+            'avg_transaction': total_volume_usd / len(transactions) if len(transactions) > 0 else 0,
+            'first_seen': profile['first_seen'],
+            'last_seen': profile['last_seen'],
             'profile': profile,
-            'strategy': 'transaction_processing',
-            'data_quality': profile.get('data_quality', 'unknown'),
+            'strategy': 'direct_tx_processing',
+            'data_quality': 'medium',
             'transactions': transactions  # ✨ For activity analysis
         }
     
