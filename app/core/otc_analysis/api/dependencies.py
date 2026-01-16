@@ -1316,11 +1316,22 @@ async def sync_wallet_transactions_to_db(
     """
     Synchronisiert Transaktionen eines Wallets in die Datenbank.
     
-    ✅ FIXED VERSION v2 - NoneType Safe:
-    - Speichert neue TXs auch ohne USD-Wert
-    - Updates existierende TXs die noch keinen USD-Wert haben
-    - NoneType-safe comparisons
-    - Robuste Fehlerbehandlung
+    ✅ FIXED VERSION v3.0 FINAL:
+    - Speichert ALLE neuen TXs (auch ohne USD value)
+    - Updates existierende TXs wenn neuer USD value verfügbar
+    - Robustes Logging für Debugging
+    - NoneType-safe überall
+    - Verification am Ende
+    
+    Args:
+        db: Database session
+        wallet_address: Wallet address to sync
+        max_transactions: Max number of transactions to fetch
+        force_refresh: Force refresh even if recent data exists
+        skip_enrichment: Skip USD enrichment step
+        
+    Returns:
+        Dict with sync statistics
     """
     from app.core.otc_analysis.models.transaction import Transaction
     from datetime import datetime, timedelta
@@ -1337,12 +1348,13 @@ async def sync_wallet_transactions_to_db(
         "skipped_count": 0,
         "enrichment_failed": 0,
         "needs_enrichment": 0,
-        "source": "unknown"
+        "source": "unknown",
+        "errors": []
     }
     
     try:
         # ====================================================================
-        # STEP 1: CHECK EXISTING TRANSACTIONS IN DB
+        # STEP 1: CHECK EXISTING TRANSACTIONS IN DB (Optional Cache)
         # ====================================================================
         
         if not force_refresh:
@@ -1358,12 +1370,18 @@ async def sync_wallet_transactions_to_db(
             
             stats["existing_count"] = existing_count
             
-            if existing_count > 0:
-                logger.info(f"   ✅ Found {existing_count} cached transactions (< 6h old)")
+            if existing_count >= max_transactions:
+                logger.info(
+                    f"   ✅ Found {existing_count} cached transactions (< 6h old), "
+                    f"using cache"
+                )
                 stats["source"] = "cache"
                 return stats
-            
-            logger.info(f"   ℹ️ No recent transactions in DB, fetching from blockchain...")
+            elif existing_count > 0:
+                logger.info(
+                    f"   ℹ️ Found {existing_count} cached transactions, "
+                    f"but fetching more from blockchain..."
+                )
         else:
             logger.info(f"   🔄 Force refresh enabled, fetching from blockchain...")
         
@@ -1412,7 +1430,7 @@ async def sync_wallet_transactions_to_db(
                     max_transactions=len(transactions)
                 )
                 
-                # ✅ FIX: NoneType-safe count
+                # Count successfully enriched
                 enriched_count = 0
                 for tx in enriched_transactions:
                     val = tx.get('value_usd') or tx.get('valueUSD') or tx.get('usd_value')
@@ -1438,13 +1456,22 @@ async def sync_wallet_transactions_to_db(
             stats["enrichment_failed"] = len(transactions)
         
         # ====================================================================
-        # STEP 4: SAVE TO DATABASE
+        # STEP 4: SAVE TO DATABASE (IMPROVED LOGIC)
         # ====================================================================
         
         logger.info(f"   💾 Saving transactions to database...")
         
-        for tx in enriched_transactions:
+        insert_count = 0
+        update_count = 0
+        skip_count = 0
+        error_count = 0
+        
+        for idx, tx in enumerate(enriched_transactions):
             try:
+                # ============================================================
+                # PARSE TRANSACTION DATA
+                # ============================================================
+                
                 # Parse timestamp
                 tx_timestamp = tx.get('timestamp')
                 if isinstance(tx_timestamp, str):
@@ -1457,7 +1484,7 @@ async def sync_wallet_transactions_to_db(
                 elif not isinstance(tx_timestamp, datetime):
                     tx_timestamp = datetime.now()
                 
-                # ✅ ROBUSTE USD-VALUE EXTRAKTION (NoneType safe)
+                # Extract USD value (check multiple keys)
                 usd_value = None
                 for key in ['value_usd', 'valueUSD', 'usd_value']:
                     val = tx.get(key)
@@ -1485,26 +1512,27 @@ async def sync_wallet_transactions_to_db(
                 # Get transaction hash
                 tx_hash = tx.get('hash') or tx.get('tx_hash')
                 if not tx_hash:
-                    logger.debug(f"      ⚠️ Missing tx_hash, skipping")
-                    stats["skipped_count"] += 1
+                    logger.debug(f"      ⚠️ TX {idx+1}: Missing tx_hash, skipping")
+                    skip_count += 1
                     continue
                 
-                # ====================================================================
-                # CHECK IF TX EXISTS
-                # ====================================================================
+                # ============================================================
+                # CHECK IF TX EXISTS IN DB
+                # ============================================================
                 
                 existing_tx = db.query(Transaction).filter(
                     Transaction.tx_hash == tx_hash
                 ).first()
                 
                 if existing_tx:
-                    # ====================================================================
-                    # UPDATE LOGIC
-                    # ====================================================================
+                    # ========================================================
+                    # UPDATE EXISTING TRANSACTION
+                    # ========================================================
                     
                     should_update = False
+                    update_reasons = []
                     
-                    # Case 1: We have USD value, but existing doesn't
+                    # Case 1: We have new USD value, existing doesn't
                     if usd_value and usd_value > 0:
                         if not existing_tx.usd_value or existing_tx.usd_value == 0:
                             existing_tx.usd_value = usd_value
@@ -1513,6 +1541,7 @@ async def sync_wallet_transactions_to_db(
                             existing_tx.needs_enrichment = False
                             existing_tx.updated_at = datetime.now()
                             should_update = True
+                            update_reasons.append("added_usd_value")
                     
                     # Case 2: Neither has USD value, mark for enrichment
                     elif (not existing_tx.usd_value or existing_tx.usd_value == 0) and value_decimal > 0.01:
@@ -1520,23 +1549,38 @@ async def sync_wallet_transactions_to_db(
                             existing_tx.needs_enrichment = True
                             existing_tx.updated_at = datetime.now()
                             should_update = True
+                            update_reasons.append("marked_for_enrichment")
                             stats["needs_enrichment"] += 1
                     
                     if should_update:
-                        stats["updated_count"] += 1
+                        update_count += 1
                         
-                        if stats["updated_count"] % 20 == 0:
+                        if update_count <= 5:  # Log first 5 updates
+                            logger.info(
+                                f"      🔄 TX {idx+1} ({tx_hash[:10]}...): "
+                                f"Updated ({', '.join(update_reasons)})"
+                            )
+                        
+                        # Commit in batches
+                        if update_count % 20 == 0:
                             db.commit()
-                            logger.info(f"      ✅ Updated {stats['updated_count']} transactions...")
+                            logger.info(f"      ✅ Committed {update_count} updates...")
                     else:
-                        stats["skipped_count"] += 1
+                        skip_count += 1
+                        
+                        if skip_count <= 3:  # Log first 3 skips
+                            logger.debug(
+                                f"      ⏭️  TX {idx+1} ({tx_hash[:10]}...): "
+                                f"Skipped (already up-to-date)"
+                            )
                     
                     continue
                 
-                # ====================================================================
-                # CREATE NEW TRANSACTION
-                # ====================================================================
+                # ============================================================
+                # INSERT NEW TRANSACTION
+                # ============================================================
                 
+                # Determine if needs enrichment
                 needs_enrichment = (not usd_value or usd_value == 0) and value_decimal > 0.01
                 
                 if needs_enrichment:
@@ -1565,28 +1609,49 @@ async def sync_wallet_transactions_to_db(
                 )
                 
                 db.add(new_tx)
-                stats["saved_count"] += 1
+                insert_count += 1
+                
+                if insert_count <= 5:  # Log first 5 inserts
+                    logger.info(
+                        f"      ➕ TX {idx+1} ({tx_hash[:10]}...): "
+                        f"Inserted (${usd_value:,.2f if usd_value else 0})"
+                    )
                 
                 # Commit in batches
-                if stats["saved_count"] % 50 == 0:
+                if insert_count % 50 == 0:
                     db.commit()
-                    logger.info(f"      ✅ Saved {stats['saved_count']} transactions...")
+                    logger.info(f"      ✅ Committed {insert_count} inserts...")
                 
             except Exception as tx_error:
-                logger.debug(f"      ⚠️ Error processing TX: {tx_error}")
-                stats["skipped_count"] += 1
+                error_count += 1
+                error_msg = f"TX {idx+1}: {str(tx_error)[:100]}"
+                stats["errors"].append(error_msg)
+                
+                if error_count <= 3:  # Log first 3 errors
+                    logger.warning(f"      ⚠️ Error processing {error_msg}")
+                
                 continue
         
-        # Final commit
+        # ====================================================================
+        # FINAL COMMIT & SUMMARY
+        # ====================================================================
+        
         db.commit()
+        
+        stats["saved_count"] = insert_count
+        stats["updated_count"] = update_count
+        stats["skipped_count"] = skip_count
         stats["source"] = "blockchain"
         
         logger.info(
             f"   ✅ Transaction sync complete: "
-            f"Saved {stats['saved_count']}, "
-            f"Updated {stats['updated_count']}, "
-            f"Skipped {stats['skipped_count']}"
+            f"Saved {insert_count}, "
+            f"Updated {update_count}, "
+            f"Skipped {skip_count}"
         )
+        
+        if error_count > 0:
+            logger.warning(f"   ⚠️ {error_count} errors occurred during sync")
         
         if stats["needs_enrichment"] > 0:
             logger.info(
@@ -1594,11 +1659,26 @@ async def sync_wallet_transactions_to_db(
                 f"(run background job later)"
             )
         
+        # ====================================================================
+        # VERIFICATION: Count actual DB entries
+        # ====================================================================
+        
+        if insert_count > 0 or update_count > 0:
+            total_in_db = db.query(Transaction).filter(
+                or_(
+                    Transaction.from_address == wallet_address.lower(),
+                    Transaction.to_address == wallet_address.lower()
+                )
+            ).count()
+            
+            logger.info(f"   📊 Total transactions in DB for this wallet: {total_in_db}")
+        
         return stats
         
     except Exception as e:
         logger.error(f"❌ Error syncing transactions: {e}", exc_info=True)
         db.rollback()
+        stats["errors"].append(f"Fatal error: {str(e)}")
         return stats
         
 async def enrich_missing_usd_values(
