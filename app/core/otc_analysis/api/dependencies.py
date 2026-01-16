@@ -1316,12 +1316,12 @@ async def sync_wallet_transactions_to_db(
     """
     Synchronisiert Transaktionen eines Wallets in die Datenbank.
     
-    ✅ FIXED VERSION v3.0 FINAL:
-    - Speichert ALLE neuen TXs (auch ohne USD value)
+    ✅ FIXED VERSION v3.1 FINAL:
+    - REMOVED 'needs_enrichment' field (doesn't exist in DB)
+    - Speichert ALLE neuen TXs (mit oder ohne USD value)
     - Updates existierende TXs wenn neuer USD value verfügbar
     - Robustes Logging für Debugging
     - NoneType-safe überall
-    - Verification am Ende
     
     Args:
         db: Database session
@@ -1347,7 +1347,6 @@ async def sync_wallet_transactions_to_db(
         "updated_count": 0,
         "skipped_count": 0,
         "enrichment_failed": 0,
-        "needs_enrichment": 0,
         "source": "unknown",
         "errors": []
     }
@@ -1530,7 +1529,6 @@ async def sync_wallet_transactions_to_db(
                     # ========================================================
                     
                     should_update = False
-                    update_reasons = []
                     
                     # Case 1: We have new USD value, existing doesn't
                     if usd_value and usd_value > 0:
@@ -1538,27 +1536,16 @@ async def sync_wallet_transactions_to_db(
                             existing_tx.usd_value = usd_value
                             existing_tx.otc_score = otc_score
                             existing_tx.is_suspected_otc = otc_score > 0.7
-                            existing_tx.needs_enrichment = False
                             existing_tx.updated_at = datetime.now()
                             should_update = True
-                            update_reasons.append("added_usd_value")
-                    
-                    # Case 2: Neither has USD value, mark for enrichment
-                    elif (not existing_tx.usd_value or existing_tx.usd_value == 0) and value_decimal > 0.01:
-                        if not existing_tx.needs_enrichment:
-                            existing_tx.needs_enrichment = True
-                            existing_tx.updated_at = datetime.now()
-                            should_update = True
-                            update_reasons.append("marked_for_enrichment")
-                            stats["needs_enrichment"] += 1
                     
                     if should_update:
                         update_count += 1
                         
-                        if update_count <= 5:  # Log first 5 updates
+                        if update_count <= 5:
                             logger.info(
                                 f"      🔄 TX {idx+1} ({tx_hash[:10]}...): "
-                                f"Updated ({', '.join(update_reasons)})"
+                                f"Updated with USD value"
                             )
                         
                         # Commit in batches
@@ -1567,24 +1554,12 @@ async def sync_wallet_transactions_to_db(
                             logger.info(f"      ✅ Committed {update_count} updates...")
                     else:
                         skip_count += 1
-                        
-                        if skip_count <= 3:  # Log first 3 skips
-                            logger.debug(
-                                f"      ⏭️  TX {idx+1} ({tx_hash[:10]}...): "
-                                f"Skipped (already up-to-date)"
-                            )
                     
                     continue
                 
                 # ============================================================
-                # INSERT NEW TRANSACTION
+                # INSERT NEW TRANSACTION (✅ FIXED: NO needs_enrichment!)
                 # ============================================================
-                
-                # Determine if needs enrichment
-                needs_enrichment = (not usd_value or usd_value == 0) and value_decimal > 0.01
-                
-                if needs_enrichment:
-                    stats["needs_enrichment"] += 1
                 
                 new_tx = Transaction(
                     tx_hash=tx_hash,
@@ -1602,7 +1577,7 @@ async def sync_wallet_transactions_to_db(
                     method_id=tx.get('methodId') or tx.get('method_id'),
                     otc_score=otc_score,
                     is_suspected_otc=otc_score > 0.7,
-                    needs_enrichment=needs_enrichment,
+                    # ✅ REMOVED: needs_enrichment
                     chain_id=1,
                     created_at=datetime.now(),
                     updated_at=datetime.now()
@@ -1611,7 +1586,7 @@ async def sync_wallet_transactions_to_db(
                 db.add(new_tx)
                 insert_count += 1
                 
-                if insert_count <= 5:  # Log first 5 inserts
+                if insert_count <= 5:
                     logger.info(
                         f"      ➕ TX {idx+1} ({tx_hash[:10]}...): "
                         f"Inserted (${usd_value:,.2f if usd_value else 0})"
@@ -1627,7 +1602,7 @@ async def sync_wallet_transactions_to_db(
                 error_msg = f"TX {idx+1}: {str(tx_error)[:100]}"
                 stats["errors"].append(error_msg)
                 
-                if error_count <= 3:  # Log first 3 errors
+                if error_count <= 3:
                     logger.warning(f"      ⚠️ Error processing {error_msg}")
                 
                 continue
@@ -1652,12 +1627,6 @@ async def sync_wallet_transactions_to_db(
         
         if error_count > 0:
             logger.warning(f"   ⚠️ {error_count} errors occurred during sync")
-        
-        if stats["needs_enrichment"] > 0:
-            logger.info(
-                f"   ⏳ {stats['needs_enrichment']} transactions need USD enrichment "
-                f"(run background job later)"
-            )
         
         # ====================================================================
         # VERIFICATION: Count actual DB entries
