@@ -212,7 +212,7 @@ async def lifespan(app: FastAPI):
     
     logger.info("Starting Low-Cap Token Analyzer")
     
-    # ✅ NEU: Automatische Transaction Table Migration
+    # ✅ Transaction Table Migration
     logger.info("🔧 Running database migrations...")
     migration_result = setup_database_on_startup()
     
@@ -226,6 +226,22 @@ async def lifespan(app: FastAPI):
         logger.error("⚠️ Database migrations had errors - app will continue")
         logger.error(f"Errors: {migration_result.get('errors', [])}")
     
+    # ✅ NEW: wallet_links Table Migration
+    logger.info("🔧 Running wallet_links migration...")
+    from scripts.setup_wallet_links import setup_wallet_links_table
+    
+    wallet_links_result = setup_wallet_links_table()
+    
+    if wallet_links_result["success"]:
+        logger.info("✅ wallet_links migration completed")
+        if wallet_links_result.get("table_created"):
+            logger.info("📦 Created 'wallet_links' table with indexes")
+        else:
+            logger.info("📋 Table 'wallet_links' already exists")
+    else:
+        logger.error("⚠️ wallet_links migration had errors - app will continue")
+        logger.error(f"Error: {wallet_links_result.get('error', 'Unknown error')}")
+    
     # ✅ Skip DatabaseManager - OTC nutzt database.py direkt
     db_manager = None
     logger.info("✅ Skipping DatabaseManager (OTC uses database.py directly)")
@@ -233,6 +249,8 @@ async def lifespan(app: FastAPI):
     yield
     
     logger.info("Shutting down Low-Cap Token Analyzer")
+    
+    # ... rest bleibt gleich ...
     
     # ✅ Rest bleibt gleich
     try:
