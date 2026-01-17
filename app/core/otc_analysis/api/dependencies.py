@@ -2284,6 +2284,7 @@ __all__ = [
     "activity_analyzer",    # ✨ NEW
     "balance_scorer",       # ✨ NEW
     "discover_high_volume_from_transactions",
+    "save_wallet_links_to_db",
 
     # ✨ NEW: Transaction Sync
     "sync_wallet_transactions_to_db",
