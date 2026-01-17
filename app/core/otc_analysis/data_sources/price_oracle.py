@@ -32,16 +32,18 @@ class PriceOracle:
     ✨ NEW: Enhanced error tracking for debugging
     """
 
-    def __init__(self, cache_manager=None, etherscan=None):
+    def __init__(self, cache_manager=None, etherscan=None, moralis_api_key=None):
         """
         Initialize price oracle.
         
         Args:
             cache_manager: CacheManager instance for caching
             etherscan: EtherscanAPI instance for live ETH price
+            moralis_api_key: Moralis API key for live token prices  # ✨ NEW
         """
         self.cache = cache_manager
         self.etherscan = etherscan
+        self.moralis_api_key = moralis_api_key or os.getenv('MORALIS_API_KEY')  # ✨ NEW
         self.coingecko_base = "https://api.coingecko.com/api/v3"
         self.rate_limit_delay = 1.5
         self.last_request_time = 0
