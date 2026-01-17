@@ -1196,7 +1196,7 @@ async def discover_high_volume_from_transactions(
                 elif pattern in ['sustained', 'active']:
                     tags.append('active')
             
-            # ================================================================
+# ================================================================
             # ✅ STEP 1: Save Wallet to DB
             # ================================================================
             
@@ -1223,7 +1223,92 @@ async def discover_high_volume_from_transactions(
                 f"      ✅ Saved to DB "
                 f"(type: high_volume_wallet, score: {volume_score:.1f}/100)"
             )
-
+            
+            # ================================================================
+            # ✨ STEP 1.5: AUTO-CREATE WALLET LINKS
+            # ================================================================
+            
+            if save_links:
+                logger.info(f"      🔗 Creating wallet links...")
+                
+                try:
+                    from app.core.otc_analysis.models.wallet_link import WalletLink
+                    
+                    links_created = 0
+                    
+                    # ============================================================
+                    # LINK 1: Discovered Wallet ↔ Source Address
+                    # ============================================================
+                    
+                    # Check if source is in our wallets table
+                    source_wallet = db.query(OTCWallet).filter(
+                        OTCWallet.address == source_address.lower()
+                    ).first()
+                    
+                    if source_wallet:
+                        # Calculate link from counterparty data
+                        link_volume = cp_data.get('total_volume', 0)
+                        link_tx_count = cp_data.get('tx_count', 0)
+                        
+                        # Link strength
+                        volume_score_link = min(link_volume / 10_000_000, 1.0) * 40
+                        frequency_score_link = min(link_tx_count / 100, 1.0) * 30
+                        recency_score_link = 30  # Recent discovery
+                        link_strength = volume_score_link + frequency_score_link + recency_score_link
+                        
+                        # OTC confidence
+                        otc_conf = 0.0
+                        if link_volume > 100000:
+                            otc_conf += 40
+                        if link_tx_count > 10:
+                            otc_conf += 30
+                        if source_wallet.entity_type == 'otc_desk':
+                            otc_conf += 30
+                        
+                        # Check if link already exists
+                        existing_link = db.query(WalletLink).filter(
+                            WalletLink.from_address == source_address.lower(),
+                            WalletLink.to_address == address.lower()
+                        ).first()
+                        
+                        if not existing_link:
+                            link = WalletLink(
+                                from_address=source_address.lower(),
+                                to_address=address.lower(),
+                                from_wallet_type=source_wallet.entity_type,
+                                to_wallet_type='high_volume_wallet',
+                                from_wallet_label=source_wallet.label,
+                                to_wallet_label=wallet.label,
+                                transaction_count=link_tx_count,
+                                total_volume_usd=link_volume,
+                                avg_transaction_usd=link_volume / link_tx_count if link_tx_count > 0 else 0,
+                                first_transaction=cp_data.get('first_seen'),
+                                last_transaction=cp_data.get('last_seen'),
+                                analysis_start=datetime.now() - timedelta(days=30),
+                                analysis_end=datetime.now(),
+                                link_strength=link_strength,
+                                is_suspected_otc=otc_conf >= 60,
+                                otc_confidence=otc_conf,
+                                volume_score=volume_score_link,
+                                frequency_score=frequency_score_link,
+                                recency_score=recency_score_link,
+                                detected_patterns=['discovered_via_analysis'],
+                                flow_type='discovery',
+                                data_source='discovery',
+                                data_quality='high',
+                                is_active=True,
+                                created_at=datetime.now(),
+                                last_calculated=datetime.now()
+                            )
+                            
+                            db.add(link)
+                            links_created += 1
+                            
+                            logger.info(
+                                f"         ✅ Link: {source_address[:10]}...↔{address[:10]}... "
+                                f"(${link_volume:,.0f}, {link_tx_count} TXs)"
+                            )
+                    
                     # ============================================================
                     # LINK 2: Discovered Wallet ↔ Other OTC Desks (from TXs)
                     # ============================================================
@@ -1277,6 +1362,15 @@ async def discover_high_volume_from_transactions(
                                     ).first()
                                     
                                     if not from_wallet or not to_wallet:
+                                        continue
+                                    
+                                    # Check if link already exists
+                                    existing_link = db.query(WalletLink).filter(
+                                        WalletLink.from_address == otc_link.from_address,
+                                        WalletLink.to_address == otc_link.to_address
+                                    ).first()
+                                    
+                                    if existing_link:
                                         continue
                                     
                                     link_vol = float(otc_link.total_volume or 0)
@@ -1344,7 +1438,7 @@ async def discover_high_volume_from_transactions(
                     logger.error(f"      ❌ Error creating links: {link_error}")
                     db.rollback()
                     cp_data['links_created'] = 0
-                    
+            
             # ================================================================
             # ✅ STEP 2: AUTO-SYNC TRANSACTIONS
             # ================================================================
@@ -1389,14 +1483,13 @@ async def discover_high_volume_from_transactions(
                 'tags': tags,
                 'counterparty_data': cp_data,
                 'volume_breakdown': scoring_result.get('breakdown', {}),
-                'score_modifiers': scoring_result.get('modifiers', {}),  # ✨ NEW
+                'score_modifiers': scoring_result.get('modifiers', {}),
                 'moralis_label': cp_data.get('moralis_label'),
                 'moralis_entity': cp_data.get('moralis_entity'),
-                # ✨ NEW: Enhanced analysis data
                 'has_balance_data': analysis.get('balance_analysis') is not None,
                 'has_activity_data': analysis.get('activity_analysis') is not None,
                 'enhanced_classification': analysis.get('enhanced_classification'),
-                "links_created": cp_data.get('links_created', 0)
+                'links_created': cp_data.get('links_created', 0)  # ✨ NEW
             })
         
         logger.info(
@@ -1409,6 +1502,10 @@ async def discover_high_volume_from_transactions(
                 f"   💾 Transactions synced for all {len(discovered)} discovered wallets"
             )
         
+        if save_links:
+            total_links = sum(w.get('links_created', 0) for w in discovered)
+            logger.info(f"   🔗 Created {total_links} wallet links")
+        
         # ✨ Log enhancement stats
         balance_count = sum(1 for w in discovered if w['has_balance_data'])
         activity_count = sum(1 for w in discovered if w['has_activity_data'])
@@ -1419,22 +1516,12 @@ async def discover_high_volume_from_transactions(
             f"{activity_count} with activity"
         )
         
-        logger.info(
-            f"✅ High Volume Discovery complete: {len(discovered)} wallets found "
-            f"(threshold: ${min_volume_threshold:,.0f})"
-        )
-        
-        if save_links:
-            total_links = sum(w.get('links_created', 0) for w in discovered)
-            logger.info(f"   🔗 Created {total_links} wallet links")
-        
         return discovered
         
     except Exception as e:
         logger.error(f"❌ High volume discovery failed: {e}", exc_info=True)
         db.rollback()
         return []
-
 async def save_wallet_links_to_db(
     db: Session,
     start_date: datetime,
