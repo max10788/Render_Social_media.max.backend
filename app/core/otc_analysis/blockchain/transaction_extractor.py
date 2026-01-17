@@ -640,11 +640,9 @@ class TransactionExtractor:
                     logger.debug(f"🔍 Fetching price: {token_symbol} @ {date_key}")
                     
                     try:
-                        # ✅ NEW: Pass both address AND symbol
-                        price_usd = price_oracle.get_historical_price(
-                            token_address,
-                            timestamp,
-                            token_symbol=token_symbol  # ✅ THIS IS THE KEY FIX!
+                        # ✨ NEW: Get current live price (ignore timestamp!)
+                        price_usd = price_oracle.get_live_token_price(
+                            token_address or token_symbol  # Pass address if available, else symbol
                         )
                         
                         if price_usd:
