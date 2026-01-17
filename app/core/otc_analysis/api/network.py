@@ -345,9 +345,22 @@ async def get_network_graph(
                     link_metadata["saved_links_count"] = len(saved_links)
                     link_metadata["total_sources"].append("saved_links")
                     
+                except ImportError as e:
+                    logger.warning(f"   ⚠️ WalletLink model not found - skipping saved links")
+                    db.rollback()  # ✨ WICHTIG: Rollback der Transaction
+                    
                 except Exception as e:
-                    logger.warning(f"   ⚠️ Error loading saved links: {e}")
-            
+                    error_msg = str(e)
+                    
+                    # Check if it's a "table does not exist" error
+                    if 'does not exist' in error_msg or 'UndefinedTable' in error_msg:
+                        logger.warning(f"   ⚠️ wallet_links table not found - run migration first!")
+                        logger.info(f"   💡 Tip: Execute scripts/migrations/create_wallet_links_table.sql")
+                    else:
+                        logger.warning(f"   ⚠️ Error loading saved links: {e}")
+                    
+                    # ✨ CRITICAL: Rollback transaction to continue with other queries
+                    db.rollback()
             # ================================================================
             # 3B: GENERATED LINKS VIA LINKBUILDER
             # ================================================================
