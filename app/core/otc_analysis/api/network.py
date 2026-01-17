@@ -17,7 +17,7 @@ Now queries transactions grouped by EXTRACT(DOW) and EXTRACT(HOUR).
 import logging
 from fastapi import APIRouter, HTTPException, Query, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, case, and_  # ✅ and_ hinzugefügt!
 from typing import Dict, Optional, Any, List, Set
 from datetime import datetime, timedelta
 
