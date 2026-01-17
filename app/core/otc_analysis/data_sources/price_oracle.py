@@ -528,6 +528,190 @@ class PriceOracle:
             return price
         
         return None
+
+def get_live_token_price(
+    self,
+    token_address_or_symbol: str
+) -> Optional[float]:
+    """
+    Get CURRENT live price for any token.
+    
+    ✨ NEW: Moralis-First Strategy für Live-Preise
+    
+    Priority:
+    1. Moralis Price API (aktuelle DEX-aggregierte Preise)
+    2. Etherscan (für ETH)
+    3. CoinGecko Current Price API
+    4. Stablecoin Constants
+    5. Fallback Values
+    
+    Args:
+        token_address_or_symbol: Token address (0x...) or symbol (ETH, USDT)
+        
+    Returns:
+        Current USD price or None
+    """
+    # ====================================================================
+    # STEP 1: Normalize input
+    # ====================================================================
+    
+    is_address = token_address_or_symbol and token_address_or_symbol.startswith('0x')
+    
+    # ====================================================================
+    # STEP 2: Handle ETH specially (Etherscan für beste Genauigkeit)
+    # ====================================================================
+    
+    if not is_address:
+        symbol_upper = token_address_or_symbol.upper()
+        
+        # ETH/WETH → Use Etherscan
+        if symbol_upper in ['ETH', 'WETH']:
+            price = self.get_eth_price_live()
+            if price:
+                logger.debug(f"✅ Live ETH: ${price:,.2f} (Etherscan)")
+                return price
+        
+        # Stablecoins → Always $1
+        if symbol_upper in ['USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDD', 'FRAX', 'USDP']:
+            logger.debug(f"✅ Stablecoin: {symbol_upper} = $1.00")
+            return 1.0
+    
+    # ====================================================================
+    # STEP 3: Check cache (5 min TTL für live prices)
+    # ====================================================================
+    
+    cache_key = f"live_price:{token_address_or_symbol}"
+    
+    if self.cache:
+        cached = self.cache.get(cache_key)
+        if cached:
+            logger.debug(f"💾 Cached live price: ${cached:,.2f}")
+            return cached
+    
+    # ====================================================================
+    # STEP 4: Try Moralis Price API (PRIORITY 1)
+    # ====================================================================
+    
+    price = None
+    
+    if is_address:
+        price = self._fetch_moralis_price(token_address_or_symbol)
+        
+        if price:
+            logger.debug(f"✅ Moralis live price: ${price:,.2f}")
+            
+            # Cache for 5 minutes
+            if self.cache:
+                self.cache.set(cache_key, price, ttl=300)
+            
+            return price
+    
+    # ====================================================================
+    # STEP 5: Try CoinGecko Current Price API (Fallback)
+    # ====================================================================
+    
+    if is_address:
+        token_id, _ = self._get_token_id(token_address_or_symbol)
+    else:
+        # Try symbol lookup
+        symbol_upper = token_address_or_symbol.upper()
+        token_id = self.symbol_to_id_map.get(symbol_upper)
+    
+    if token_id:
+        price = self._fetch_current_price(token_id)
+        
+        if price:
+            logger.debug(f"✅ CoinGecko live price: ${price:,.2f}")
+            
+            # Cache for 5 minutes
+            if self.cache:
+                self.cache.set(cache_key, price, ttl=300)
+            
+            return price
+    
+    # ====================================================================
+    # STEP 6: Fallback to hardcoded values
+    # ====================================================================
+    
+    if not is_address:
+        fallback = self.fallback_prices.get(token_address_or_symbol.upper())
+        if fallback:
+            logger.debug(f"💵 Fallback: {token_address_or_symbol} = ${fallback:,.2f}")
+            return fallback
+    
+    logger.debug(f"❌ No live price found for {token_address_or_symbol}")
+    return None
+
+
+def _fetch_moralis_price(self, token_address: str) -> Optional[float]:
+    """
+    Fetch current token price from Moralis Price API.
+    
+    Endpoint: GET /erc20/{address}/price?chain=eth
+    
+    Returns:
+        {
+            "usdPrice": 3315.37,
+            "exchangeAddress": "0x...",
+            "exchangeName": "Uniswap v3"
+        }
+    """
+    if not self.moralis_api_key:
+        return None
+    
+    # Handle ETH/WETH
+    if token_address.lower() in [
+        '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        '0x0000000000000000000000000000000000000000'
+    ]:
+        # Use WETH for price lookup
+        token_address = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
+    
+    try:
+        url = f"https://deep-index.moralis.io/api/v2.2/erc20/{token_address}/price"
+        headers = {
+            'X-API-Key': self.moralis_api_key,
+            'Accept': 'application/json'
+        }
+        params = {'chain': 'eth'}
+        
+        logger.debug(f"   🔍 Moralis Price API: {token_address[:10]}...")
+        
+        response = self.session.get(url, headers=headers, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            price = data.get('usdPrice')
+            exchange = data.get('exchangeName', 'Unknown')
+            
+            if price:
+                logger.debug(f"   ✅ ${price:,.4f} (from {exchange})")
+                self.success_count += 1
+                return float(price)
+            else:
+                logger.debug(f"   ❌ No usdPrice in response")
+                return None
+        
+        elif response.status_code == 429:
+            logger.warning("   ⏱️  Moralis rate limited")
+            self.last_error = "Moralis rate limit"
+            return None
+        
+        elif response.status_code == 404:
+            logger.debug(f"   ℹ️  Token not found in Moralis")
+            return None
+        
+        else:
+            logger.debug(f"   ❌ HTTP {response.status_code}")
+            return None
+        
+    except requests.exceptions.Timeout:
+        logger.debug(f"   ⏱️  Moralis timeout")
+        return None
+        
+    except Exception as e:
+        logger.debug(f"   ❌ Moralis error: {e}")
+        return None
     
     def _fetch_historical_price(self, token_id: str, date: str, token_address: Optional[str] = None) -> Optional[float]:
         """
