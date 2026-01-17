@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 # Database
 from app.core.backend_crypto_tracker.config.database import get_db
+from app.core.otc_analysis.models.wallet_link import WalletLink
 
 # ✨ API infrastructure
 from app.core.otc_analysis.blockchain.wallet_stats import WalletStatsAPI
