@@ -29,6 +29,7 @@ from .dependencies import (
 
 from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
 from app.core.otc_analysis.models.transaction import Transaction  # ✅ NEW
+from app.core.otc_analysis.models.wallet_link import WalletLink
 from sqlalchemy import func, or_, case  # ✅ case hinzugefügt!
 
 logger = logging.getLogger(__name__)
