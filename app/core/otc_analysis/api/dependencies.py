@@ -87,8 +87,11 @@ node_provider = NodeProvider(chain_id=1)
 etherscan = EtherscanAPI(chain_id=1)
 
 # PriceOracle WITH Etherscan injected
-price_oracle = PriceOracle(cache_manager, etherscan)
-
+price_oracle = PriceOracle(
+    cache_manager,
+    etherscan,
+    moralis_api_key=os.getenv('MORALIS_API_KEY')  # ✨ NEW
+    
 # API infrastructure
 api_health_monitor = ApiHealthMonitor(cooldown_minutes=5, error_threshold=0.5)
 wallet_stats_api = WalletStatsAPI(
