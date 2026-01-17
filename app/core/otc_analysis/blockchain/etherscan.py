@@ -3,6 +3,8 @@ Etherscan API Client
 ====================
 
 Interface to Etherscan API V2 with live ETH price support.
+
+✅ FIXED v2.2: V2 Price API Support + Detailed NOTOK Debugging
 """
 
 import requests
@@ -19,6 +21,8 @@ class EtherscanAPI:
     Interface to Etherscan API V2 (and BSCScan, Polygonscan, etc.)
     
     ✨ NEW: Added live ETH price fetching
+    ✅ ENHANCED: V2 + V1 fallback for price API
+    ✅ ENHANCED: Detailed error logging for debugging
     """
     
     def __init__(self, chain_id: int = 1):
@@ -292,21 +296,20 @@ class EtherscanAPI:
             return 0
 
     # ========================================================================
-    # ✨ NEW: ETH PRICE METHODS
+    # ✨ ETH PRICE METHODS - V2 + V1 FALLBACK
     # ========================================================================
 
     def get_eth_price_usd(self) -> Optional[float]:
         """
         Get current ETH price in USD from Etherscan.
         
-        API: https://api.etherscan.io/api?module=stats&action=ethprice
-        
-        ✅ FIXED: Uses V1 endpoint (not V2) for price API
+        ✅ STRATEGY: Try V2 first (future-proof), fallback to V1 if needed
+        ✅ ENHANCED: Detailed error logging for debugging NOTOK errors
         
         Returns:
             Current ETH price in USD or None
         
-        Example Response:
+        Etherscan V2 Response:
         {
           "status": "1",
           "message": "OK",
@@ -318,13 +321,66 @@ class EtherscanAPI:
           }
         }
         """
+        # Mask API key for logging (show first/last 4 chars)
+        masked_key = f"{self.api_key[:4]}...{self.api_key[-4:]}" if len(self.api_key) > 8 else "****"
+        
+        # ================================================================
+        # STRATEGY 1: Try V2 API (Future-proof)
+        # ================================================================
+        
+        logger.info(f"📡 Strategy 1: Trying Etherscan V2 Price API...")
+        
+        v2_price = self._try_v2_price_api(masked_key)
+        if v2_price is not None:
+            logger.info(f"✅ V2 API Success: ${v2_price:,.2f}")
+            return v2_price
+        
+        logger.warning(f"⚠️ V2 API failed, trying V1 fallback...")
+        
+        # ================================================================
+        # STRATEGY 2: Fallback to V1 API (Legacy, deprecated 2025-08-15)
+        # ================================================================
+        
+        logger.info(f"📡 Strategy 2: Trying Etherscan V1 Price API (fallback)...")
+        
+        v1_price = self._try_v1_price_api(masked_key)
+        if v1_price is not None:
+            logger.info(f"✅ V1 API Success: ${v1_price:,.2f}")
+            logger.warning(f"⚠️ Using deprecated V1 API - migrate to V2 before Aug 2025!")
+            return v1_price
+        
+        # ================================================================
+        # BOTH FAILED - Log detailed error
+        # ================================================================
+        
+        logger.error(f"❌ ALL STRATEGIES FAILED - Cannot fetch ETH price")
+        logger.error(f"   📊 API Plan: FREE (100k calls/day, 5 calls/sec)")
+        logger.error(f"   🔑 API Key: {masked_key}")
+        logger.error(f"   💡 Possible causes:")
+        logger.error(f"      1. FREE plan doesn't include Price API")
+        logger.error(f"      2. Rate limit exceeded (5 calls/sec)")
+        logger.error(f"      3. API key invalid or expired")
+        logger.error(f"      4. Price endpoint not available in V2 yet")
+        logger.error(f"   🔗 Check: https://docs.etherscan.io/api-endpoints/stats")
+        
+        return None
+    
+    def _try_v2_price_api(self, masked_key: str) -> Optional[float]:
+        """
+        Try V2 Price API.
+        
+        V2 Endpoint: https://api.etherscan.io/v2/api
+        Module: stats
+        Action: ethprice
+        ChainID: 1 (required for V2)
+        """
         try:
-            # ✅ CRITICAL FIX: Price endpoint is V1, not V2!
-            price_url = "https://api.etherscan.io/api"  # V1 API
+            v2_url = "https://api.etherscan.io/v2/api"
             
             params = {
                 'module': 'stats',
                 'action': 'ethprice',
+                'chainid': '1',  # Required for V2
                 'apikey': self.api_key
             }
             
@@ -332,34 +388,112 @@ class EtherscanAPI:
             self._rate_limit()
             
             # Make request
-            response = self.session.get(price_url, params=params, timeout=10)
+            response = self.session.get(v2_url, params=params, timeout=10)
             response.raise_for_status()
             data = response.json()
+            
+            # Log response
+            logger.info(f"   📋 V2 Response: status={data.get('status')}, msg={data.get('message')}")
             
             # Parse response
             if data.get('status') == '1' and data.get('result'):
                 eth_price = float(data['result']['ethusd'])
                 
-                # ✅ Sanity check: ETH price should be $100-$10,000
+                # Sanity check: ETH price should be $100-$10,000
                 if 100 <= eth_price <= 10000:
-                    logger.info(f"💰 Current ETH price from Etherscan: ${eth_price:,.2f}")
                     return eth_price
                 else:
-                    logger.warning(f"⚠️ Suspicious ETH price: ${eth_price:,.2f}")
+                    logger.warning(f"   ⚠️ Suspicious price: ${eth_price:,.2f}")
                     return None
             else:
-                error_msg = data.get('message', 'Unknown error')
-                logger.warning(f"⚠️ Etherscan price API failed: {error_msg}")
+                # Log detailed error
+                error_msg = data.get('message', 'Unknown')
+                result_data = data.get('result', 'No result')
+                
+                logger.warning(f"   ❌ V2 Failed: {error_msg}")
+                if error_msg == 'NOTOK':
+                    logger.warning(f"      • Result: {result_data}")
+                    logger.warning(f"      • This usually means V2 doesn't support ethprice yet")
+                
                 return None
                 
         except requests.exceptions.Timeout:
-            logger.error(f"❌ Etherscan price API timeout")
+            logger.warning(f"   ⏱️  V2 API timeout")
             return None
         except requests.exceptions.RequestException as e:
-            logger.error(f"❌ Etherscan price request failed: {e}")
+            logger.warning(f"   ❌ V2 request failed: {e}")
+            return None
+        except (ValueError, KeyError) as e:
+            logger.warning(f"   ❌ V2 parse error: {e}")
             return None
         except Exception as e:
-            logger.error(f"❌ Failed to fetch ETH price: {e}")
+            logger.warning(f"   ❌ V2 unexpected error: {e}")
+            return None
+    
+    def _try_v1_price_api(self, masked_key: str) -> Optional[float]:
+        """
+        Try V1 Price API (fallback).
+        
+        V1 Endpoint: https://api.etherscan.io/api (NO v2!)
+        Module: stats
+        Action: ethprice
+        No ChainID parameter
+        """
+        try:
+            v1_url = "https://api.etherscan.io/api"  # V1 - no /v2/
+            
+            params = {
+                'module': 'stats',
+                'action': 'ethprice',
+                'apikey': self.api_key
+                # NO chainid for V1!
+            }
+            
+            # Rate limit
+            self._rate_limit()
+            
+            # Make request
+            response = self.session.get(v1_url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Log response
+            logger.info(f"   📋 V1 Response: status={data.get('status')}, msg={data.get('message')}")
+            
+            # Parse response
+            if data.get('status') == '1' and data.get('result'):
+                eth_price = float(data['result']['ethusd'])
+                
+                # Sanity check
+                if 100 <= eth_price <= 10000:
+                    return eth_price
+                else:
+                    logger.warning(f"   ⚠️ Suspicious price: ${eth_price:,.2f}")
+                    return None
+            else:
+                # Log detailed error
+                error_msg = data.get('message', 'Unknown')
+                result_data = data.get('result', 'No result')
+                
+                logger.warning(f"   ❌ V1 Failed: {error_msg}")
+                if error_msg == 'NOTOK':
+                    logger.warning(f"      • Result: {result_data}")
+                    logger.warning(f"      • FREE plan may not have access to Price API")
+                    logger.warning(f"      • Consider upgrading to PRO plan")
+                
+                return None
+                
+        except requests.exceptions.Timeout:
+            logger.warning(f"   ⏱️  V1 API timeout")
+            return None
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"   ❌ V1 request failed: {e}")
+            return None
+        except (ValueError, KeyError) as e:
+            logger.warning(f"   ❌ V1 parse error: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"   ❌ V1 unexpected error: {e}")
             return None
     
     def get_historical_eth_price(self, timestamp: int) -> Optional[float]:
