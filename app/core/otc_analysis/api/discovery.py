@@ -492,3 +492,34 @@ async def debug_transactions(
             "error": str(e),
             "traceback": traceback.format_exc()
         }
+@router.get("/debug/tx-check")
+async def check_transactions_debug(
+    wallet: str = Query(..., description="Wallet address"),
+    db: Session = Depends(get_db)
+):
+    """Quick check: Are transactions in DB?"""
+    from app.core.otc_analysis.models.transaction import Transaction
+    from sqlalchemy import or_, func
+    
+    count = db.query(Transaction).filter(
+        or_(
+            Transaction.from_address == wallet.lower(),
+            Transaction.to_address == wallet.lower()
+        )
+    ).count()
+    
+    with_usd = db.query(Transaction).filter(
+        or_(
+            Transaction.from_address == wallet.lower(),
+            Transaction.to_address == wallet.lower()
+        ),
+        Transaction.usd_value.isnot(None),
+        Transaction.usd_value > 0
+    ).count()
+    
+    return {
+        "wallet": wallet,
+        "total_transactions": count,
+        "with_usd_value": with_usd,
+        "status": "has_data" if count > 0 else "empty"
+    }
