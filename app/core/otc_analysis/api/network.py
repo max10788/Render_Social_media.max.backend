@@ -96,11 +96,12 @@ async def get_network_graph(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     max_nodes: int = Query(500, le=1000),
-    generate_edges: bool = Query(True, description="Generate edges between wallets"),
-    use_discovery: bool = Query(True, description="Use discovery data for edge generation"),
-    use_transactions: bool = Query(True, description="Use blockchain transactions"),  # ✅ Changed to True
-    min_flow_size: float = Query(100000, description="Minimum flow value for edges (USD)"),
-    include_high_volume_wallets: bool = Query(True, description="Include high-volume wallets"),
+    generate_edges: bool = Query(True),
+    use_discovery: bool = Query(True),
+    use_transactions: bool = Query(True),
+    use_saved_links: bool = Query(True, description="Use saved wallet_links from DB"),  # ✨ NEW
+    min_flow_size: float = Query(100000),
+    include_high_volume_wallets: bool = Query(True),
     db: Session = Depends(get_db),
     link_builder = Depends(get_link_builder)
 ):
@@ -224,13 +225,71 @@ async def get_network_graph(
         
         cytoscape_edges = []
         sankey_links = []
-        edge_metadata = {}
+        edge_metadata = {
+            "saved_links_count": 0,
+            "dynamic_links_count": 0,
+            "total_sources": []
+        }
         
         if generate_edges and (len(otc_wallets) > 1 or len(wallet_nodes) > 0):
             try:
                 logger.info(f"   🔗 Generating edges...")
                 
-                # ✅ Generate OTC ↔ OTC edges
+                all_wallet_addresses = [w.address.lower() for w in otc_wallets]
+                if wallet_nodes:
+                    all_wallet_addresses.extend([w['address'].lower() for w in wallet_nodes])
+                
+                # ============================================================
+                # ✨ NEW: Load Saved Links from wallet_links table
+                # ============================================================
+                
+                if use_saved_links:
+                    from app.core.otc_analysis.models.wallet_link import WalletLink
+                    
+                    logger.info(f"   💾 Loading saved wallet links...")
+                    
+                    saved_links = db.query(WalletLink).filter(
+                        WalletLink.is_active == True,
+                        WalletLink.total_volume_usd >= min_flow_size,
+                        or_(
+                            WalletLink.from_address.in_(all_wallet_addresses),
+                            WalletLink.to_address.in_(all_wallet_addresses)
+                        )
+                    ).all()
+                    
+                    logger.info(f"   ✅ Found {len(saved_links)} saved links")
+                    
+                    for link in saved_links:
+                        # Add to cytoscape edges
+                        cytoscape_edges.append({
+                            "data": {
+                                "source": link.from_address,
+                                "target": link.to_address,
+                                "transfer_amount_usd": float(link.total_volume_usd or 0),
+                                "transaction_count": link.transaction_count or 0,
+                                "is_suspected_otc": link.is_suspected_otc,
+                                "edge_source": "saved_link",  # ✨ NEW
+                                "link_strength": float(link.link_strength or 0),
+                                "data_quality": link.data_quality,
+                                "detected_patterns": link.detected_patterns or []
+                            }
+                        })
+                        
+                        # Add to sankey (if both nodes are OTC desks)
+                        if link.from_wallet_type == 'otc_desk' and link.to_wallet_type == 'otc_desk':
+                            sankey_links.append({
+                                "source": link.from_wallet_label or link.from_address[:8],
+                                "target": link.to_wallet_label or link.to_address[:8],
+                                "value": float(link.total_volume_usd or 0)
+                            })
+                    
+                    edge_metadata["saved_links_count"] = len(saved_links)
+                    edge_metadata["total_sources"].append("saved_links")
+                
+                # ============================================================
+                # EXISTING: Dynamic OTC ↔ OTC Edges
+                # ============================================================
+                
                 if len(otc_wallets) > 1:
                     result = link_builder.build_links(
                         db=db,
@@ -242,13 +301,31 @@ async def get_network_graph(
                         use_transactions=use_transactions
                     )
                     
-                    cytoscape_edges = result.get("cytoscape_edges", [])
-                    sankey_links = result.get("sankey_links", [])
-                    edge_metadata = result.get("metadata", {})
+                    dynamic_edges = result.get("cytoscape_edges", [])
+                    
+                    # Mark as dynamic and merge
+                    for edge in dynamic_edges:
+                        edge["data"]["edge_source"] = "dynamic"
+                        
+                        # Check if we already have this link from saved_links
+                        existing = any(
+                            e["data"]["source"] == edge["data"]["source"] and
+                            e["data"]["target"] == edge["data"]["target"]
+                            for e in cytoscape_edges
+                        )
+                        
+                        if not existing:
+                            cytoscape_edges.append(edge)
+                    
+                    edge_metadata["dynamic_links_count"] = len(dynamic_edges)
+                    edge_metadata["total_sources"].append("dynamic")
+                    
+                    # Merge sankey links
+                    sankey_links.extend(result.get("sankey_links", []))
                 
-                # ====================================================================
-                # ✅ NEW: Generate Wallet ↔ OTC Edges from Transactions
-                # ====================================================================
+                # ============================================================
+                # EXISTING: Wallet ↔ OTC Edges from Transactions
+                # ============================================================
                 
                 if len(wallet_nodes) > 0 and use_transactions:
                     wallet_addresses = [w['address'].lower() for w in wallet_nodes]
@@ -256,7 +333,6 @@ async def get_network_graph(
                     
                     logger.info(f"   🔗 Generating Wallet ↔ OTC edges from transactions...")
                     
-                    # Query transactions between wallets and OTC desks
                     wallet_edges_query = db.query(
                         Transaction.from_address,
                         Transaction.to_address,
@@ -266,12 +342,10 @@ async def get_network_graph(
                         Transaction.timestamp >= start,
                         Transaction.timestamp <= end,
                         or_(
-                            # Wallet → OTC
                             and_(
                                 Transaction.from_address.in_(wallet_addresses),
                                 Transaction.to_address.in_(otc_addresses)
                             ),
-                            # OTC → Wallet
                             and_(
                                 Transaction.from_address.in_(otc_addresses),
                                 Transaction.to_address.in_(wallet_addresses)
@@ -284,28 +358,41 @@ async def get_network_graph(
                         func.coalesce(func.sum(Transaction.usd_value), 0) >= min_flow_size
                     ).all()
                     
-                    # Add wallet edges
+                    tx_edge_count = 0
                     for edge in wallet_edges_query:
-                        cytoscape_edges.append({
-                            "data": {
-                                "source": edge.from_address,
-                                "target": edge.to_address,
-                                "transfer_amount_usd": float(edge.total_volume or 0),
-                                "transaction_count": edge.tx_count,
-                                "is_suspected_otc": False,
-                                "edge_source": "transactions"  # ✅ Mark as transaction-based
-                            }
-                        })
+                        # Check if already exists from saved_links
+                        existing = any(
+                            e["data"]["source"] == edge.from_address and
+                            e["data"]["target"] == edge.to_address
+                            for e in cytoscape_edges
+                        )
+                        
+                        if not existing:
+                            cytoscape_edges.append({
+                                "data": {
+                                    "source": edge.from_address,
+                                    "target": edge.to_address,
+                                    "transfer_amount_usd": float(edge.total_volume or 0),
+                                    "transaction_count": edge.tx_count,
+                                    "is_suspected_otc": False,
+                                    "edge_source": "transactions"
+                                }
+                            })
+                            tx_edge_count += 1
                     
-                    logger.info(f"   ✅ Added {len(wallet_edges_query)} Wallet ↔ OTC edges")
+                    logger.info(f"   ✅ Added {tx_edge_count} unique Wallet ↔ OTC edges")
+                    
+                    if tx_edge_count > 0:
+                        edge_metadata["total_sources"].append("transactions")
                 
             except Exception as edge_error:
                 logger.error(f"   ⚠️ Error generating edges: {edge_error}", exc_info=True)
         
         logger.info(
-            f"✅ Network: {len(cytoscape_nodes)} nodes "
-            f"({len(otc_wallets)} OTC, {len(wallet_nodes)} wallets), "
-            f"{len(cytoscape_edges)} edges"
+            f"✅ Network: {len(cytoscape_nodes)} nodes, "
+            f"{len(cytoscape_edges)} edges "
+            f"(saved: {edge_metadata['saved_links_count']}, "
+            f"dynamic: {edge_metadata['dynamic_links_count']})"
         )
         
         return {
@@ -318,14 +405,15 @@ async def get_network_graph(
                 "otc_desk_count": len(otc_wallets),
                 "wallet_count": len(wallet_nodes),
                 "edge_count": len(cytoscape_edges),
+                "saved_links_count": edge_metadata["saved_links_count"],  # ✨ NEW
+                "dynamic_links_count": edge_metadata["dynamic_links_count"],  # ✨ NEW
+                "edge_sources": edge_metadata["total_sources"],  # ✨ NEW
                 "link_count": len(sankey_links),
                 "period": {
                     "start": start.isoformat(),
                     "end": end.isoformat()
                 },
-                "edges_generated": generate_edges,
-                "edge_source": edge_metadata.get("source", "mixed"),
-                "edge_cached": edge_metadata.get("cached", False),
+                "use_saved_links": use_saved_links,  # ✨ NEW
                 "min_flow_size": min_flow_size
             }
         }
@@ -333,7 +421,6 @@ async def get_network_graph(
     except Exception as e:
         logger.error(f"❌ Error in /network: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 # ✅ NEW: Helper function to categorize wallet tags
 def _categorize_wallet_tags(tags: List[str]) -> Dict[str, List[str]]:
