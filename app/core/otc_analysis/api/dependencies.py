@@ -64,6 +64,7 @@ from app.core.otc_analysis.discovery.high_volume_analyzer import HighVolumeAnaly
 from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
 from app.core.otc_analysis.models.watchlist import WatchlistItem as OTCWatchlist
 from app.core.otc_analysis.models.alert import Alert as OTCAlert
+from app.core.otc_analysis.models.wallet_link import WalletLink
 
 # Utils
 from app.core.otc_analysis.utils.cache import CacheManager
