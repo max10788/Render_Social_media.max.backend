@@ -1301,12 +1301,333 @@ async def discover_high_volume_from_transactions(
         logger.error(f"❌ High volume discovery failed: {e}", exc_info=True)
         db.rollback()
         return []
-"""
-NEUE FUNKTION für dependencies.py einfügen (am Ende, vor __all__)
 
-Synced Blockchain-Transaktionen in die transactions Tabelle
-"""
-
+async def save_wallet_links_to_db(
+    db: Session,
+    start_date: datetime,
+    end_date: datetime,
+    min_flow_size: float = 100000,
+    max_links: int = 1000,
+    include_high_volume: bool = True,
+    use_transactions: bool = True,
+    force_refresh: bool = False
+) -> Dict[str, Any]:
+    """
+    Speichert Wallet-Links in die Datenbank.
+    
+    ✨ FEATURES:
+    - Aggregiert Transaktionen zwischen Wallets
+    - Berechnet Link-Strength & OTC-Confidence
+    - Erkennt Patterns
+    - Vermeidet Duplikate
+    
+    Args:
+        db: Database session
+        start_date: Start of analysis window
+        end_date: End of analysis window
+        min_flow_size: Minimum USD volume for a link
+        max_links: Maximum links to save
+        include_high_volume: Include high-volume wallets
+        use_transactions: Use transaction data
+        force_refresh: Overwrite existing links
+        
+    Returns:
+        Stats dictionary
+    """
+    from sqlalchemy import func, or_, and_
+    from app.core.otc_analysis.models.transaction import Transaction
+    from app.core.otc_analysis.models.wallet import Wallet as OTCWallet
+    from datetime import datetime
+    
+    logger.info("="*80)
+    logger.info("💾 SAVING WALLET LINKS TO DATABASE")
+    logger.info("="*80)
+    logger.info(f"📅 Analysis window: {start_date.date()} → {end_date.date()}")
+    logger.info(f"💰 Min flow size: ${min_flow_size:,.0f}")
+    logger.info(f"🔄 Force refresh: {force_refresh}")
+    
+    stats = {
+        "wallets_analyzed": 0,
+        "links_found": 0,
+        "links_saved": 0,
+        "links_updated": 0,
+        "links_skipped": 0,
+        "errors": 0,
+        "start_time": datetime.now()
+    }
+    
+    try:
+        # ================================================================
+        # STEP 1: GET WALLETS TO ANALYZE
+        # ================================================================
+        
+        logger.info("🔍 Step 1: Loading wallets...")
+        
+        # Get OTC desks
+        otc_wallets = db.query(OTCWallet).filter(
+            OTCWallet.entity_type != 'high_volume_wallet',
+            OTCWallet.is_active == True
+        ).all()
+        
+        logger.info(f"   ✅ Found {len(otc_wallets)} OTC desks")
+        
+        # Get high-volume wallets
+        high_volume_wallets = []
+        if include_high_volume:
+            high_volume_wallets = db.query(OTCWallet).filter(
+                OTCWallet.entity_type == 'high_volume_wallet',
+                OTCWallet.is_active == True
+            ).all()
+            logger.info(f"   ✅ Found {len(high_volume_wallets)} high-volume wallets")
+        
+        all_wallets = otc_wallets + high_volume_wallets
+        stats["wallets_analyzed"] = len(all_wallets)
+        
+        if len(all_wallets) == 0:
+            logger.warning("⚠️ No wallets found")
+            return stats
+        
+        # Create lookup for wallet metadata
+        wallet_lookup = {
+            w.address.lower(): {
+                'type': w.entity_type,
+                'label': w.label or f"{w.address[:8]}...",
+                'cluster_id': None  # TODO: Add clustering
+            }
+            for w in all_wallets
+        }
+        
+        wallet_addresses = list(wallet_lookup.keys())
+        logger.info(f"📋 Prepared {len(wallet_addresses)} addresses")
+        
+        # ================================================================
+        # STEP 2: AGGREGATE TRANSACTIONS BETWEEN WALLETS
+        # ================================================================
+        
+        logger.info("🔍 Step 2: Aggregating transactions...")
+        
+        if not use_transactions:
+            logger.info("   ⏭️ Skipping transaction aggregation (use_transactions=False)")
+            return stats
+        
+        # Query: Aggregate transactions between wallets
+        link_data = db.query(
+            Transaction.from_address,
+            Transaction.to_address,
+            func.count(Transaction.tx_hash).label('tx_count'),
+            func.sum(Transaction.usd_value).label('total_volume'),
+            func.avg(Transaction.usd_value).label('avg_volume'),
+            func.min(Transaction.usd_value).label('min_volume'),
+            func.max(Transaction.usd_value).label('max_volume'),
+            func.min(Transaction.timestamp).label('first_tx'),
+            func.max(Transaction.timestamp).label('last_tx'),
+            func.array_agg(Transaction.tx_hash).label('tx_hashes')
+        ).filter(
+            Transaction.timestamp >= start_date,
+            Transaction.timestamp <= end_date,
+            or_(
+                # Both addresses in our wallet list
+                and_(
+                    Transaction.from_address.in_(wallet_addresses),
+                    Transaction.to_address.in_(wallet_addresses)
+                )
+            )
+        ).group_by(
+            Transaction.from_address,
+            Transaction.to_address
+        ).having(
+            func.coalesce(func.sum(Transaction.usd_value), 0) >= min_flow_size
+        ).limit(max_links).all()
+        
+        logger.info(f"   ✅ Found {len(link_data)} potential links")
+        stats["links_found"] = len(link_data)
+        
+        if len(link_data) == 0:
+            logger.info("   ℹ️ No links above threshold")
+            return stats
+        
+        # ================================================================
+        # STEP 3: SAVE/UPDATE LINKS
+        # ================================================================
+        
+        logger.info("💾 Step 3: Saving links to database...")
+        
+        for idx, link in enumerate(link_data):
+            try:
+                from_addr = link.from_address.lower()
+                to_addr = link.to_address.lower()
+                
+                # Get wallet metadata
+                from_meta = wallet_lookup.get(from_addr, {})
+                to_meta = wallet_lookup.get(to_addr, {})
+                
+                # Calculate scores
+                total_volume = float(link.total_volume or 0)
+                tx_count = int(link.tx_count or 0)
+                avg_volume = float(link.avg_volume or 0)
+                
+                # Link strength (0-100)
+                volume_score = min(total_volume / 10_000_000, 1.0) * 40  # Max 40 points
+                frequency_score = min(tx_count / 100, 1.0) * 30  # Max 30 points
+                
+                # Recency score
+                days_since_last = (datetime.now() - link.last_tx).days if link.last_tx else 999
+                recency_score = max(0, (30 - days_since_last) / 30) * 30  # Max 30 points
+                
+                link_strength = volume_score + frequency_score + recency_score
+                
+                # OTC confidence
+                otc_confidence = 0.0
+                if avg_volume > 100000:
+                    otc_confidence += 40
+                if tx_count > 10:
+                    otc_confidence += 30
+                if from_meta.get('type') == 'otc_desk' or to_meta.get('type') == 'otc_desk':
+                    otc_confidence += 30
+                
+                is_suspected_otc = otc_confidence >= 60
+                
+                # Detect patterns
+                patterns = []
+                if avg_volume > 1_000_000:
+                    patterns.append('large_transfers')
+                if tx_count > 50:
+                    patterns.append('high_frequency')
+                if link.max_volume and link.max_volume > avg_volume * 5:
+                    patterns.append('size_outliers')
+                
+                # Sample hashes (max 10)
+                sample_hashes = (link.tx_hashes or [])[:10]
+                
+                # Flow type
+                flow_type = 'outbound'  # from → to
+                is_bidirectional = False  # TODO: Check reverse direction
+                
+                # ============================================================
+                # CHECK IF LINK EXISTS
+                # ============================================================
+                
+                existing_link = db.query(WalletLink).filter(
+                    WalletLink.from_address == from_addr,
+                    WalletLink.to_address == to_addr,
+                    WalletLink.analysis_start == start_date
+                ).first()
+                
+                if existing_link and not force_refresh:
+                    stats["links_skipped"] += 1
+                    continue
+                
+                if existing_link:
+                    # UPDATE
+                    existing_link.transaction_count = tx_count
+                    existing_link.total_volume_usd = total_volume
+                    existing_link.avg_transaction_usd = avg_volume
+                    existing_link.min_transaction_usd = float(link.min_volume) if link.min_volume else None
+                    existing_link.max_transaction_usd = float(link.max_volume) if link.max_volume else None
+                    existing_link.first_transaction = link.first_tx
+                    existing_link.last_transaction = link.last_tx
+                    existing_link.link_strength = link_strength
+                    existing_link.is_suspected_otc = is_suspected_otc
+                    existing_link.otc_confidence = otc_confidence
+                    existing_link.volume_score = volume_score
+                    existing_link.frequency_score = frequency_score
+                    existing_link.recency_score = recency_score
+                    existing_link.detected_patterns = patterns
+                    existing_link.sample_tx_hashes = sample_hashes
+                    existing_link.updated_at = datetime.now()
+                    existing_link.last_calculated = datetime.now()
+                    
+                    stats["links_updated"] += 1
+                    
+                    if stats["links_updated"] <= 5:
+                        logger.info(
+                            f"      🔄 Link {idx+1}: {from_addr[:10]}...→{to_addr[:10]}... "
+                            f"(${total_volume:,.0f}, {tx_count} TXs) - UPDATED"
+                        )
+                    
+                else:
+                    # INSERT
+                    new_link = WalletLink(
+                        from_address=from_addr,
+                        to_address=to_addr,
+                        from_wallet_type=from_meta.get('type'),
+                        to_wallet_type=to_meta.get('type'),
+                        from_wallet_label=from_meta.get('label'),
+                        to_wallet_label=to_meta.get('label'),
+                        transaction_count=tx_count,
+                        total_volume_usd=total_volume,
+                        avg_transaction_usd=avg_volume,
+                        min_transaction_usd=float(link.min_volume) if link.min_volume else None,
+                        max_transaction_usd=float(link.max_volume) if link.max_volume else None,
+                        first_transaction=link.first_tx,
+                        last_transaction=link.last_tx,
+                        analysis_start=start_date,
+                        analysis_end=end_date,
+                        link_strength=link_strength,
+                        is_suspected_otc=is_suspected_otc,
+                        otc_confidence=otc_confidence,
+                        volume_score=volume_score,
+                        frequency_score=frequency_score,
+                        recency_score=recency_score,
+                        detected_patterns=patterns,
+                        flow_type=flow_type,
+                        is_bidirectional=is_bidirectional,
+                        data_source='transactions',
+                        data_quality='high',
+                        sample_tx_hashes=sample_hashes,
+                        is_active=True,
+                        created_at=datetime.now(),
+                        last_calculated=datetime.now()
+                    )
+                    
+                    db.add(new_link)
+                    stats["links_saved"] += 1
+                    
+                    if stats["links_saved"] <= 5:
+                        logger.info(
+                            f"      ➕ Link {idx+1}: {from_addr[:10]}...→{to_addr[:10]}... "
+                            f"(${total_volume:,.0f}, {tx_count} TXs, strength:{link_strength:.1f})"
+                        )
+                
+                # Commit in batches
+                if (stats["links_saved"] + stats["links_updated"]) % 50 == 0:
+                    db.commit()
+                    logger.info(
+                        f"      ✅ Committed {stats['links_saved']} new + "
+                        f"{stats['links_updated']} updated links..."
+                    )
+                
+            except Exception as link_error:
+                logger.error(f"      ⚠️ Error processing link {idx+1}: {link_error}")
+                stats["errors"] += 1
+                continue
+        
+        # Final commit
+        db.commit()
+        
+        stats["end_time"] = datetime.now()
+        stats["duration_seconds"] = (stats["end_time"] - stats["start_time"]).total_seconds()
+        
+        logger.info("="*80)
+        logger.info("✅ WALLET LINKS SAVED")
+        logger.info("="*80)
+        logger.info(f"Wallets analyzed: {stats['wallets_analyzed']}")
+        logger.info(f"Links found: {stats['links_found']}")
+        logger.info(f"Links saved: {stats['links_saved']}")
+        logger.info(f"Links updated: {stats['links_updated']}")
+        logger.info(f"Links skipped: {stats['links_skipped']}")
+        logger.info(f"Errors: {stats['errors']}")
+        logger.info(f"Duration: {stats['duration_seconds']:.1f}s")
+        logger.info("="*80)
+        
+        return stats
+        
+    except Exception as e:
+        logger.error(f"❌ Error saving wallet links: {e}", exc_info=True)
+        db.rollback()
+        stats["errors"] += 1
+        return stats
+        
 async def sync_wallet_transactions_to_db(
     db: Session,
     wallet_address: str,
