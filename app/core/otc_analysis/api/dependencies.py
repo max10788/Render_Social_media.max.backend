@@ -91,6 +91,7 @@ price_oracle = PriceOracle(
     cache_manager,
     etherscan,
     moralis_api_key=os.getenv('MORALIS_API_KEY')  # ✨ NEW
+)
     
 # API infrastructure
 api_health_monitor = ApiHealthMonitor(cooldown_minutes=5, error_threshold=0.5)
