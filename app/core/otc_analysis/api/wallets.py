@@ -391,15 +391,16 @@ async def get_wallet_profile(
 async def get_wallet_details(
     address: str,
     db: Session = Depends(get_db),
-    balance_fetcher = Depends(get_balance_fetcher)
+    balance_fetcher = Depends(get_balance_fetcher),
+    labeling = Depends(get_labeling_service)
 ):
     """
     Get quick wallet details with live balance.
     
-    ✨ SIMPLIFIED VERSION:
-    - Returns wallet from DB + live balance
-    - Faster than full profile
-    - Good for sidebar quick view
+    ✨ ROBUST VERSION:
+    - Tries DB first
+    - Falls back to live data if not in DB
+    - Always includes live balance
     
     GET /api/otc/wallet/0x.../details
     """
@@ -410,35 +411,84 @@ async def get_wallet_details(
         
         address = validate_ethereum_address(address)
         
-        # Get wallet from DB
+        # ====================================================================
+        # Try to get wallet from DB
+        # ====================================================================
+        
         wallet = db.query(OTCWallet).filter(
             OTCWallet.address == address
         ).first()
         
-        if not wallet:
-            raise HTTPException(status_code=404, detail="Wallet not found in database")
+        # ====================================================================
+        # CASE 1: Wallet found in DB
+        # ====================================================================
         
-        # Build response
-        details = {
-            'address': wallet.address,
-            'label': wallet.label,
-            'entity_type': wallet.entity_type,
-            'entity_name': wallet.entity_name,
-            'confidence_score': wallet.confidence_score,
-            'total_volume': wallet.total_volume,
-            'transaction_count': wallet.transaction_count,
-            'first_seen': wallet.first_seen,
-            'last_active': wallet.last_active,
-            'is_active': wallet.is_active,
-            'tags': wallet.tags or [],
+        if wallet:
+            logger.info(f"   ✅ Found wallet in DB")
             
-            # Metadata
-            'is_verified': wallet.confidence_score >= 80.0,
-            'data_source': 'database',
-            'last_updated': wallet.updated_at
-        }
+            details = {
+                'address': wallet.address,
+                'label': wallet.label,
+                'entity_type': wallet.entity_type,
+                'entity_name': wallet.entity_name,
+                'confidence_score': wallet.confidence_score,
+                'total_volume': wallet.total_volume,
+                'transaction_count': wallet.transaction_count,
+                'first_seen': wallet.first_seen,
+                'last_active': wallet.last_active,
+                'is_active': wallet.is_active,
+                'tags': wallet.tags or [],
+                
+                # Metadata
+                'is_verified': wallet.confidence_score >= 80.0,
+                'data_source': 'database',
+                'last_updated': wallet.updated_at
+            }
+            
+            # Format last activity
+            if wallet.last_active:
+                details['last_activity'] = ChartDataGenerator.format_last_activity(
+                    wallet.last_active
+                )
+            else:
+                details['last_activity'] = 'Unknown'
         
-        # Add live balance
+        # ====================================================================
+        # CASE 2: Wallet NOT in DB - Use live data
+        # ====================================================================
+        
+        else:
+            logger.info(f"   ⚠️ Wallet not in DB, using live data...")
+            
+            # Get labels
+            labels = labeling.get_wallet_labels(address)
+            
+            details = {
+                'address': address,
+                'label': labels.get('entity_name') if labels else f"{address[:8]}...",
+                'entity_type': labels.get('entity_type', 'unknown') if labels else 'unknown',
+                'entity_name': labels.get('entity_name') if labels else None,
+                'confidence_score': 50.0 if labels and labels.get('entity_type') != 'unknown' else 0.0,
+                'total_volume': 0,
+                'transaction_count': 0,
+                'first_seen': None,
+                'last_active': None,
+                'is_active': False,
+                'tags': labels.get('labels', []) if labels else [],
+                
+                # Metadata
+                'is_verified': False,
+                'data_source': 'live',
+                'last_updated': datetime.now(timezone.utc),
+                'last_activity': 'Unknown'
+            }
+            
+            logger.info(f"   ℹ️ Using live data (wallet not tracked)")
+        
+        # ====================================================================
+        # Add live balance (for both cases)
+        # ====================================================================
+        
         try:
             logger.info(f"💰 Fetching live balance...")
             balance_data = balance_fetcher.get_wallet_balance(address)
@@ -456,20 +506,14 @@ async def get_wallet_details(
             logger.warning(f"   ⚠️ Balance fetch failed: {balance_error}")
             details['balance_eth'] = None
             details['balance_usd'] = None
-        
-        # Format last activity
-        if wallet.last_active:
-            details['last_activity'] = ChartDataGenerator.format_last_activity(
-                wallet.last_active
-            )
-        else:
-            details['last_activity'] = 'Unknown'
+            details['balance_error'] = str(balance_error)
         
         logger.info(f"✅ Details fetched successfully")
         
         return {
             "success": True,
-            "data": details
+            "data": details,
+            "from_database": wallet is not None
         }
         
     except HTTPException:
