@@ -519,7 +519,7 @@ class TransactionExtractor:
         """
         Add USD values to transactions using price oracle.
         
-        ✅ ENHANCED v2: Pass token_symbol to price_oracle for better lookup
+        ✅ FIXED v2: Multi-method price oracle support + safe variable initialization
         """
         if not transactions:
             return []
@@ -634,22 +634,45 @@ class TransactionExtractor:
                     price_usd = price_cache[cache_key]
                     cached_count += 1
                 else:
-                    # ====================================================================
-                    # ✅ FIX: Pass token_symbol to price_oracle!
-                    # ====================================================================
+                    # ✅ FIX: Initialize price_usd BEFORE try block
+                    price_usd = None
+                    
                     logger.debug(f"🔍 Fetching price: {token_symbol} @ {date_key}")
                     
                     try:
-                        # ✨ NEW: Get current live price (ignore timestamp!)
-                        price_usd = price_oracle.get_live_token_price(
-                            token_address or token_symbol  # Pass address if available, else symbol
-                        )
+                        # ✅ FIX: Multi-method fallback with hasattr
+                        if hasattr(price_oracle, 'get_token_price_at_time'):
+                            price_usd = price_oracle.get_token_price_at_time(
+                                token_address or token_symbol,
+                                timestamp
+                            )
+                        elif hasattr(price_oracle, 'get_token_price'):
+                            price_usd = price_oracle.get_token_price(
+                                token_address or token_symbol
+                            )
+                        elif hasattr(price_oracle, 'get_price'):
+                            price_usd = price_oracle.get_price(
+                                token_address or token_symbol,
+                                timestamp
+                            )
+                        elif hasattr(price_oracle, 'get_eth_price_live'):
+                            if token_symbol == 'ETH' and not token_address:
+                                price_usd = price_oracle.get_eth_price_live()
+                            else:
+                                logger.error(f"❌ No price method for {token_symbol}")
+                                price_usd = None
+                        else:
+                            logger.error(
+                                f"❌ PriceOracle has no recognized method. "
+                                f"Available: {[m for m in dir(price_oracle) if not m.startswith('_')]}"
+                            )
+                            price_usd = None
                         
-                        if price_usd:
+                        if price_usd and price_usd > 0:
                             logger.debug(f"   ✅ Got price: ${price_usd:,.2f}")
                             price_cache[cache_key] = price_usd
                         else:
-                            logger.debug(f"   ❌ Price API returned None")
+                            logger.debug(f"   ❌ Price API returned None or 0")
                             
                             # Stablecoin fallback
                             if token_symbol in STABLECOINS:
@@ -681,6 +704,7 @@ class TransactionExtractor:
                     
                     except Exception as e:
                         logger.debug(f"   ❌ Exception: {str(e)}")
+                        price_usd = None  # ✅ FIX: Ensure defined on exception
                         
                         # Stablecoin fallback on exception
                         if token_symbol in STABLECOINS:
@@ -773,7 +797,6 @@ class TransactionExtractor:
         avg_usd = total_usd / enriched_count if enriched_count > 0 else 0
         logger.info(f"💵 Enriched Volume: ${total_usd:,.2f} total, ${avg_usd:,.2f} average")
         
-        # ✅ NEW: Show failure breakdown if significant
         if failed_count > 10:
             logger.warning(f"\n⚠️ ENRICHMENT FAILURES BREAKDOWN:")
             for reason, failures in failure_reasons.items():
