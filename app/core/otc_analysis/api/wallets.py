@@ -197,18 +197,44 @@ async def get_wallet_profile(
         if include_balance:
             logger.info(f"💰 Fetching live balance data...")
             try:
-                balance_data = balance_fetcher.get_wallet_balance(address)
+                # ✅ FIX: Try different possible method names
+                balance_data = None
                 
-                profile['balance_eth'] = balance_data.get('balance_eth', 0)
-                profile['balance_usd'] = balance_data.get('balance_usd', 0)
-                profile['balance_wei'] = balance_data.get('balance_wei', 0)
-                profile['balance_last_updated'] = balance_data.get('last_updated')
-                profile['balance_source'] = balance_data.get('source', 'unknown')
+                # Try method 1: get_wallet_balance
+                if hasattr(balance_fetcher, 'get_wallet_balance'):
+                    balance_data = balance_fetcher.get_wallet_balance(address)
                 
-                logger.info(
-                    f"   ✅ Balance: {balance_data.get('balance_eth', 0):.4f} ETH "
-                    f"(${balance_data.get('balance_usd', 0):,.2f})"
-                )
+                # Try method 2: get_balance
+                elif hasattr(balance_fetcher, 'get_balance'):
+                    balance_data = balance_fetcher.get_balance(address)
+                
+                # Try method 3: fetch_balance
+                elif hasattr(balance_fetcher, 'fetch_balance'):
+                    balance_data = balance_fetcher.fetch_balance(address)
+                
+                # Try method 4: get_eth_balance
+                elif hasattr(balance_fetcher, 'get_eth_balance'):
+                    balance_data = balance_fetcher.get_eth_balance(address)
+                
+                else:
+                    raise AttributeError(
+                        f"BalanceFetcher has no recognized method. "
+                        f"Available methods: {[m for m in dir(balance_fetcher) if not m.startswith('_')]}"
+                    )
+                
+                if balance_data:
+                    profile['balance_eth'] = balance_data.get('balance_eth', 0)
+                    profile['balance_usd'] = balance_data.get('balance_usd', 0)
+                    profile['balance_wei'] = balance_data.get('balance_wei', 0)
+                    profile['balance_last_updated'] = balance_data.get('last_updated')
+                    profile['balance_source'] = balance_data.get('source', 'unknown')
+                    
+                    logger.info(
+                        f"   ✅ Balance: {balance_data.get('balance_eth', 0):.4f} ETH "
+                        f"(${balance_data.get('balance_usd', 0):,.2f})"
+                    )
+                else:
+                    raise ValueError("Balance fetcher returned None")
                 
             except Exception as balance_error:
                 logger.warning(f"   ⚠️ Balance fetch failed: {balance_error}")
@@ -365,7 +391,14 @@ async def get_wallet_profile(
         logger.info(f"   • Lifetime Volume: ${profile.get('lifetime_volume', 0):,.2f}")
         logger.info(f"   • 30-Day Volume: ${profile.get('volume_30d', 0):,.2f}")
         logger.info(f"   • 7-Day Volume: ${profile.get('volume_7d', 0):,.2f}")
-        logger.info(f"   • Balance: {profile.get('balance_eth', 0):.4f} ETH")
+        
+        # ✅ FIX: Safe balance logging (handle None)
+        balance_eth = profile.get('balance_eth')
+        if balance_eth is not None:
+            logger.info(f"   • Balance: {balance_eth:.4f} ETH")
+        else:
+            logger.info(f"   • Balance: N/A (fetch failed)")
+        
         logger.info(f"   • OTC Probability: {otc_probability:.2%}")
         logger.info(f"   • Verified: {profile.get('is_verified')}")
         logger.info(f"   • Data Source: {profile.get('data_source')}")
@@ -491,16 +524,35 @@ async def get_wallet_details(
         
         try:
             logger.info(f"💰 Fetching live balance...")
-            balance_data = balance_fetcher.get_wallet_balance(address)
             
-            details['balance_eth'] = balance_data.get('balance_eth', 0)
-            details['balance_usd'] = balance_data.get('balance_usd', 0)
-            details['balance_source'] = balance_data.get('source', 'unknown')
+            # ✅ FIX: Try different possible method names
+            balance_data = None
             
-            logger.info(
-                f"   ✅ Balance: {balance_data.get('balance_eth', 0):.4f} ETH "
-                f"(${balance_data.get('balance_usd', 0):,.2f})"
-            )
+            if hasattr(balance_fetcher, 'get_wallet_balance'):
+                balance_data = balance_fetcher.get_wallet_balance(address)
+            elif hasattr(balance_fetcher, 'get_balance'):
+                balance_data = balance_fetcher.get_balance(address)
+            elif hasattr(balance_fetcher, 'fetch_balance'):
+                balance_data = balance_fetcher.fetch_balance(address)
+            elif hasattr(balance_fetcher, 'get_eth_balance'):
+                balance_data = balance_fetcher.get_eth_balance(address)
+            else:
+                raise AttributeError(
+                    f"BalanceFetcher has no recognized method. "
+                    f"Available: {[m for m in dir(balance_fetcher) if not m.startswith('_')]}"
+                )
+            
+            if balance_data:
+                details['balance_eth'] = balance_data.get('balance_eth', 0)
+                details['balance_usd'] = balance_data.get('balance_usd', 0)
+                details['balance_source'] = balance_data.get('source', 'unknown')
+                
+                logger.info(
+                    f"   ✅ Balance: {balance_data.get('balance_eth', 0):.4f} ETH "
+                    f"(${balance_data.get('balance_usd', 0):,.2f})"
+                )
+            else:
+                raise ValueError("Balance fetcher returned None")
             
         except Exception as balance_error:
             logger.warning(f"   ⚠️ Balance fetch failed: {balance_error}")
