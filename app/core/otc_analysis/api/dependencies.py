@@ -216,6 +216,8 @@ def get_balance_scorer():
     """Dependency: Get balance scorer service."""
     return balance_scorer
 
+
+
 # ============================================================================
 # ✨ IMPROVED: ALWAYS USE QUICK STATS FIRST
 # ============================================================================
