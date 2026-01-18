@@ -49,12 +49,25 @@ class ChartDataGenerator:
         """
         logger.info(f"📊 Generating {days}-day activity chart from {len(transactions)} transactions...")
         
-        # Filter letzte N Tage
-        cutoff = datetime.now() - timedelta(days=days)
-        recent_txs = [
-            tx for tx in transactions
-            if tx.get('timestamp') and tx['timestamp'] >= cutoff
-        ]
+        # ✅ FIX: Use timezone-aware datetime
+        from datetime import timezone as tz
+        now = datetime.now(tz.utc)
+        cutoff = now - timedelta(days=days)
+        
+        # Filter letzte N Tage with timezone handling
+        recent_txs = []
+        for tx in transactions:
+            if not tx.get('timestamp'):
+                continue
+                
+            tx_timestamp = tx['timestamp']
+            
+            # Make naive timestamps aware (assume UTC)
+            if tx_timestamp.tzinfo is None:
+                tx_timestamp = tx_timestamp.replace(tzinfo=tz.utc)
+            
+            if tx_timestamp >= cutoff:
+                recent_txs.append(tx)
         
         logger.info(f"   • Found {len(recent_txs)} transactions in last {days} days")
         
@@ -73,7 +86,7 @@ class ChartDataGenerator:
         # Generate complete date range
         result = []
         for i in range(days):
-            date = datetime.now() - timedelta(days=days-i-1)
+            date = now - timedelta(days=days-i-1)
             date_str = date.strftime('%Y-%m-%d')
             
             result.append({
@@ -113,12 +126,25 @@ class ChartDataGenerator:
         """
         logger.info(f"📊 Generating {days}-day transfer size chart...")
         
-        # Filter letzte N Tage
-        cutoff = datetime.now() - timedelta(days=days)
-        recent_txs = [
-            tx for tx in transactions
-            if tx.get('timestamp') and tx['timestamp'] >= cutoff
-        ]
+        # ✅ FIX: Use timezone-aware datetime
+        from datetime import timezone as tz
+        now = datetime.now(tz.utc)
+        cutoff = now - timedelta(days=days)
+        
+        # Filter letzte N Tage with timezone handling
+        recent_txs = []
+        for tx in transactions:
+            if not tx.get('timestamp'):
+                continue
+                
+            tx_timestamp = tx['timestamp']
+            
+            # Make naive timestamps aware (assume UTC)
+            if tx_timestamp.tzinfo is None:
+                tx_timestamp = tx_timestamp.replace(tzinfo=tz.utc)
+            
+            if tx_timestamp >= cutoff:
+                recent_txs.append(tx)
         
         # Group by date, collect all sizes
         daily_sizes = defaultdict(list)
@@ -137,7 +163,7 @@ class ChartDataGenerator:
         # Generate complete date range with averages
         result = []
         for i in range(days):
-            date = datetime.now() - timedelta(days=days-i-1)
+            date = now - timedelta(days=days-i-1)
             date_str = date.strftime('%Y-%m-%d')
             
             sizes = daily_sizes.get(date_str, [])
@@ -228,7 +254,9 @@ class ChartDataGenerator:
         """
         logger.info("📊 Calculating period volumes...")
         
-        now = datetime.now()
+        # ✅ FIX: Use timezone-aware datetime
+        from datetime import timezone as tz
+        now = datetime.now(tz.utc)
         
         periods = {
             'volume_24h': timedelta(hours=24),
@@ -243,10 +271,20 @@ class ChartDataGenerator:
         for period_name, delta in periods.items():
             cutoff = now - delta
             
-            period_txs = [
-                tx for tx in transactions
-                if tx.get('timestamp') and tx['timestamp'] >= cutoff
-            ]
+            # ✅ FIX: Handle both naive and aware datetimes
+            period_txs = []
+            for tx in transactions:
+                if not tx.get('timestamp'):
+                    continue
+                    
+                tx_timestamp = tx['timestamp']
+                
+                # Make naive timestamps aware (assume UTC)
+                if tx_timestamp.tzinfo is None:
+                    tx_timestamp = tx_timestamp.replace(tzinfo=tz.utc)
+                
+                if tx_timestamp >= cutoff:
+                    period_txs.append(tx)
             
             volume = sum(tx.get('usd_value', 0) or 0 for tx in period_txs)
             result[period_name] = round(volume, 2)
@@ -269,15 +307,16 @@ class ChartDataGenerator:
         if not last_seen:
             return "Unknown"
         
-        now = datetime.now()
+        # ✅ FIX: Use timezone-aware datetime
+        from datetime import timezone as tz
+        now = datetime.now(tz.utc)
         
-        # Handle timezone-aware datetimes
-        if last_seen.tzinfo is not None and now.tzinfo is None:
-            from datetime import timezone
-            now = now.replace(tzinfo=timezone.utc)
-        elif last_seen.tzinfo is None and now.tzinfo is not None:
-            from datetime import timezone
-            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        # Make both datetimes timezone-aware for comparison
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=tz.utc)
+        
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=tz.utc)
         
         delta = now - last_seen
         
