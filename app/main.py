@@ -294,14 +294,13 @@ app.add_middleware(
 )
 
 # ------------------------------------------------------------------
-# ✅ NEU: Socket.IO Setup für OTC Live-Stream
+# ✅ Socket.IO Setup
 # ------------------------------------------------------------------
-# Create Socket.IO server
 sio = socketio.AsyncServer(
     async_mode='asgi',
-    cors_allowed_origins='*',  # In Produktion spezifische Origins verwenden!
+    cors_allowed_origins=ALLOWED_ORIGINS,  # ← Gleiche Origins verwenden
     logger=True,
-    engineio_logger=False  # Reduziert Logging-Spam
+    engineio_logger=False
 )
 
 # Socket.IO Event Handlers
