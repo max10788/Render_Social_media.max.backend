@@ -342,6 +342,44 @@ class WalletProfiler:
         Returns:
             Dict with volume metrics and data quality indicators
         """
+        # ✅ FILTER: Remove token approvals (uint256.max) BEFORE processing
+        MAX_UINT256 = 2**256 - 1
+        MAX_REALISTIC_ETH = 1_000_000  # 1M ETH
+        
+        filtered_txs = []
+        approvals_filtered = 0
+        unrealistic_filtered = 0
+        
+        for tx in all_txs:
+            value = tx.get('value_decimal', 0)
+            
+            if value:
+                try:
+                    value_float = float(value)
+                    
+                    # Skip token approvals (uint256.max)
+                    if value_float >= MAX_UINT256 * 0.99:
+                        approvals_filtered += 1
+                        continue
+                    
+                    # Skip unrealistically high values (even after WEI conversion)
+                    if value_float > MAX_REALISTIC_ETH:
+                        unrealistic_filtered += 1
+                        continue
+                        
+                except (ValueError, TypeError):
+                    pass
+            
+            filtered_txs.append(tx)
+        
+        if approvals_filtered > 0:
+            logger.info(f"   🚫 Filtered {approvals_filtered} token approvals (uint256.max)")
+        if unrealistic_filtered > 0:
+            logger.info(f"   🚫 Filtered {unrealistic_filtered} unrealistic values")
+        
+        # Use filtered list
+        all_txs = filtered_txs
+        
         # ====================================================================
         # LEVEL 1: Try USD values (already enriched)
         # ====================================================================
@@ -389,9 +427,12 @@ class WalletProfiler:
                 try:
                     value = float(tx['value_decimal'])
                     
-                    # SANITY CHECK 1: Detect if value is in WEI
-                    if value > 1_000_000:
-                        logger.debug(f"   🔄 Converting WEI to ETH: {value:.2f}")
+                    # SANITY CHECK 1: Detect if value is in WEI or uint256.max
+                    if value >= MAX_UINT256 * 0.99:
+                        logger.debug(f"   🚫 Skipping token approval: {value:.2e}")
+                        continue
+                    elif value > 100_000:  # Lower threshold from 1M to 100k
+                        logger.debug(f"   🔄 Converting WEI to ETH: {value:.2e}")
                         value = value / 1e18
                         wei_conversions += 1
                     
