@@ -277,12 +277,20 @@ app = FastAPI(
 # ------------------------------------------------------------------
 # CORS-Konfiguration (Nur FastAPI-Middleware)
 # ------------------------------------------------------------------
+ALLOWED_ORIGINS = [
+    "https://render-social-media-max-frontend-fk7e.onrender.com",
+    "http://localhost:3000",  # Für lokale Entwicklung
+    "http://localhost:3001",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In der Produktion sollten Sie dies auf spezifische Domains beschränken
+    allow_origins=ALLOWED_ORIGINS,  # ← Spezifische Origins statt "*"
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],  # ← Hinzufügen
+    max_age=3600,  # ← Cache für Preflight Requests
 )
 
 # ------------------------------------------------------------------
