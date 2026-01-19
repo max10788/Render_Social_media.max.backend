@@ -1353,15 +1353,26 @@ if os.environ.get("RENDER"):
     database_config.db_password = os.environ.get("DATABASE_PASSWORD", database_config.db_password)
 
 # ------------------------------------------------------------------
-# ✅ NEU: Wrap FastAPI app with Socket.IO
+# ✅ Wrap FastAPI app with Socket.IO
 # ------------------------------------------------------------------
-# Create ASGI app that combines FastAPI and Socket.IO
+from starlette.middleware.cors import CORSMiddleware as StarletteCorsMW
+
+# Erstelle Socket.IO App MIT CORS
 socket_app = socketio.ASGIApp(
     socketio_server=sio,
     other_asgi_app=app,
     socketio_path='/socket.io'
 )
 
-# ✅ WICHTIG: Export socket_app für Uvicorn
-# In Render verwende: uvicorn app.main:socket_app
-# Lokaler Test: uvicorn app.main:socket_app --reload
+# ✅ WICHTIG: CORS nochmal auf socket_app Ebene anwenden
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+
+# Wrap socket_app mit CORS Middleware
+final_app = StarletteCorsMW(
+    socket_app,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
