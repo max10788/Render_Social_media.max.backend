@@ -277,20 +277,26 @@ app = FastAPI(
 # ------------------------------------------------------------------
 # CORS-Konfiguration (Nur FastAPI-Middleware)
 # ------------------------------------------------------------------
-ALLOWED_ORIGINS = [
-    "https://render-social-media-max-frontend-fk7e.onrender.com",
-    "http://localhost:3000",  # Für lokale Entwicklung
-    "http://localhost:3001",
-]
+# For Coolify with dynamic sslip.io domains, we need to allow all origins
+# since the subdomains are randomly generated and change between deployments
+ALLOWED_ORIGINS = ["*"]
+
+# Production origins (uncomment when you have stable domains):
+# ALLOWED_ORIGINS = [
+#     "https://render-social-media-max-frontend-fk7e.onrender.com",
+#     "http://localhost:3000",
+#     "http://localhost:3001",
+#     "http://localhost:8000",
+# ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,  # ← Spezifische Origins statt "*"
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,  # Must be False when allow_origins=["*"]
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
-    expose_headers=["*"],  # ← Hinzufügen
-    max_age=3600,  # ← Cache für Preflight Requests
+    expose_headers=["*"],
+    max_age=3600,
 )
 
 # ------------------------------------------------------------------
@@ -298,7 +304,7 @@ app.add_middleware(
 # ------------------------------------------------------------------
 sio = socketio.AsyncServer(
     async_mode='asgi',
-    cors_allowed_origins=ALLOWED_ORIGINS,  # ← Gleiche Origins verwenden
+    cors_allowed_origins="*",  # Allow all origins for dynamic sslip.io domains
     logger=True,
     engineio_logger=False
 )
@@ -376,7 +382,7 @@ app.include_router(wallet_detail_router)
 app.include_router(hybrid_router)
 app.include_router(dex_chart_router, prefix="/api/v1")
 app.include_router(orderbook_heatmap_router)
-app.include_router(iceberg_orders_router)
+app.include_router(iceberg_orders_router, prefix="/api")
 
 # ------------------------------------------------------------------
 # OTC Analysis API Routes (Modular Structure)
@@ -1371,8 +1377,8 @@ from starlette.middleware import Middleware
 # Wrap socket_app mit CORS Middleware
 final_app = StarletteCorsMW(
     socket_app,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow all origins for dynamic sslip.io domains
+    allow_credentials=False,  # Must be False when allow_origins=["*"]
     allow_methods=["*"],
     allow_headers=["*"],
 )
