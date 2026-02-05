@@ -42,7 +42,7 @@ class DatabaseConfig:
         self.pool_recycle = int(os.getenv("DB_POOL_RECYCLE", "3600"))
         
         self.schema_name = os.getenv("OTC_SCHEMA", "otc_analysis")
-        self.ssl_mode = "require"
+        self.ssl_mode = os.getenv("DB_SSL_MODE", "disable")
         
         logger.info(f"Database configuration: host={self.db_host}, port={self.db_port}, database={self.db_name}, schema={self.schema_name}, ssl_mode={self.ssl_mode}")
 
