@@ -42,7 +42,7 @@ class DatabaseConfig:
         self.pool_recycle = int(os.getenv("DB_POOL_RECYCLE", "3600"))
         
         self.schema_name = os.getenv("OTC_SCHEMA", "otc_analysis")
-        self.ssl_mode = "require"
+        self.ssl_mode = os.getenv("DB_SSL_MODE", "disable")  # disable für lokale DB
         
         logger.info(f"Database configuration: host={self.db_host}, port={self.db_port}, database={self.db_name}, schema={self.schema_name}, ssl_mode={self.ssl_mode}")
 
@@ -58,6 +58,8 @@ engine = create_engine(
     pool_recycle=database_config.pool_recycle,
     echo=os.getenv("DB_ECHO", "false").lower() == "true",
     connect_args={
+        "options": f"-csearch_path={database_config.schema_name},public"
+    } if database_config.ssl_mode == "disable" else {
         "options": f"-csearch_path={database_config.schema_name},public",
         "sslmode": database_config.ssl_mode
     }
@@ -74,6 +76,10 @@ async_engine = create_async_engine(
     pool_recycle=database_config.pool_recycle,
     echo=os.getenv("DB_ECHO", "false").lower() == "true",
     connect_args={
+        "server_settings": {
+            "search_path": f"{database_config.schema_name},public"
+        }
+    } if database_config.ssl_mode == "disable" else {
         "server_settings": {
             "search_path": f"{database_config.schema_name},public"
         },
