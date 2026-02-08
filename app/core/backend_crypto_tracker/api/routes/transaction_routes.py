@@ -13,22 +13,160 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/api/v1/transactions", tags=["transactions"])
 
-@router.get("/{tx_hash}", response_model=Dict[str, Any])
-async def get_transaction(
-    tx_hash: str = Path(..., description="Transaktions-Hash"),
+# IMPORTANT: Specific routes must come BEFORE generic path parameter routes
+# Otherwise FastAPI will match "/recent" as tx_hash="recent"
+
+@router.get("/recent", response_model=List[Dict[str, Any]])
+async def get_recent_transactions(
     chain: str = Query(..., description="Blockchain (ethereum, bsc, solana, sui)"),
+    limit: int = Query(50, ge=1, le=200, description="Maximale Anzahl der Transaktionen"),
+    min_value: Optional[float] = Query(None, description="Minimaler Transaktionswert"),
+    max_value: Optional[float] = Query(None, description="Maximaler Transaktionswert"),
     db: Session = Depends(get_db)
 ):
-    """Holt eine Transaktion anhand ihres Hashes"""
+    """Holt kürzliche Transaktionen mit Filteroptionen"""
     try:
-        result = await transaction_controller.get_transaction(tx_hash, chain, db)
+        query = db.query(Transaction).filter(Transaction.chain == chain)
+
+        if min_value is not None:
+            query = query.filter(Transaction.value >= min_value)
+
+        if max_value is not None:
+            query = query.filter(Transaction.value <= max_value)
+
+        transactions = query.order_by(Transaction.timestamp.desc()).limit(limit).all()
+
+        return [tx.to_dict() for tx in transactions]
+    except Exception as e:
+        logger.error(f"Unexpected error getting recent transactions: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get("/statistics", response_model=Dict[str, Any])
+async def get_transaction_statistics(
+    chain: Optional[str] = Query(None, description="Blockchain für Statistiken"),
+    time_range: int = Query(24, ge=1, le=168, description="Zeitbereich in Stunden"),
+    db: Session = Depends(get_db)
+):
+    """Ruft Transaktionsstatistiken"""
+    try:
+        from datetime import timedelta
+
+        end_time = datetime.utcnow()
+        start_time = end_time - timedelta(hours=time_range)
+
+        query = db.query(Transaction)
+
+        if chain:
+            query = query.filter(Transaction.chain == chain)
+
+        query = query.filter(Transaction.timestamp >= start_time)
+        query = query.filter(Transaction.timestamp <= end_time)
+
+        # Gesamtzahl der Transaktionen
+        total_transactions = query.count()
+
+        # Durchschnittlicher Transaktionswert
+        avg_value = query.with_entities(
+            db.func.avg(Transaction.value)
+        ).scalar() or 0
+
+        # Durchschnittliche Gas-Gebühren
+        avg_fee = query.with_entities(
+            db.func.avg(Transaction.fee)
+        ).scalar() or 0
+
+        # Erfolgsrate
+        success_count = query.filter(Transaction.status == 'success').count()
+        success_rate = (success_count / total_transactions * 100) if total_transactions > 0 else 0
+
+        # Token-Transaktionen
+        token_tx_count = query.filter(Transaction.token_address.isnot(None)).count()
+
+        # Nach Blockchain gruppieren
+        chain_stats = {}
+        if not chain:
+            chains = db.query(Transaction.chain, db.func.count(Transaction.id)).group_by(Transaction.chain).all()
+            chain_stats = {chain_name: count for chain_name, count in chains}
+
+        return {
+            "time_range_hours": time_range,
+            "start_time": start_time.isoformat(),
+            "end_time": end_time.isoformat(),
+            "total_transactions": total_transactions,
+            "average_value": float(avg_value),
+            "average_fee": float(avg_fee),
+            "success_rate": success_rate,
+            "token_transactions": token_tx_count,
+            "chain_distribution": chain_stats,
+            "last_updated": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Unexpected error getting transaction statistics: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.get("/search", response_model=List[Dict[str, Any]])
+async def search_transactions(
+    query: str = Query(..., min_length=3, description="Suchbegriff"),
+    chain: Optional[str] = Query(None, description="Blockchain (ethereum, bsc, solana, sui)"),
+    limit: int = Query(50, ge=1, le=200, description="Maximale Anzahl der Ergebnisse"),
+    search_type: str = Query("address", description="Suchtyp: address, hash, method"),
+    db: Session = Depends(get_db)
+):
+    """Sucht nach Transaktionen"""
+    try:
+        search_query = f"%{query.lower()}%"
+
+        if search_type == "address":
+            # Suche in Adressfeldern
+            db_query = db.query(Transaction).filter(
+                Transaction.from_address.ilike(search_query) |
+                Transaction.to_address.ilike(search_query)
+            )
+        elif search_type == "hash":
+            # Suche im Transaktions-Hash
+            db_query = db.query(Transaction).filter(
+                Transaction.tx_hash.ilike(search_query)
+            )
+        elif search_type == "method":
+            # Suche in Methoden
+            db_query = db.query(Transaction).filter(
+                Transaction.method.ilike(search_query)
+            )
+        else:
+            raise HTTPException(status_code=400, detail="Invalid search type")
+
+        if chain:
+            db_query = db_query.filter(Transaction.chain == chain)
+
+        transactions = db_query.limit(limit).all()
+
+        return [tx.to_dict() for tx in transactions]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error searching transactions: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/analyze", response_model=Dict[str, Any])
+async def analyze_transaction(
+    tx_hash: str,
+    chain: str,
+    include_internal: bool = True,
+    include_logs: bool = True,
+    db: Session = Depends(get_db)
+):
+    """Analysiert eine Transaktion umfassend"""
+    try:
+        result = await transaction_controller.analyze_transaction(
+            tx_hash, chain, include_internal, include_logs, db
+        )
         return result
     except HTTPException:
         raise
     except APIException as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error getting transaction {tx_hash}: {e}")
+        logger.error(f"Unexpected error analyzing transaction {tx_hash}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/{tx_hash}/detail", response_model=Dict[str, Any])
@@ -113,28 +251,6 @@ async def get_token_transactions(
         logger.error(f"Unexpected error getting token transactions for {token_address}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.post("/analyze", response_model=Dict[str, Any])
-async def analyze_transaction(
-    tx_hash: str,
-    chain: str,
-    include_internal: bool = True,
-    include_logs: bool = True,
-    db: Session = Depends(get_db)
-):
-    """Analysiert eine Transaktion umfassend"""
-    try:
-        result = await transaction_controller.analyze_transaction(
-            tx_hash, chain, include_internal, include_logs, db
-        )
-        return result
-    except HTTPException:
-        raise
-    except APIException as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        logger.error(f"Unexpected error analyzing transaction {tx_hash}: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
 @router.get("/graph/{address}", response_model=Dict[str, Any])
 async def get_transaction_graph(
     address: str = Path(..., description="Startadresse für den Graphen"),
@@ -158,137 +274,22 @@ async def get_transaction_graph(
         logger.error(f"Unexpected error creating transaction graph for {address}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@router.get("/recent", response_model=List[Dict[str, Any]])
-async def get_recent_transactions(
+# Generic route must come LAST to avoid matching specific routes
+@router.get("/{tx_hash}", response_model=Dict[str, Any])
+async def get_transaction(
+    tx_hash: str = Path(..., description="Transaktions-Hash"),
     chain: str = Query(..., description="Blockchain (ethereum, bsc, solana, sui)"),
-    limit: int = Query(50, ge=1, le=200, description="Maximale Anzahl der Transaktionen"),
-    min_value: Optional[float] = Query(None, description="Minimaler Transaktionswert"),
-    max_value: Optional[float] = Query(None, description="Maximaler Transaktionswert"),
     db: Session = Depends(get_db)
 ):
-    """Holt kürzliche Transaktionen mit Filteroptionen"""
+    """Holt eine Transaktion anhand ihres Hashes"""
     try:
-        # In einer echten Implementierung würde man hier die neuesten Blöcke abfragen
-        # und die Transaktionen daraus filtern
-        
-        # Für jetzt eine vereinfachte Implementierung
-        query = db.query(Transaction).filter(Transaction.chain == chain)
-        
-        if min_value is not None:
-            query = query.filter(Transaction.value >= min_value)
-        
-        if max_value is not None:
-            query = query.filter(Transaction.value <= max_value)
-        
-        transactions = query.order_by(Transaction.timestamp.desc()).limit(limit).all()
-        
-        return [tx.to_dict() for tx in transactions]
-    except Exception as e:
-        logger.error(f"Unexpected error getting recent transactions: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@router.get("/statistics", response_model=Dict[str, Any])
-async def get_transaction_statistics(
-    chain: Optional[str] = Query(None, description="Blockchain für Statistiken"),
-    time_range: int = Query(24, ge=1, le=168, description="Zeitbereich in Stunden"),
-    db: Session = Depends(get_db)
-):
-    """Ruft Transaktionsstatistiken"""
-    try:
-        from datetime import timedelta
-        
-        end_time = datetime.utcnow()
-        start_time = end_time - timedelta(hours=time_range)
-        
-        query = db.query(Transaction)
-        
-        if chain:
-            query = query.filter(Transaction.chain == chain)
-        
-        query = query.filter(Transaction.timestamp >= start_time)
-        query = query.filter(Transaction.timestamp <= end_time)
-        
-        # Gesamtzahl der Transaktionen
-        total_transactions = query.count()
-        
-        # Durchschnittlicher Transaktionswert
-        avg_value = query.with_entities(
-            db.func.avg(Transaction.value)
-        ).scalar() or 0
-        
-        # Durchschnittliche Gas-Gebühren
-        avg_fee = query.with_entities(
-            db.func.avg(Transaction.fee)
-        ).scalar() or 0
-        
-        # Erfolgsrate
-        success_count = query.filter(Transaction.status == 'success').count()
-        success_rate = (success_count / total_transactions * 100) if total_transactions > 0 else 0
-        
-        # Token-Transaktionen
-        token_tx_count = query.filter(Transaction.token_address.isnot(None)).count()
-        
-        # Nach Blockchain gruppieren
-        chain_stats = {}
-        if not chain:
-            chains = db.query(Transaction.chain, db.func.count(Transaction.id)).group_by(Transaction.chain).all()
-            chain_stats = {chain_name: count for chain_name, count in chains}
-        
-        return {
-            "time_range_hours": time_range,
-            "start_time": start_time.isoformat(),
-            "end_time": end_time.isoformat(),
-            "total_transactions": total_transactions,
-            "average_value": float(avg_value),
-            "average_fee": float(avg_fee),
-            "success_rate": success_rate,
-            "token_transactions": token_tx_count,
-            "chain_distribution": chain_stats,
-            "last_updated": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Unexpected error getting transaction statistics: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@router.get("/search", response_model=List[Dict[str, Any]])
-async def search_transactions(
-    query: str = Query(..., min_length=3, description="Suchbegriff"),
-    chain: Optional[str] = Query(None, description="Blockchain (ethereum, bsc, solana, sui)"),
-    limit: int = Query(50, ge=1, le=200, description="Maximale Anzahl der Ergebnisse"),
-    search_type: str = Query("address", description="Suchtyp: address, hash, method"),
-    db: Session = Depends(get_db)
-):
-    """Sucht nach Transaktionen"""
-    try:
-        search_query = f"%{query.lower()}%"
-        
-        if search_type == "address":
-            # Suche in Adressfeldern
-            db_query = db.query(Transaction).filter(
-                Transaction.from_address.ilike(search_query) |
-                Transaction.to_address.ilike(search_query)
-            )
-        elif search_type == "hash":
-            # Suche im Transaktions-Hash
-            db_query = db.query(Transaction).filter(
-                Transaction.tx_hash.ilike(search_query)
-            )
-        elif search_type == "method":
-            # Suche in Methoden
-            db_query = db.query(Transaction).filter(
-                Transaction.method.ilike(search_query)
-            )
-        else:
-            raise HTTPException(status_code=400, detail="Invalid search type")
-        
-        if chain:
-            db_query = db_query.filter(Transaction.chain == chain)
-        
-        transactions = db_query.limit(limit).all()
-        
-        return [tx.to_dict() for tx in transactions]
+        result = await transaction_controller.get_transaction(tx_hash, chain, db)
+        return result
     except HTTPException:
         raise
+    except APIException as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        logger.error(f"Unexpected error searching transactions: {e}")
+        logger.error(f"Unexpected error getting transaction {tx_hash}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+

@@ -488,15 +488,15 @@ class TransactionController:
         """Bewertet das Risiko einer Transaktion"""
         risk_score = 0
         risk_factors = []
-        
+
         # Transaktionswert
-        value = transaction_data.get('value', 0)
+        value = transaction_data.get('value') or 0
         if value > 1000:  # Hoher Wert in ETH
             risk_score += 20
             risk_factors.append('high_value_transaction')
-        
+
         # Gas-Preis
-        gas_price = transaction_data.get('gas_price', 0)
+        gas_price = transaction_data.get('gas_price') or 0
         if gas_price > 200 * 10**9:  # > 200 Gwei
             risk_score += 15
             risk_factors.append('high_gas_price')
