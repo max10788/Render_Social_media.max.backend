@@ -69,7 +69,5 @@ class Transaction(Base):
             'timestamp': self.timestamp.isoformat() if self.timestamp else None,
             'status': self.status,
             'method': self.method,
-            'input_data': self.input_data,
-            'logs': self.logs,
-            'metadata': self.transaction_metadata,  # Verwendung des umbenannten Attributs
+            'metadata': self.transaction_metadata,
         }

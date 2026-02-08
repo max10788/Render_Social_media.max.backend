@@ -9,6 +9,7 @@ from app.core.backend_crypto_tracker.processor.database.models.address import Ad
 from app.core.backend_crypto_tracker.processor.database.models.token import Token
 from app.core.backend_crypto_tracker.utils.exceptions import APIException, InvalidAddressException
 from app.core.backend_crypto_tracker.utils.logger import get_logger
+from app.core.backend_crypto_tracker.providers.blockchain_providers import EthereumProvider, SolanaProvider, SuiProvider
 from pydantic import BaseModel, Field
 import asyncio
 
@@ -474,8 +475,7 @@ class TransactionController:
             token_amount=tx_data.get('token_amount'),
             status=tx_data.get('status', 'unknown'),
             method=tx_data.get('method'),
-            input_data=tx_data.get('input_data'),
-            logs=tx_data.get('logs')
+            transaction_metadata=tx_data.get('metadata')
         )
     
     async def _assess_transaction_risk(self, transaction_data: Dict[str, Any], chain: str) -> Dict[str, Any]:

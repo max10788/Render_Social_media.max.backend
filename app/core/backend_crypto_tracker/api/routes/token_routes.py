@@ -54,14 +54,15 @@ class TokenAnalysisResponse(BaseModel):
     risk_flags: List[str]
     wallet_analysis: Dict[str, Any]
 
-# Dependency für Datenbank-Manager
+# Singleton DatabaseManager - shared across requests
+_db_manager: Optional[DatabaseManager] = None
+
 async def get_db_manager():
-    db_manager = DatabaseManager()
-    await db_manager.initialize()
-    try:
-        yield db_manager
-    finally:
-        await db_manager.close()
+    global _db_manager
+    if _db_manager is None:
+        _db_manager = DatabaseManager()
+        await _db_manager.initialize()
+    yield _db_manager
 
 @router.get("/", response_model=List[TokenResponse])
 async def get_tokens(

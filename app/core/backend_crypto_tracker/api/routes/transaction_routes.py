@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from app.core.backend_crypto_tracker.config.database import get_db
 from app.core.backend_crypto_tracker.api.controllers.transaction_controller import transaction_controller
+from app.core.backend_crypto_tracker.processor.database.models.transaction import Transaction
 from app.core.backend_crypto_tracker.utils.logger import get_logger
 from app.core.backend_crypto_tracker.utils.exceptions import APIException
 
