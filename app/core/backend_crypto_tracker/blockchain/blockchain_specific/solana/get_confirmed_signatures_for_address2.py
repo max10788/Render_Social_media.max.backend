@@ -31,14 +31,9 @@ async def execute_get_confirmed_signatures_for_address2(
         
         # ✅ Konvertiere String zu PublicKey mit try/except
         try:
-            # Versuche mit solders (neuere Version)
-            try:
-                from solders.publickey import PublicKey
-            except ImportError:
-                # Fallback auf solana
-                from solana.publickey import PublicKey
-            
-            pubkey = PublicKey(address)
+            from solders.pubkey import Pubkey
+
+            pubkey = Pubkey.from_string(address)
             logger.debug(f"PublicKey konvertiert: {pubkey}")
         except Exception as e:
             logger.error(f"Invalid PublicKey: {address}, Error: {str(e)}")
