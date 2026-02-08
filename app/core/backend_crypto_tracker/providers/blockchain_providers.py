@@ -272,14 +272,32 @@ class SolanaProvider:
                 # Check for result
                 if data.get('result'):
                     result = data['result']
+
+                    # Extract account keys (addresses)
+                    account_keys = result.get('transaction', {}).get('message', {}).get('accountKeys', [])
+                    from_address = account_keys[0] if len(account_keys) > 0 else 'unknown'
+                    to_address = account_keys[1] if len(account_keys) > 1 else None
+
+                    # Extract SOL value from pre/post balances
+                    meta = result.get('meta', {})
+                    pre_balances = meta.get('preBalances', [])
+                    post_balances = meta.get('postBalances', [])
+                    value = 0
+                    if len(pre_balances) > 0 and len(post_balances) > 0:
+                        value = abs((post_balances[0] - pre_balances[0])) / 1e9  # lamports to SOL
+
                     return {
                         'tx_hash': tx_hash,
                         'signature': tx_hash,
                         'slot': result.get('slot'),
                         'block_number': result.get('slot'),
                         'timestamp': datetime.fromtimestamp(result.get('blockTime', 0)) if result.get('blockTime') else datetime.utcnow(),
-                        'status': 'success' if not result.get('meta', {}).get('err') else 'failed',
-                        'fee': result.get('meta', {}).get('fee', 0) / 1e9,  # lamports to SOL
+                        'from_address': from_address,
+                        'to_address': to_address,
+                        'value': value,
+                        'status': 'success' if not meta.get('err') else 'failed',
+                        'fee': meta.get('fee', 0) / 1e9,  # lamports to SOL
+                        'gas_used': meta.get('computeUnitsConsumed'),
                         'metadata': result
                     }
 

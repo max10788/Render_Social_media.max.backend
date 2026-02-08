@@ -463,7 +463,6 @@ class TransactionController:
             tx_hash=tx_data.get('tx_hash', ''),
             chain=chain,
             block_number=tx_data.get('block_number'),
-            block_hash=tx_data.get('block_hash'),
             timestamp=tx_data.get('timestamp', datetime.utcnow()),
             from_address=tx_data.get('from_address', ''),
             to_address=tx_data.get('to_address'),
