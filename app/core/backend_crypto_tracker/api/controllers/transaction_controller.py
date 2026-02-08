@@ -138,15 +138,22 @@ class TransactionController:
     async def get_transaction(self, tx_hash: str, chain: str, db: Session) -> Dict[str, Any]:
         """Holt eine Transaktion anhand des Hashes"""
         try:
+            # Validate transaction hash format based on chain
+            if chain == 'solana' and len(tx_hash) != 88:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid Solana transaction signature. Expected 88 characters, got {len(tx_hash)}"
+                )
+
             # Zuerst in der Datenbank suchen
             transaction = db.query(Transaction).filter(
                 Transaction.tx_hash == tx_hash,
                 Transaction.chain == chain
             ).first()
-            
+
             if transaction:
                 return transaction.to_dict()
-            
+
             # Wenn nicht in der DB, von der API holen
             api = await self._get_api_for_chain(chain)
             

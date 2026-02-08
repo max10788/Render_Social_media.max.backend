@@ -254,6 +254,10 @@ class SolanaProvider:
     async def get_transaction(self, tx_hash: str) -> Optional[Dict[str, Any]]:
         """Get transaction details by signature"""
         try:
+            # Validate Solana signature length (must be 88 characters in base58)
+            if len(tx_hash) != 88:
+                logger.error(f"Invalid Solana signature length: {len(tx_hash)} (expected 88). Signature: {tx_hash}")
+                return None
             data = await self._make_rpc_request('getTransaction', [
                 tx_hash,
                 {
@@ -327,7 +331,7 @@ class SolanaProvider:
 
     async def get_token_transfers(self, token_address: str, limit: int = 100) -> List[Dict[str, Any]]:
         """Get token transfers - placeholder implementation"""
-        logger.warning("Solana get_token_transfers not fully implemented")
+        logger.info("Solana get_token_transfers called but not fully implemented yet")
         return []
 
     async def close(self):
