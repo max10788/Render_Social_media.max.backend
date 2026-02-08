@@ -254,20 +254,36 @@ class SolanaProvider:
     async def get_transaction(self, tx_hash: str) -> Optional[Dict[str, Any]]:
         """Get transaction details by signature"""
         try:
-            data = await self._make_rpc_request('getTransaction', [tx_hash, {'encoding': 'json'}])
-
-            if data and data.get('result'):
-                result = data['result']
-                return {
-                    'tx_hash': tx_hash,
-                    'signature': tx_hash,
-                    'slot': result.get('slot'),
-                    'block_number': result.get('slot'),
-                    'timestamp': datetime.fromtimestamp(result.get('blockTime', 0)) if result.get('blockTime') else datetime.utcnow(),
-                    'status': 'success' if not result.get('meta', {}).get('err') else 'failed',
-                    'fee': result.get('meta', {}).get('fee', 0) / 1e9,  # lamports to SOL
-                    'metadata': result
+            data = await self._make_rpc_request('getTransaction', [
+                tx_hash,
+                {
+                    'encoding': 'json',
+                    'maxSupportedTransactionVersion': 0
                 }
+            ])
+
+            if data:
+                # Check for RPC errors
+                if data.get('error'):
+                    error = data['error']
+                    logger.error(f"Solana RPC error for transaction {tx_hash}: {error.get('message', error)}")
+                    return None
+
+                # Check for result
+                if data.get('result'):
+                    result = data['result']
+                    return {
+                        'tx_hash': tx_hash,
+                        'signature': tx_hash,
+                        'slot': result.get('slot'),
+                        'block_number': result.get('slot'),
+                        'timestamp': datetime.fromtimestamp(result.get('blockTime', 0)) if result.get('blockTime') else datetime.utcnow(),
+                        'status': 'success' if not result.get('meta', {}).get('err') else 'failed',
+                        'fee': result.get('meta', {}).get('fee', 0) / 1e9,  # lamports to SOL
+                        'metadata': result
+                    }
+
+            logger.warning(f"No transaction data returned for {tx_hash}")
             return None
         except Exception as e:
             logger.error(f"Error getting Solana transaction {tx_hash}: {e}")
