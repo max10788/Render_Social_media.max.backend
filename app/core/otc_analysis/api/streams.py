@@ -164,8 +164,27 @@ async def moralis_webhook(
             addresses = await process_erc20_transfer(log, db, registry, labeling)
             discovered_addresses.update(addresses)
         
-        logger.info(f"✅ Webhook processed: {len(discovered_addresses)} addresses discovered")
-        
+        logger.info(f"Webhook processed: {len(discovered_addresses)} addresses discovered")
+
+        # Broadcast to WebSocket clients
+        if discovered_addresses or confirmed_txs:
+            from app.core.otc_analysis.api.websocket import broadcast_to_all
+            for tx in confirmed_txs:
+                value_wei = int(tx.get('value', 0))
+                value_eth = value_wei / 1e18
+                value_usd = value_eth * 3000
+                if value_usd >= 100_000:
+                    await broadcast_to_all("new_large_transfer", {
+                        "type": "new_large_transfer",
+                        "tx_hash": tx.get('hash', ''),
+                        "from_address": tx.get('fromAddress', ''),
+                        "to_address": tx.get('toAddress', ''),
+                        "value_eth": round(value_eth, 4),
+                        "usd_value": round(value_usd, 2),
+                        "timestamp": datetime.now().isoformat(),
+                        "source": "moralis_webhook",
+                    })
+
         return {
             "success": True,
             "message": "Webhook processed",

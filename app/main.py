@@ -59,7 +59,7 @@ from app.core.otc_analysis.api.admin_otc import router as otc_data_admin_router
 from app.core.otc_analysis.api.statistics import router as otc_statistics_router
 from app.core.otc_analysis.api.network import router as otc_network_router
 from app.core.otc_analysis.api.flow import router as otc_flow_router
-from app.core.otc_analysis.api.websocket import handle_websocket_connection
+from app.core.otc_analysis.api.websocket import handle_websocket_connection, set_socketio, live_otc_monitor
 
 # Bei den OTC Analysis API Routes Imports (ca. Zeile 45-55)
 from app.core.otc_analysis.api.migration import router as otc_migration_router
@@ -244,15 +244,25 @@ async def lifespan(app: FastAPI):
     
     # ✅ Skip DatabaseManager - OTC nutzt database.py direkt
     db_manager = None
-    logger.info("✅ Skipping DatabaseManager (OTC uses database.py directly)")
-    
+    logger.info("Skipping DatabaseManager (OTC uses database.py directly)")
+
+    # Inject Socket.IO into websocket module and start live monitor
+    set_socketio(sio)
+    monitor_task = asyncio.create_task(live_otc_monitor(shutdown_event))
+    logger.info("Live OTC monitor task started")
+
     yield
-    
+
     logger.info("Shutting down Low-Cap Token Analyzer")
-    
-    # ... rest bleibt gleich ...
-    
-    # ✅ Rest bleibt gleich
+
+    # Stop the live monitor
+    shutdown_event.set()
+    monitor_task.cancel()
+    try:
+        await monitor_task
+    except asyncio.CancelledError:
+        pass
+
     try:
         await asyncio.sleep(1)
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
@@ -408,6 +418,16 @@ app.include_router(otc_discovery_router, prefix="/api/otc")
 app.include_router(otc_migration_router, prefix="/api/migration", tags=["Migration"])
 
 app.include_router(otc_data_admin_router, prefix="/api/otc")
+
+# ------------------------------------------------------------------
+# OTC Wallet Tag Descriptions (matches frontend path /api/otc/wallets/tags/descriptions)
+# ------------------------------------------------------------------
+@app.get("/api/otc/wallets/tags/descriptions")
+async def get_wallet_tag_descriptions():
+    """Return descriptions for all wallet classification tags."""
+    from app.core.otc_analysis.discovery.wallet_tagger import WalletTagger
+    tagger = WalletTagger()
+    return {"success": True, "data": tagger.get_tag_descriptions()}
 
 # ✅ Optional: Validators & WebSocket (wenn du sie nutzt)
 # app.include_router(otc_validators_router, prefix="/api/otc")
