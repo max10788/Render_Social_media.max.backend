@@ -38,6 +38,35 @@ def table_exists(engine, table_name: str) -> bool:
     return table_name in inspector.get_table_names()
 
 
+def _add_missing_columns(engine):
+    """Add any columns that exist in the model but not in the DB table."""
+    expected_columns = {
+        "value_decimal": "DOUBLE PRECISION DEFAULT 0",
+        "token_address": "VARCHAR(42)",
+        "gas_used": "BIGINT",
+        "gas_price": "BIGINT",
+        "is_contract_interaction": "BOOLEAN DEFAULT FALSE",
+        "method_id": "VARCHAR(10)",
+        "otc_score": "DOUBLE PRECISION DEFAULT 0.0",
+        "is_suspected_otc": "BOOLEAN DEFAULT FALSE",
+        "chain_id": "INTEGER DEFAULT 1",
+        "created_at": "TIMESTAMP DEFAULT NOW()",
+        "updated_at": "TIMESTAMP DEFAULT NOW()",
+    }
+    try:
+        inspector = inspect(engine)
+        existing = {col["name"] for col in inspector.get_columns("transactions")}
+        with engine.connect() as conn:
+            for col_name, col_type in expected_columns.items():
+                if col_name not in existing:
+                    sql = f"ALTER TABLE transactions ADD COLUMN {col_name} {col_type}"
+                    conn.execute(text(sql))
+                    logger.info(f"Added missing column: {col_name}")
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Error adding missing columns: {e}")
+
+
 def create_transactions_table(engine) -> dict:
     """
     Erstellt die transactions Tabelle mit allen Indexes.
@@ -56,9 +85,11 @@ def create_transactions_table(engine) -> dict:
     try:
         # Check if table exists
         result["table_existed"] = table_exists(engine, "transactions")
-        
+
         if result["table_existed"]:
-            logger.info("✅ Table 'transactions' already exists - skipping creation")
+            logger.info("Table 'transactions' already exists - checking for missing columns")
+            # Add missing columns if needed
+            _add_missing_columns(engine)
             result["success"] = True
             return result
         
