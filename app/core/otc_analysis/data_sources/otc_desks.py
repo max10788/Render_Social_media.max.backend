@@ -368,40 +368,49 @@ class OTCDeskRegistry:
                 logger.warning(f"      ⚠️  {expected_name}: Invalid address format - skipping")
                 continue
             
+            desk_key = expected_name.lower().replace(' ', '_').replace(':', '').replace('-', '_')
+
+            # Start with seed data (works even without Moralis)
+            desk_data = {
+                'name': expected_name,
+                'addresses': [address],
+                'type': seed.get('type', 'unknown'),
+                'desk_category': 'verified',
+                'entity_label': None,
+                'logo_url': None,
+                'confidence': 0.9,
+                'matched_keywords': [],
+                'is_otc': True,
+                'active': True,
+                'source': 'verified_seed',
+                'last_updated': datetime.now().isoformat(),
+                'last_activity': None
+            }
+
             try:
-                # Validate with Moralis
+                # Try to enrich with Moralis
                 validation = self.moralis.validate_otc_entity(address)
-                
-                if not validation:
-                    logger.warning(f"      ⚠️  {expected_name}: No Moralis response")
-                    continue
-                
-                # Build desk entry
-                desk_name = validation.get('entity_name') or expected_name
-                desk_key = desk_name.lower().replace(' ', '_').replace(':', '').replace('-', '_')
-                
-                desk_data = {
-                    'name': desk_name,
-                    'addresses': [address],
-                    'type': seed.get('type', 'unknown'),
-                    'desk_category': 'verified',
-                    'entity_label': validation.get('entity_label'),
-                    'logo_url': validation.get('entity_logo'),
-                    'confidence': max(validation.get('confidence', 0.75), 0.9),
-                    'matched_keywords': validation.get('matched_keywords', []),
-                    'is_otc': validation.get('is_otc', True),
-                    'active': True,
-                    'source': 'verified_moralis',
-                    'last_updated': datetime.now().isoformat(),
-                    'last_activity': validation.get('last_activity')
-                }
-                
-                all_desks[desk_key] = desk_data
-                logger.info(f"      ✅ {desk_name}: Verified")
-                
+
+                if validation:
+                    desk_name = validation.get('entity_name') or expected_name
+                    desk_key = desk_name.lower().replace(' ', '_').replace(':', '').replace('-', '_')
+                    desk_data.update({
+                        'name': desk_name,
+                        'entity_label': validation.get('entity_label'),
+                        'logo_url': validation.get('entity_logo'),
+                        'confidence': max(validation.get('confidence', 0.75), 0.9),
+                        'matched_keywords': validation.get('matched_keywords', []),
+                        'source': 'verified_moralis',
+                        'last_activity': validation.get('last_activity')
+                    })
+                    logger.info(f"      {expected_name}: Verified + enriched via Moralis")
+                else:
+                    logger.warning(f"      {expected_name}: No Moralis data, using seed info")
+
             except Exception as e:
-                logger.error(f"❌ Error validating {expected_name}: {e}")
-                continue
+                logger.warning(f"      {expected_name}: Moralis error ({e}), using seed info")
+
+            all_desks[desk_key] = desk_data
         
         # ✅ Step 2: SKIP discovery in cache build to prevent infinite loop!
         if include_discovery and self.discovery_enabled:
@@ -737,22 +746,26 @@ class OTCDeskRegistry:
                     OTCWallet.is_active == True
                 )
                 
-                # ✅ NEW: Filter by tags if provided
+                # Filter by tags if provided (works with both JSON and JSONB columns)
                 if required_tags:
-                    # PostgreSQL: tags column is JSONB array
-                    # Filter wallets that have ANY of the required tags
-                    from sqlalchemy import cast, String
-                    
+                    from sqlalchemy import or_, cast, type_coerce, Text
+                    from sqlalchemy.dialects.postgresql import JSONB
+
                     tag_filters = []
                     for tag in required_tags:
-                        # Check if tag exists in JSONB array
-                        tag_filters.append(OTCWallet.tags.contains([tag]))
-                    
-                    # Combine with OR (wallet has at least one of the tags)
-                    from sqlalchemy import or_
+                        try:
+                            # Try JSONB containment first (@> operator)
+                            tag_filters.append(
+                                type_coerce(OTCWallet.tags, JSONB).contains([tag])
+                            )
+                        except Exception:
+                            # Fallback: cast to text and use LIKE
+                            tag_filters.append(
+                                cast(OTCWallet.tags, Text).like(f'%"{tag}"%')
+                            )
+
                     query = query.filter(or_(*tag_filters))
-                    
-                    logger.info(f"   🏷️  Filtering by tags: {required_tags}")
+                    logger.info(f"   Filtering by tags: {required_tags}")
                 
                 db_wallets = query.all()
                 

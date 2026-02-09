@@ -173,19 +173,27 @@ async def get_database_wallets(
             OTCWallet.is_active == is_active
         )
         
-        # ✅ Filter by tags (FIXED: Use JSONB containment operator)
+        # Filter by tags (works with both JSON and JSONB columns)
         if tags:
             required_tags = [tag.strip() for tag in tags.split(',') if tag.strip()]
-            
-            # PostgreSQL JSONB array contains (OR logic)
+
+            from sqlalchemy import cast, type_coerce, Text
+            from sqlalchemy.dialects.postgresql import JSONB
+
             tag_filters = []
             for tag in required_tags:
-                tag_filters.append(OTCWallet.tags.contains([tag]))
-            
-            # Apply OR filter
+                try:
+                    tag_filters.append(
+                        type_coerce(OTCWallet.tags, JSONB).contains([tag])
+                    )
+                except Exception:
+                    tag_filters.append(
+                        cast(OTCWallet.tags, Text).like(f'%"{tag}"%')
+                    )
+
             if tag_filters:
                 query = query.filter(or_(*tag_filters))
-                logger.info(f"   🏷️  Tag filter (OR logic): {required_tags}")
+                logger.info(f"   Tag filter (OR logic): {required_tags}")
         
         # Get total count
         total_count = query.count()
