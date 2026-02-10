@@ -36,8 +36,8 @@ class L3Order(BaseModel):
     order_id: str = Field(..., description="Exchange-specific unique order ID")
     sequence: Optional[int] = Field(None, description="Sequence number for ordering events")
     side: L3Side = Field(..., description="Order side (bid/ask)")
-    price: float = Field(..., description="Order price", gt=0)
-    size: float = Field(..., description="Order size/quantity", gt=0)
+    price: float = Field(..., description="Order price", ge=0)  # ge=0 allows 0 for "done" events
+    size: float = Field(..., description="Order size/quantity", ge=0)  # ge=0 allows 0 for "done" events
     event_type: L3EventType = Field(..., description="Event type (open/done/change/match)")
     timestamp: datetime = Field(..., description="Event timestamp")
     metadata: Optional[Dict[str, Any]] = Field(
