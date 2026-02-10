@@ -352,16 +352,29 @@ class BitfinexL3(L3Exchange):
 
     def normalize_symbol(self, symbol: str) -> str:
         """
-        Normalize symbol for Bitfinex (BTC/USDT -> tBTCUSDT)
+        Normalize symbol for Bitfinex
+
+        Bitfinex uses different naming:
+        - BTC/USD -> tBTCUSD
+        - BTC/USDT -> tBTCUST (note: UST, not USDT!)
+        - ETH/USD -> tETHUSD
+        - ETH/USDT -> tETHUST
 
         Args:
-            symbol: Symbol in standard format
+            symbol: Symbol in standard format (e.g. "BTC/USDT")
 
         Returns:
-            Bitfinex format symbol
+            Bitfinex format symbol (e.g. "tBTCUST")
         """
-        # Remove slash and add 't' prefix for trading pairs
-        normalized = "t" + symbol.replace("/", "")
+        # Remove slash
+        normalized = symbol.replace("/", "")
+
+        # Bitfinex uses "UST" for Tether, not "USDT"
+        normalized = normalized.replace("USDT", "UST")
+
+        # Add 't' prefix for trading pairs
+        normalized = "t" + normalized
+
         return normalized
 
     # ============================================================================
