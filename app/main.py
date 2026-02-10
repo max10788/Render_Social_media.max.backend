@@ -38,6 +38,7 @@ from app.core.price_movers.api.hybrid_routes import router as hybrid_router
 from app.core.price_movers.api.routes_dex_chart import router as dex_chart_router
 
 from app.core.orderbook_heatmap.api.endpoints import router as orderbook_heatmap_router
+from app.core.orderbook_heatmap.api.level3_endpoints import router as level3_orderbook_router
 
 from app.core.iceberg_orders.api.endpoints import router as iceberg_orders_router
 
@@ -392,6 +393,7 @@ app.include_router(wallet_detail_router)
 app.include_router(hybrid_router)
 app.include_router(dex_chart_router, prefix="/api/v1")
 app.include_router(orderbook_heatmap_router)
+app.include_router(level3_orderbook_router)  # Level 3 order book
 app.include_router(iceberg_orders_router, prefix="/api")
 
 # ------------------------------------------------------------------

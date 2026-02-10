@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 from typing import Optional, Dict, List, Set, Any  # ← FIXED: Set import hinzugefügt
+from datetime import datetime
 from fastapi import WebSocket
 
 
@@ -389,7 +390,7 @@ class WebSocketManager:
     def get_status(self) -> Dict:
         """
         Gibt Status zurück
-        
+
         Returns:
             Status-Dict
         """
@@ -400,3 +401,98 @@ class WebSocketManager:
                 for symbol, connections in self.active_connections.items()
             }
         }
+
+    # ============================================================================
+    # Level 3 Order Book Broadcasting
+    # ============================================================================
+
+    async def broadcast_l3_order(self, order):
+        """
+        Stream individual L3 order to connected clients
+
+        Args:
+            order: L3Order instance
+        """
+        message = {
+            "type": "l3_order",
+            "exchange": order.exchange,
+            "symbol": order.symbol,
+            "data": {
+                "order_id": order.order_id,
+                "sequence": order.sequence,
+                "side": order.side.value,
+                "price": order.price,
+                "size": order.size,
+                "event_type": order.event_type.value,
+                "timestamp": order.timestamp.isoformat(),
+                "metadata": order.metadata
+            }
+        }
+
+        await self._broadcast_to_symbol(order.symbol, message)
+
+    async def broadcast_l3_snapshot(self, snapshot):
+        """
+        Send full L3 snapshot to new clients
+
+        Args:
+            snapshot: L3Orderbook instance
+        """
+        from app.core.orderbook_heatmap.models.level3 import L3Side
+
+        # Create compressed snapshot message
+        message = {
+            "type": "l3_snapshot",
+            "exchange": snapshot.exchange,
+            "symbol": snapshot.symbol,
+            "sequence": snapshot.sequence,
+            "timestamp": snapshot.timestamp.isoformat(),
+            "statistics": {
+                "total_orders": snapshot.get_total_orders(),
+                "bid_count": len(snapshot.bids),
+                "ask_count": len(snapshot.asks),
+                "total_bid_volume": snapshot.get_total_volume(L3Side.BID),
+                "total_ask_volume": snapshot.get_total_volume(L3Side.ASK),
+                "best_bid": snapshot.get_best_bid(),
+                "best_ask": snapshot.get_best_ask(),
+                "spread": snapshot.get_spread(),
+                "mid_price": snapshot.get_mid_price()
+            },
+            "bids": [
+                {
+                    "order_id": order.order_id,
+                    "price": order.price,
+                    "size": order.size
+                }
+                for order in snapshot.bids[:100]  # Top 100 bids
+            ],
+            "asks": [
+                {
+                    "order_id": order.order_id,
+                    "price": order.price,
+                    "size": order.size
+                }
+                for order in snapshot.asks[:100]  # Top 100 asks
+            ]
+        }
+
+        await self._broadcast_to_symbol(snapshot.symbol, message)
+
+    async def broadcast_l3_statistics(self, exchange: str, symbol: str, stats: Dict[str, Any]):
+        """
+        Broadcast L3 statistics update
+
+        Args:
+            exchange: Exchange name
+            symbol: Trading pair
+            stats: Statistics dictionary
+        """
+        message = {
+            "type": "l3_statistics",
+            "exchange": exchange,
+            "symbol": symbol,
+            "timestamp": datetime.utcnow().isoformat(),
+            "data": stats
+        }
+
+        await self._broadcast_to_symbol(symbol, message)
