@@ -356,3 +356,54 @@ class CoinbaseL3(L3Exchange):
         # Coinbase uses USD instead of USDT
         normalized = symbol.replace("/", "-").replace("USDT", "USD")
         return normalized
+
+    # ============================================================================
+    # BaseExchange abstract methods (required but not used for L3)
+    # ============================================================================
+
+    async def connect(self, symbol: str) -> bool:
+        """
+        Connect to Coinbase (BaseExchange requirement)
+
+        Note: For L3, use start_l3_stream() instead
+
+        Args:
+            symbol: Trading pair
+
+        Returns:
+            True if successful
+        """
+        try:
+            await self.start_l3_stream(symbol)
+            return self.is_connected
+        except Exception as e:
+            logger.error(f"Error connecting to Coinbase: {e}")
+            return False
+
+    async def get_orderbook_snapshot(self, symbol: str, limit: int = 100):
+        """
+        Get orderbook snapshot (BaseExchange requirement)
+
+        Note: For L3, use get_l3_snapshot() instead
+
+        Args:
+            symbol: Trading pair
+            limit: Not used for L3
+
+        Returns:
+            None (use get_l3_snapshot for L3 data)
+        """
+        logger.warning("get_orderbook_snapshot() called on L3 exchange - use get_l3_snapshot() instead")
+        return None
+
+    async def _handle_orderbook_update(self, data: Dict[str, Any]):
+        """
+        Handle orderbook update (BaseExchange requirement)
+
+        Note: For L3, updates are handled in subscribe_l3_updates()
+
+        Args:
+            data: Raw data
+        """
+        # Not used for L3 - updates handled in subscribe_l3_updates
+        pass
