@@ -58,8 +58,8 @@ from app.core.otc_analysis.api.admin_otc import router as otc_data_admin_router
 
 # ✅ Vereinfachte Router (ohne Sub-Prefixe)
 from app.core.otc_analysis.api.statistics import router as otc_statistics_router
-from app.core.otc_analysis.api.network import router as otc_network_router
-from app.core.otc_analysis.api.flow import router as otc_flow_router
+from app.core.otc_analysis.api.network import network_router as otc_network_router
+from app.core.otc_analysis.api.flow import flow_router as otc_flow_router
 from app.core.otc_analysis.api.websocket import handle_websocket_connection, set_socketio, live_otc_monitor
 
 # Bei den OTC Analysis API Routes Imports (ca. Zeile 45-55)
