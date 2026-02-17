@@ -2047,6 +2047,11 @@ async def sync_wallet_transactions_to_db(
                 value_wei = str(tx.get('value', '0'))
                 try:
                     value_decimal = float(tx.get('value', 0)) / 1e18 if tx.get('value') else 0
+                    # ✅ Cap value_decimal to prevent database overflow (NUMERIC(36,18) max = 10^18)
+                    MAX_DECIMAL = 999999999999999999.0  # 10^18 - 1
+                    if abs(value_decimal) > MAX_DECIMAL:
+                        logger.debug(f"      ⚠️ Capping oversized value_decimal: {value_decimal:.2e} -> {MAX_DECIMAL:.2e}")
+                        value_decimal = MAX_DECIMAL if value_decimal > 0 else -MAX_DECIMAL
                 except:
                     value_decimal = 0
                 
@@ -2135,9 +2140,10 @@ async def sync_wallet_transactions_to_db(
                 insert_count += 1
                 
                 if insert_count <= 5:
+                    usd_display = f"${usd_value:,.2f}" if usd_value else "$0.00"
                     logger.info(
                         f"      ➕ TX {idx+1} ({tx_hash[:10]}...): "
-                        f"Inserted (${usd_value:,.2f if usd_value else 0})"
+                        f"Inserted ({usd_display})"
                     )
                 
                 # Commit in batches
@@ -2149,10 +2155,13 @@ async def sync_wallet_transactions_to_db(
                 error_count += 1
                 error_msg = f"TX {idx+1}: {str(tx_error)[:100]}"
                 stats["errors"].append(error_msg)
-                
+
                 if error_count <= 3:
                     logger.warning(f"      ⚠️ Error processing {error_msg}")
-                
+
+                # ✅ Rollback session if transaction failed during flush
+                db.rollback()
+
                 continue
         
         # ====================================================================
