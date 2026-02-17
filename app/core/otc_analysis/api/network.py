@@ -281,45 +281,49 @@ async def get_network_graph(
         if generate_links and use_transactions and len(all_wallets) > 0:
             logger.info("   🔄 Checking if transaction sync is needed...")
 
-            # Check if we have any transactions for these wallets
-            wallet_addresses_check = [w.address.lower() for w in all_wallets[:10]]  # Check first 10
-            tx_check = db.query(Transaction).filter(
-                or_(
-                    Transaction.from_address.in_(wallet_addresses_check),
-                    Transaction.to_address.in_(wallet_addresses_check)
-                )
-            ).first()
+            try:
+                # Check if we have any transactions for these wallets
+                wallet_addresses_check = [w.address.lower() for w in all_wallets[:10]]  # Check first 10
+                tx_check = db.query(Transaction).filter(
+                    or_(
+                        Transaction.from_address.in_(wallet_addresses_check),
+                        Transaction.to_address.in_(wallet_addresses_check)
+                    )
+                ).first()
+            except Exception as check_error:
+                logger.error(f"   ❌ Error checking transactions: {check_error}", exc_info=True)
+                tx_check = None
 
-            if not tx_check:
-                logger.warning("   ⚠️ No transactions found - triggering AUTO-SYNC")
-                logger.info("   📡 Syncing transactions for wallets...")
+                if not tx_check:
+                    logger.warning("   ⚠️ No transactions found - triggering AUTO-SYNC")
+                    logger.info("   📡 Syncing transactions for wallets...")
 
-                try:
-                    from app.core.otc_analysis.api.dependencies import sync_wallet_transactions_to_db
+                    try:
+                        from app.core.otc_analysis.api.dependencies import sync_wallet_transactions_to_db
 
-                    sync_count = 0
-                    for wallet in all_wallets[:10]:  # Sync first 10 wallets
-                        logger.info(f"   📡 Syncing {wallet.entity_name or wallet.address[:10]}...")
-                        try:
-                            stats = await sync_wallet_transactions_to_db(
-                                wallet_address=wallet.address,
-                                start_date=start,
-                                end_date=end,
-                                db=db,
-                                limit=100
-                            )
-                            if stats.get("saved", 0) > 0:
-                                sync_count += stats["saved"]
-                        except Exception as wallet_error:
-                            logger.error(f"      ❌ Sync failed for {wallet.address[:10]}: {wallet_error}")
-                            continue
+                        sync_count = 0
+                        for wallet in all_wallets[:10]:  # Sync first 10 wallets
+                            logger.info(f"   📡 Syncing {wallet.entity_name or wallet.address[:10]}...")
+                            try:
+                                stats = await sync_wallet_transactions_to_db(
+                                    wallet_address=wallet.address,
+                                    start_date=start,
+                                    end_date=end,
+                                    db=db,
+                                    limit=100
+                                )
+                                if stats.get("saved", 0) > 0:
+                                    sync_count += stats["saved"]
+                            except Exception as wallet_error:
+                                logger.error(f"      ❌ Sync failed for {wallet.address[:10]}: {wallet_error}")
+                                continue
 
-                    logger.info(f"   ✅ Auto-sync complete: {sync_count} transactions saved")
+                        logger.info(f"   ✅ Auto-sync complete: {sync_count} transactions saved")
 
-                except Exception as sync_error:
-                    logger.error(f"   ❌ Auto-sync failed: {sync_error}", exc_info=True)
-            else:
-                logger.info("   ✅ Transactions already exist, skipping auto-sync")
+                    except Exception as sync_error:
+                        logger.error(f"   ❌ Auto-sync failed: {sync_error}", exc_info=True)
+                else:
+                    logger.info("   ✅ Transactions already exist, skipping auto-sync")
 
         if generate_links and len(all_wallets) > 1:
             wallet_addresses = [w.address.lower() for w in all_wallets]
