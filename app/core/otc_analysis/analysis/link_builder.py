@@ -295,7 +295,7 @@ class LinkBuilder:
         wallet_map: Dict,
         start_date: datetime,
         end_date: datetime,
-        max_wallets: int = 10
+        max_wallets: int = 50  # ✅ Increased from 10 to 50 wallets
     ) -> Dict:
         """
         Extract links by analyzing blockchain transactions.

@@ -80,10 +80,10 @@ def _get_category_from_wallet(wallet: OTCWallet) -> str:
 async def get_sankey_flow(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
-    min_flow_size: float = Query(100000),
+    min_flow_size: float = Query(10000),  # ✅ Lowered from $100k to $10k
     generate_links: bool = Query(True, description="Generate links from data (discovery + blockchain)"),
     use_discovery: bool = Query(True, description="Use discovery data for fast link generation"),
-    use_transactions: bool = Query(False, description="Use blockchain transactions (slower but complete)"),
+    use_transactions: bool = Query(True, description="Use blockchain transactions (slower but complete)"),  # ✅ ENABLED real transaction analysis
     db: Session = Depends(get_db),
     link_builder = Depends(get_link_builder)  # ✨ NEW
 ):

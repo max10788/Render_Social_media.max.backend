@@ -97,7 +97,7 @@ async def get_network_graph(
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
     max_nodes: int = Query(500, le=1000),
-    min_flow_size: float = Query(100000),
+    min_flow_size: float = Query(10000),  # ✅ Lowered from $100k to $10k
     min_confidence: float = Query(0),
     include_otc: bool = Query(True, description="Include OTC desks"),
     include_wallets: bool = Query(True, description="Include high volume wallets"),
@@ -105,7 +105,7 @@ async def get_network_graph(
     generate_links: bool = Query(True, description="Generate links between wallets"),
     use_saved_links: bool = Query(True, description="Include saved links from database"),
     use_discovery: bool = Query(True, description="Use discovery data for link generation"),
-    use_transactions: bool = Query(False, description="Use blockchain transactions for links"),
+    use_transactions: bool = Query(True, description="Use blockchain transactions for links"),  # ✅ ENABLED real transaction analysis
     min_link_strength: float = Query(0, description="Minimum link strength for saved links"),
     db: Session = Depends(get_db),
     link_builder = Depends(get_link_builder)
