@@ -2046,7 +2046,15 @@ async def sync_wallet_transactions_to_db(
                 # Get ETH value
                 value_wei = str(tx.get('value', '0'))
                 try:
-                    value_decimal = float(tx.get('value', 0)) / 1e18 if tx.get('value') else 0
+                    raw_value = float(tx.get('value', 0))
+                    value_decimal = raw_value / 1e18 if tx.get('value') else 0
+
+                    # ✅ Skip spam tokens with absurd values (>10^27)
+                    if raw_value > 1e27:
+                        logger.debug(f"      🗑️  Skipping spam token TX {tx.get('hash', '')[:10]}: value={raw_value:.2e}")
+                        skip_count += 1
+                        continue
+
                     # ✅ Cap value_decimal to prevent database overflow (NUMERIC(36,18) max = 10^18)
                     MAX_DECIMAL = 999999999999999999.0  # 10^18 - 1
                     if abs(value_decimal) > MAX_DECIMAL:
