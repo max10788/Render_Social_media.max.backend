@@ -278,8 +278,7 @@ async def get_network_graph(
         # AUTO-SYNC: Fetch transactions if using transaction-based links
         # ====================================================================
 
-        # ✅ DISABLED AUTO-SYNC TEMPORARILY TO DEBUG
-        if False and generate_links and use_transactions and len(all_wallets) > 0:
+        if generate_links and use_transactions and len(all_wallets) > 0:
             logger.info("   🔄 Checking if transaction sync is needed...")
 
             try:

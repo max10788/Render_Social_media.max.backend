@@ -2126,8 +2126,8 @@ async def sync_wallet_transactions_to_db(
                     tx_hash=tx_hash,
                     block_number=int(tx.get('blockNumber', 0) or tx.get('block_number', 0) or 0),
                     timestamp=tx_timestamp,
-                    from_address=tx.get('from', '').lower(),
-                    to_address=tx.get('to', '').lower(),
+                    from_address=(tx.get('from_address') or tx.get('from', '')).lower(),
+                    to_address=(tx.get('to_address') or tx.get('to', '')).lower(),
                     token_address=tx.get('tokenAddress') or tx.get('token_address'),
                     value=value_decimal,  # ETH-denominated (not raw wei) to fit Numeric(36,18)
                     value_decimal=value_decimal,
@@ -2144,21 +2144,32 @@ async def sync_wallet_transactions_to_db(
                     updated_at=datetime.now()
                 )
                 
-                db.add(new_tx)
+                # Use savepoint so one failed TX doesn't rollback the whole batch
+                try:
+                    db.begin_nested()  # SAVEPOINT
+                    db.add(new_tx)
+                    db.flush()
+                except Exception as flush_error:
+                    # Savepoint rolled back automatically, session still usable
+                    error_count += 1
+                    if error_count <= 3:
+                        logger.warning(f"      ⚠️ TX {idx+1} ({tx_hash[:10]}...): {str(flush_error)[:80]}")
+                    continue
+
                 insert_count += 1
-                
+
                 if insert_count <= 5:
                     usd_display = f"${usd_value:,.2f}" if usd_value else "$0.00"
                     logger.info(
                         f"      ➕ TX {idx+1} ({tx_hash[:10]}...): "
                         f"Inserted ({usd_display})"
                     )
-                
+
                 # Commit in batches
                 if insert_count % 50 == 0:
                     db.commit()
                     logger.info(f"      ✅ Committed {insert_count} inserts...")
-                
+
             except Exception as tx_error:
                 error_count += 1
                 error_msg = f"TX {idx+1}: {str(tx_error)[:100]}"
@@ -2167,7 +2178,6 @@ async def sync_wallet_transactions_to_db(
                 if error_count <= 3:
                     logger.warning(f"      ⚠️ Error processing {error_msg}")
 
-                # ✅ Rollback session if transaction failed during flush
                 db.rollback()
 
                 continue
