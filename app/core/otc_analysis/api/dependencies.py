@@ -2138,7 +2138,7 @@ async def sync_wallet_transactions_to_db(
                     method_id=tx.get('methodId') or tx.get('method_id'),
                     otc_score=otc_score,
                     is_suspected_otc=otc_score > 0.7,
-                    # ✅ REMOVED: needs_enrichment
+                    chain='ethereum',
                     chain_id=1,
                     created_at=datetime.now(),
                     updated_at=datetime.now()

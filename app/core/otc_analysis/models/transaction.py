@@ -35,6 +35,7 @@ class Transaction(Base):
     is_suspected_otc = Column(Boolean, default=False, index=True)
     
     # Metadata
+    chain = Column(String(20), nullable=False, default='ethereum')  # Required by DB schema
     chain_id = Column(Integer, nullable=False, default=1)  # 1=Ethereum, 56=BSC, etc.
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
