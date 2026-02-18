@@ -2129,7 +2129,7 @@ async def sync_wallet_transactions_to_db(
                     from_address=tx.get('from', '').lower(),
                     to_address=tx.get('to', '').lower(),
                     token_address=tx.get('tokenAddress') or tx.get('token_address'),
-                    value=value_wei,
+                    value=value_decimal,  # ETH-denominated (not raw wei) to fit Numeric(36,18)
                     value_decimal=value_decimal,
                     usd_value=usd_value,
                     gas_used=int(tx.get('gasUsed', 0) or tx.get('gas_used', 0) or 0),
@@ -2176,8 +2176,15 @@ async def sync_wallet_transactions_to_db(
         # FINAL COMMIT & SUMMARY
         # ====================================================================
         
-        db.commit()
-        
+        try:
+            db.commit()
+        except Exception as commit_error:
+            logger.error(f"   ❌ Final commit failed: {commit_error}")
+            db.rollback()
+            lost_count = insert_count % 50
+            stats["errors"].append(f"Final commit failed, ~{lost_count} transactions lost: {str(commit_error)[:200]}")
+            logger.warning(f"   ⚠️ ~{lost_count} transactions lost from final batch (previous batches committed OK)")
+
         stats["saved_count"] = insert_count
         stats["updated_count"] = update_count
         stats["skipped_count"] = skip_count
@@ -2265,7 +2272,6 @@ async def enrich_missing_usd_values(
             transactions = db.query(Transaction).filter(
                 (Transaction.usd_value == None) | (Transaction.usd_value == 0),
                 Transaction.value_decimal > 0.01,  # Nur > 0.01 ETH
-                Transaction.needs_enrichment == True
             ).order_by(
                 Transaction.value_decimal.desc()  # Größte zuerst
             ).limit(batch_size).all()
@@ -2322,9 +2328,8 @@ async def enrich_missing_usd_values(
                         tx.usd_value = usd_value
                         tx.otc_score = min(usd_value / 1000000, 1.0) if usd_value > 100000 else 0.0
                         tx.is_suspected_otc = tx.otc_score > 0.7
-                        tx.needs_enrichment = False
                         tx.updated_at = datetime.now()
-                        
+
                         stats["enriched"] += 1
                         
                         # Commit in small batches
@@ -2339,8 +2344,6 @@ async def enrich_missing_usd_values(
                         await asyncio.sleep(delay_between_calls)
                         
                     else:
-                        # Mark as failed (don't retry in next batch)
-                        tx.needs_enrichment = False
                         tx.updated_at = datetime.now()
                         stats["failed"] += 1
                     

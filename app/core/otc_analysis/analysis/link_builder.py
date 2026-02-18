@@ -374,7 +374,7 @@ class LinkBuilder:
                 for tx in filtered_txs:
                     from_addr = tx.get('from', '').lower()
                     to_addr = tx.get('to', '').lower()
-                    
+
                     # Check if both addresses are in our wallet map
                     if from_addr in wallet_map and to_addr in wallet_map and from_addr != to_addr:
                         # Get USD value
@@ -433,11 +433,11 @@ class LinkBuilder:
         }
         """
         sankey_links = []
-        
+
         for (source_addr, target_addr), data in links_data.items():
             source_info = wallet_map.get(source_addr, {})
             target_info = wallet_map.get(target_addr, {})
-            
+
             sankey_links.append({
                 "source": source_info.get("label", source_addr[:10]),
                 "target": target_info.get("label", target_addr[:10]),
@@ -448,7 +448,7 @@ class LinkBuilder:
                 "source_type": data.get("source", "unknown"),
                 "transactions": data.get("transactions", [])  # ✅ NEW: Include TX details
             })
-        
+
         return sankey_links
     
     def _format_as_cytoscape_edges(self, links_data: Dict, wallet_map: Dict) -> List[Dict]:

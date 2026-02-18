@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, BigInteger, Float, DateTime, Integer, Boolean, Index
+from sqlalchemy import Column, String, BigInteger, Float, DateTime, Integer, Boolean, Index, Numeric
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
@@ -18,13 +18,13 @@ class Transaction(Base):
     token_address = Column(String(42), nullable=True, index=True)  # None for native ETH
     
     # Value information
-    value = Column(String(78), nullable=False)  # Wei/smallest unit as string to avoid overflow
+    value = Column(Numeric(36, 18), nullable=True)  # ETH-denominated value matching DB schema
     value_decimal = Column(Float, nullable=False)  # Human-readable amount
     usd_value = Column(Float, nullable=True, index=True)
     
     # Gas information
     gas_used = Column(BigInteger)
-    gas_price = Column(BigInteger)
+    gas_price = Column(Numeric(36, 18))
     
     # Classification
     is_contract_interaction = Column(Boolean, default=False)
