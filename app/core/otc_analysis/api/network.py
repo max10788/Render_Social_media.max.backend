@@ -283,7 +283,7 @@ async def get_network_graph(
 
             try:
                 # Check if we have any transactions for these wallets
-                wallet_addresses_check = [w.address.lower() for w in all_wallets[:10]]  # Check first 10
+                wallet_addresses_check = [w.address.lower() for w in all_wallets[:10]]
                 tx_check = db.query(Transaction).filter(
                     or_(
                         Transaction.from_address.in_(wallet_addresses_check),
@@ -294,36 +294,32 @@ async def get_network_graph(
                 logger.error(f"   ❌ Error checking transactions: {check_error}", exc_info=True)
                 tx_check = None
 
-                if not tx_check:
-                    logger.warning("   ⚠️ No transactions found - triggering AUTO-SYNC")
-                    logger.info("   📡 Syncing transactions for wallets...")
+            if not tx_check:
+                logger.warning("   ⚠️ No transactions found - triggering AUTO-SYNC")
+                logger.info("   📡 Syncing transactions for wallets...")
 
-                    try:
-                        from app.core.otc_analysis.api.dependencies import sync_wallet_transactions_to_db
+                try:
+                    from app.core.otc_analysis.api.dependencies import sync_wallet_transactions_to_db
 
-                        sync_count = 0
-                        for wallet in all_wallets[:10]:  # Sync first 10 wallets
-                            logger.info(f"   📡 Syncing {wallet.entity_name or wallet.address[:10]}...")
-                            try:
-                                stats = await sync_wallet_transactions_to_db(
-                                    wallet_address=wallet.address,
-                                    start_date=start,
-                                    end_date=end,
-                                    db=db,
-                                    limit=100
-                                )
-                                if stats.get("saved", 0) > 0:
-                                    sync_count += stats["saved"]
-                            except Exception as wallet_error:
-                                logger.error(f"      ❌ Sync failed for {wallet.address[:10]}: {wallet_error}")
-                                continue
+                    sync_count = 0
+                    for wallet in all_wallets[:10]:
+                        logger.info(f"   📡 Syncing {wallet.entity_name or wallet.address[:10]}...")
+                        try:
+                            stats = await sync_wallet_transactions_to_db(
+                                wallet_address=wallet.address,
+                                db=db,
+                            )
+                            sync_count += stats.get("saved_count", 0)
+                        except Exception as wallet_error:
+                            logger.error(f"      ❌ Sync failed for {wallet.address[:10]}: {wallet_error}")
+                            continue
 
-                        logger.info(f"   ✅ Auto-sync complete: {sync_count} transactions saved")
+                    logger.info(f"   ✅ Auto-sync complete: {sync_count} transactions saved")
 
-                    except Exception as sync_error:
-                        logger.error(f"   ❌ Auto-sync failed: {sync_error}", exc_info=True)
-                else:
-                    logger.info("   ✅ Transactions already exist, skipping auto-sync")
+                except Exception as sync_error:
+                    logger.error(f"   ❌ Auto-sync failed: {sync_error}", exc_info=True)
+            else:
+                logger.info("   ✅ Transactions already exist, skipping auto-sync")
 
         if generate_links and len(all_wallets) > 1:
             wallet_addresses = [w.address.lower() for w in all_wallets]
@@ -350,7 +346,12 @@ async def get_network_graph(
                     saved_links = db.query(WalletLink).filter(
                         WalletLink.is_active == True,
                         WalletLink.link_strength >= min_link_strength,
-                        WalletLink.total_volume_usd >= min_flow_size,
+                        # Include links with volume >= threshold OR discovery-based links (no volume)
+                        or_(
+                            WalletLink.total_volume_usd >= min_flow_size,
+                            WalletLink.total_volume_usd == None,
+                            WalletLink.total_volume_usd == 0
+                        ),
                         WalletLink.from_address.in_(wallet_addresses),
                         WalletLink.to_address.in_(wallet_addresses)
                     ).order_by(WalletLink.total_volume_usd.desc()).limit(200).all()
@@ -478,18 +479,15 @@ async def get_network_graph(
                     logger.error(f"   ⚠️ Error generating links: {e}", exc_info=True)
             
             # ================================================================
-            # 3C: TRANSACTION-BASED LINKS (Wallet ↔ OTC)
+            # 3C: TRANSACTION-BASED LINKS (ANY wallet ↔ wallet)
             # ================================================================
-            
-            if use_transactions and len(high_volume_wallets) > 0 and len(otc_wallets) > 0:
+
+            if use_transactions and len(wallet_addresses) > 1:
                 try:
-                    logger.info(f"   📊 Generating Wallet ↔ OTC links from transactions...")
-                    
-                    wallet_addrs = [w.address.lower() for w in high_volume_wallets]
-                    otc_addrs = [w.address.lower() for w in otc_wallets]
-                    
+                    logger.info(f"   📊 Generating transaction-based links between {len(wallet_addresses)} wallets...")
+
                     from app.core.otc_analysis.models.transaction import Transaction
-                    
+
                     tx_links = db.query(
                         Transaction.from_address,
                         Transaction.to_address,
@@ -498,21 +496,12 @@ async def get_network_graph(
                     ).filter(
                         Transaction.timestamp >= start,
                         Transaction.timestamp <= end,
-                        or_(
-                            and_(
-                                Transaction.from_address.in_(wallet_addrs),
-                                Transaction.to_address.in_(otc_addrs)
-                            ),
-                            and_(
-                                Transaction.from_address.in_(otc_addrs),
-                                Transaction.to_address.in_(wallet_addrs)
-                            )
-                        )
+                        Transaction.from_address.in_(wallet_addresses),
+                        Transaction.to_address.in_(wallet_addresses),
+                        Transaction.from_address != Transaction.to_address
                     ).group_by(
                         Transaction.from_address,
                         Transaction.to_address
-                    ).having(
-                        func.coalesce(func.sum(Transaction.usd_value), 0) >= min_flow_size
                     ).all()
                     
                     tx_count = 0
