@@ -156,17 +156,70 @@ async def get_sankey_flow(
         ]
         
         # ====================================================================
-        # ✨ NEW: USE LINKBUILDER FOR FAST LINK GENERATION
+        # SAVED LINKS FROM DATABASE (same source as network graph edges)
         # ====================================================================
-        
+
         links = []
         link_metadata = {}
-        
-        if generate_links and len(wallets) > 1:
+        unique_link_pairs: set = set()
+
+        wallet_addresses = [w.address.lower() for w in wallets]
+        addr_to_label = {
+            w.address.lower(): w.label or f"{w.address[:8]}..."
+            for w in wallets
+        }
+
+        try:
+            from app.core.otc_analysis.models.wallet_link import WalletLink
+
+            logger.info(f"   💾 Loading saved links from database...")
+
+            saved_links = db.query(WalletLink).filter(
+                WalletLink.is_active == True,
+                or_(
+                    WalletLink.total_volume_usd >= min_flow_size,
+                    WalletLink.total_volume_usd == None,
+                    WalletLink.total_volume_usd == 0,
+                ),
+                WalletLink.from_address.in_(wallet_addresses),
+                WalletLink.to_address.in_(wallet_addresses),
+            ).order_by(WalletLink.total_volume_usd.desc()).limit(200).all()
+
+            logger.info(f"   ✅ Found {len(saved_links)} saved links")
+
+            for link in saved_links:
+                from_addr = link.from_address.lower()
+                to_addr = link.to_address.lower()
+                pair = (from_addr, to_addr)
+                if pair not in unique_link_pairs:
+                    unique_link_pairs.add(pair)
+                    links.append({
+                        "source": addr_to_label.get(from_addr, from_addr[:8]),
+                        "target": addr_to_label.get(to_addr, to_addr[:8]),
+                        "value": float(link.total_volume_usd or 0),
+                        "from_address": from_addr,
+                        "to_address": to_addr,
+                        "transaction_count": link.transaction_count or 0,
+                        "link_strength": float(link.link_strength or 0),
+                        "is_suspected_otc": link.is_suspected_otc or False,
+                        "source_type": "database",
+                    })
+
+        except ImportError:
+            logger.warning("   ⚠️ WalletLink model not found - skipping saved links")
+            db.rollback()
+        except Exception as saved_err:
+            logger.warning(f"   ⚠️ Error loading saved links: {saved_err}")
+            db.rollback()
+
+        # ====================================================================
+        # LINKBUILDER FALLBACK (discovery + blockchain) when no saved links
+        # ====================================================================
+
+        if generate_links and len(wallets) > 1 and not links:
             try:
-                logger.info(f"   🔗 Building links using LinkBuilder...")
-                
-                # Use LinkBuilder service
+                logger.info(f"   🔗 No saved links found, trying LinkBuilder...")
+
                 result = link_builder.build_links(
                     db=db,
                     wallets=wallets,
@@ -176,17 +229,22 @@ async def get_sankey_flow(
                     use_discovery=use_discovery,
                     use_transactions=use_transactions
                 )
-                
-                # Extract Sankey links
-                links = result.get("sankey_links", [])
+
+                generated = result.get("sankey_links", [])
                 link_metadata = result.get("metadata", {})
-                
+
+                for lnk in generated:
+                    pair = (lnk.get("source_address", ""), lnk.get("target_address", ""))
+                    if pair not in unique_link_pairs:
+                        unique_link_pairs.add(pair)
+                        links.append(lnk)
+
                 logger.info(
                     f"   ✅ LinkBuilder: {len(links)} links "
                     f"(source: {link_metadata.get('source', 'unknown')}, "
                     f"cached: {link_metadata.get('cached', False)})"
                 )
-                
+
             except Exception as link_error:
                 logger.error(f"   ⚠️ Error generating links: {link_error}", exc_info=True)
                 logger.info(f"   Continuing with nodes only...")
