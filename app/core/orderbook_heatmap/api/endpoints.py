@@ -19,6 +19,7 @@ from app.core.orderbook_heatmap.models.orderbook import Exchange, AggregatedOrde
 from app.core.orderbook_heatmap.models.heatmap import HeatmapConfig, HeatmapSnapshot, HeatmapTimeSeries
 
 # CEX Imports
+from app.core.orderbook_heatmap.exchanges.bitget_l2 import BitgetL2DataFetcher, L2_TOKEN_MAP
 from app.core.orderbook_heatmap.exchanges.binance import BinanceExchange
 from app.core.orderbook_heatmap.exchanges.bitget import BitgetExchange
 from app.core.orderbook_heatmap.exchanges.kraken import KrakenExchange
@@ -1247,6 +1248,121 @@ async def price_websocket_endpoint(websocket: WebSocket, symbol: str):
             await websocket.close(code=1011, reason=str(e))
         except:
             pass
+
+# ============================================================================
+# CEX LAYER 2 HEATMAP ENDPOINTS (Bitget public API)
+# ============================================================================
+
+_bitget_l2 = BitgetL2DataFetcher()
+
+
+@router.get("/cex/l2/networks")
+async def get_l2_networks():
+    """
+    Gibt alle unterstützten L2-Netzwerke und ihre Token zurück.
+    """
+    return {
+        "source": "bitget_cex",
+        "networks": {
+            net: list(tokens.keys())
+            for net, tokens in L2_TOKEN_MAP.items()
+        },
+        "total_networks": len(L2_TOKEN_MAP),
+    }
+
+
+@router.get("/cex/l2/heatmap")
+async def get_cex_l2_heatmap(
+    limit: int = Query(50, ge=5, le=150, description="Orderbook-Tiefe pro Token"),
+):
+    """
+    Holt CEX Layer-2-Liquiditätsdaten von Bitget für alle unterstützten L2-Netzwerke.
+
+    Gibt zurück:
+    - Orderbook-Snapshots (bids/asks) für jeden L2-Token
+    - Ticker-Daten (Preis, 24h-Vol, Change)
+    - Aggregierte Heatmap-Matrix: [Netzwerk × Metrik]
+      Metriken: bid_depth_usd | ask_depth_usd | volume_24h (USD)
+
+    Verwendung im Frontend:
+    - matrix[i][0] = Bid-Tiefe des i-ten Netzwerks in USD
+    - matrix[i][1] = Ask-Tiefe des i-ten Netzwerks in USD
+    - matrix[i][2] = 24h-Handelsvolumen in USD
+    """
+    logger.info("=" * 60)
+    logger.info("📊 CEX L2 HEATMAP REQUEST (Bitget)")
+    logger.info("=" * 60)
+
+    try:
+        data = await _bitget_l2.get_all_l2_heatmap_data(limit=limit)
+        data["timestamp"] = datetime.utcnow().isoformat()
+        logger.info(
+            f"✅ CEX L2 Heatmap: {len(data.get('networks', {}))} networks fetched"
+        )
+        return data
+
+    except Exception as e:
+        logger.error(f"❌ CEX L2 Heatmap error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cex/l2/{network}")
+async def get_cex_l2_network(
+    network: str,
+    limit: int = Query(50, ge=5, le=150, description="Orderbook-Tiefe pro Token"),
+):
+    """
+    Holt CEX L2-Orderbook-Daten für ein einzelnes Netzwerk von Bitget.
+
+    Beispiel: GET /cex/l2/arbitrum
+    Gibt Orderbook-Snapshots für ARB/USDT zurück.
+    """
+    network = network.lower()
+    if network not in L2_TOKEN_MAP:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Netzwerk '{network}' nicht unterstützt. Verfügbar: {list(L2_TOKEN_MAP.keys())}",
+        )
+
+    logger.info(f"📊 CEX L2 Network Request: {network}")
+
+    try:
+        result = await _bitget_l2.get_l2_orderbooks_for_network(network, limit=limit)
+
+        if not result:
+            return {
+                "network":   network,
+                "tokens":    {},
+                "timestamp": datetime.utcnow().isoformat(),
+                "_note":     "Keine Daten von Bitget erhalten.",
+            }
+
+        # Bid/Ask-Tiefe in USD berechnen
+        enriched: dict = {}
+        for token, ob in result.items():
+            bids = ob.get("bids", [])
+            asks = ob.get("asks", [])
+            best_bid = float(bids[0][0]) if bids else 0.0
+            best_ask = float(asks[0][0]) if asks else 0.0
+            mid = (best_bid + best_ask) / 2 if best_bid and best_ask else 0.0
+            enriched[token] = {
+                **ob,
+                "mid_price":     round(mid, 6),
+                "bid_depth_usd": round(sum(float(p) * float(q) for p, q in bids if p and q), 2),
+                "ask_depth_usd": round(sum(float(p) * float(q) for p, q in asks if p and q), 2),
+            }
+
+        return {
+            "source":    "bitget_cex",
+            "network":   network,
+            "tokens":    enriched,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"❌ CEX L2 {network} error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/price/{symbol}")
 async def get_price_endpoint(symbol: str):

@@ -24,7 +24,6 @@ from .dependencies import (
     get_wallet_profiler,
     get_otc_detector,
     node_provider,
-    ensure_registry_wallets_in_db
 )
 
 logger = logging.getLogger(__name__)
@@ -74,9 +73,6 @@ async def get_otc_desks(
     logger.info(f"🏢 GET /desks: discovered={include_discovered}, db={include_db_validated}, min_conf={min_confidence}, tags={tags}")
     
     try:
-        # ✅ AUTO-SYNC: Ensure registry wallets in DB
-        await ensure_registry_wallets_in_db(db, max_to_fetch=3)
-        
         # ✅ Parse tags parameter
         required_tags = None
         if tags:
