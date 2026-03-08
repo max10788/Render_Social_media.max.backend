@@ -24,8 +24,7 @@ logger = logging.getLogger(__name__)
 # Format: { "network": { "token": "BITGET_SYMBOL" } }
 L2_TOKEN_MAP: Dict[str, Dict[str, str]] = {
     "polygon": {
-        "MATIC": "MATICUSDT",
-        "POL":   "POLUSDT",
+        "POL": "POLUSDT",   # MATIC wurde auf POL migriert (Bitget unterstützt MATICUSDT nicht mehr)
     },
     "arbitrum": {
         "ARB": "ARBUSDT",

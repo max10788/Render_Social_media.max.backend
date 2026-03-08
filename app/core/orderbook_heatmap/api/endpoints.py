@@ -47,6 +47,26 @@ router = APIRouter(prefix="/api/v1/orderbook-heatmap", tags=["Orderbook Heatmap"
 aggregator: Optional[any] = None
 ws_manager: Optional[any] = None
 
+class OHLCVBar(BaseModel):
+    timestamp: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+class HMMRegimeRequest(BaseModel):
+    data: List[OHLCVBar] = Field(..., description="OHLCV-Bars (mind. train_bars+10 Einträge)")
+    n_states: int = Field(default=3, ge=2, le=8, description="Anzahl Hidden States")
+    train_bars: int = Field(default=120, ge=20, le=500, description="Mindest-Bars für Initial-Training")
+    use_volume: bool = Field(default=True, description="Volume als Feature einbeziehen")
+    retrain_every: int = Field(default=0, ge=0, description="Retraining alle N Bars (0=deaktiviert)")
+    covariance_type: str = Field(default="diag", description="HMM Kovarianz-Typ: full|diag|tied|spherical")
+    n_iter: int = Field(default=200, ge=50, le=1000, description="EM-Iterationen")
+    max_signal_bars: int = Field(default=1000, ge=10, le=10000, description="Max. zurückgegebene Signal-Bars")
+
+
 class StartHeatmapRequest(BaseModel):
     symbol: str = Field(..., description="Trading Pair (z.B. BTC/USDT)")
     exchanges: List[str] = Field(
@@ -1362,6 +1382,205 @@ async def get_cex_l2_network(
     except Exception as e:
         logger.error(f"❌ CEX L2 {network} error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===========================================================================
+# MARKOV L2 SIMULATOR ENDPOINT
+# ===========================================================================
+
+@router.post("/markov/l2-simulate")
+async def markov_l2_simulate(
+    token: str = Query("ARB", description="Token-Symbol, z.B. ARB, OP, POL, IMX"),
+    network: str = Query("arbitrum", description="L2-Netzwerk, z.B. arbitrum, optimism, polygon"),
+    n_snapshots: int = Query(20, ge=5, le=80, description="Anzahl Live-Snapshots für Training"),
+    n_paths: int = Query(300, ge=50, le=2000, description="Anzahl Monte-Carlo-Pfade"),
+    n_steps: int = Query(50, ge=10, le=500, description="Schritte pro Simulationspfad"),
+    price_step_std: float = Query(25.0, ge=0.0001, le=500.0, description="Std der Preis-Schritte"),
+    wall_bounce_factor: float = Query(0.7, ge=0.1, le=1.0, description="Reflexionswahrscheinlichkeits-Faktor"),
+    persistence_window: int = Query(5, ge=2, le=20, description="Min. Snapshots für Wall-Aktivierung"),
+    interval_seconds: float = Query(0.5, ge=0.1, le=5.0, description="Pause zwischen Snapshots in Sekunden"),
+    seed: Optional[int] = Query(None, description="Random Seed für Reproduzierbarkeit"),
+    limit: int = Query(50, ge=5, le=150, description="Orderbook-Tiefe pro Abruf"),
+):
+    """
+    Markov-Monte-Carlo-Simulation basierend auf Live-L2-Orderbuch-Daten von Bitget.
+
+    Workflow:
+    1. Sammelt n_snapshots Orderbook-Snapshots vom Bitget CEX für das angegebene L2-Token
+    2. Trainiert eine Markov-Übergangsmatrix auf den Snapshots (Wall-Erkennung, Zonen-Klassifikation)
+    3. Führt n_paths Monte-Carlo-Simulationen durch (n_steps Schritte je Pfad)
+    4. Gibt Preis-Fan (5/25/50/75/95-Perzentil), Statistiken und erkannte Liquiditätswände zurück
+
+    Hinweis: Die Snapshot-Sammlung dauert ca. n_snapshots × interval_seconds Sekunden.
+    """
+    from app.core.orderbook_heatmap.markov.l2_simulator import (
+        run_l2_markov_simulation,
+        check_imports,
+    )
+
+    # Import-Check
+    ok, err = check_imports()
+    if not ok:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Backtest-Simulator nicht verfügbar: {err}",
+        )
+
+    # Token/Netzwerk validieren
+    network_lower = network.lower()
+    token_upper = token.upper()
+    if network_lower not in L2_TOKEN_MAP:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Netzwerk '{network}' nicht unterstützt. Verfügbar: {list(L2_TOKEN_MAP.keys())}",
+        )
+    if token_upper not in L2_TOKEN_MAP[network_lower]:
+        available_tokens = list(L2_TOKEN_MAP[network_lower].keys())
+        raise HTTPException(
+            status_code=422,
+            detail=f"Token '{token}' für Netzwerk '{network}' nicht verfügbar. Verfügbar: {available_tokens}",
+        )
+
+    bitget_symbol = L2_TOKEN_MAP[network_lower][token_upper]
+    display_symbol = f"{token_upper}/USDT"
+
+    logger.info(
+        f"📊 Markov L2 Simulation: {display_symbol} ({network}) | "
+        f"snapshots={n_snapshots}, paths={n_paths}, steps={n_steps}"
+    )
+
+    # Snapshots sammeln
+    raw_snapshots: List[Dict[str, Any]] = []
+    for i in range(n_snapshots):
+        ob = await _bitget_l2.get_orderbook(bitget_symbol, limit=limit)
+        if ob is not None:
+            raw_snapshots.append(ob)
+        if i < n_snapshots - 1:
+            await asyncio.sleep(interval_seconds)
+
+    if len(raw_snapshots) < persistence_window + 2:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Bitget lieferte nur {len(raw_snapshots)} verwertbare Snapshots "
+                f"(Minimum: {persistence_window + 2}). Bitte später erneut versuchen."
+            ),
+        )
+
+    logger.info(f"✅ {len(raw_snapshots)} Snapshots gesammelt, starte Simulation...")
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: run_l2_markov_simulation(
+                snapshots=raw_snapshots,
+                symbol=display_symbol,
+                n_paths=n_paths,
+                n_steps=n_steps,
+                price_step_std=price_step_std,
+                wall_bounce_factor=wall_bounce_factor,
+                persistence_window=persistence_window,
+                seed=seed,
+            ),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ Markov Simulation Fehler: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {
+        "success": True,
+        "token": token_upper,
+        "network": network_lower,
+        "bitget_symbol": bitget_symbol,
+        **result,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+# ===========================================================================
+# HMM MARKOV REGIME DETECTOR ENDPOINT
+# ===========================================================================
+
+@router.post("/markov/regime-signals")
+async def hmm_regime_signals(request: HMMRegimeRequest):
+    """
+    HMM-basierte Marktregime-Erkennung via Gaussian Hidden Markov Model.
+
+    Klassifiziert OHLCV-Bars in N diskrete Hidden States (z.B. Bär/Seitwärts/Bulle).
+    Identifiziert automatisch den "Bull State" anhand des höchsten mittleren Log-Returns.
+
+    Workflow:
+    1. GaussianHMM auf den ersten train_bars Bars trainieren
+    2. Für jeden Bar: Viterbi-Dekodierung → Hidden State
+    3. Bull-State-Detektion: State mit höchstem mean log-return
+    4. Signale: +1 (Einstieg), -1 (Ausstieg), 0 (Halten)
+
+    Hinweis: CPU-intensiv — läuft im ThreadPoolExecutor (non-blocking).
+    Benötigt hmmlearn: pip install hmmlearn
+    """
+    from app.core.orderbook_heatmap.markov.hmm_regime import (
+        run_hmm_regime,
+        check_imports,
+    )
+    from concurrent.futures import ThreadPoolExecutor
+
+    # Import-Check
+    ok, err = check_imports()
+    if not ok:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"hmmlearn nicht verfügbar: {err}. "
+                f"Installiere mit: pip install hmmlearn>=0.3.0"
+            ),
+        )
+
+    n_bars = len(request.data)
+    min_bars = request.train_bars + 10
+    if n_bars < min_bars:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Zu wenig Bars: {n_bars} übergeben, mindestens {min_bars} erforderlich "
+                f"(train_bars={request.train_bars} + 10 Puffer)."
+            ),
+        )
+
+    ohlcv_list = [bar.dict() for bar in request.data]
+    params = {
+        "n_states":        request.n_states,
+        "train_bars":      request.train_bars,
+        "use_volume":      request.use_volume,
+        "retrain_every":   request.retrain_every,
+        "covariance_type": request.covariance_type,
+        "n_iter":          request.n_iter,
+    }
+
+    logger.info(
+        f"📊 HMM Regime: {n_bars} Bars | n_states={request.n_states} | "
+        f"train_bars={request.train_bars} | use_volume={request.use_volume}"
+    )
+
+    try:
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as pool:
+            result = await loop.run_in_executor(
+                pool,
+                lambda: run_hmm_regime(ohlcv_list, params, request.max_signal_bars),
+            )
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ HMM Regime Fehler: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"success": True, **result}
 
 
 @router.get("/price/{symbol}")
