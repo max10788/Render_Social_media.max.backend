@@ -1,24 +1,19 @@
 """
 hmm_regime.py — Wrapper für den HMM Markov Regime Detector aus dem Backtest.
 
-Importiert MarkovRegime aus dem Backtest-Paket, konvertiert JSON-OHLCV-Daten
-in pandas DataFrames und gibt strukturierte Regime-Signale zurück.
+Importiert MarkovRegime aus dem lokalen backtest_modules-Paket,
+konvertiert JSON-OHLCV-Daten in pandas DataFrames und gibt
+strukturierte Regime-Signale zurück.
 """
 from __future__ import annotations
 
-import sys
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Backtest-Paket in sys.path eintragen (strategies/ nutzt relative Imports)
-_BACKTEST_PATH = "/home/josua/Block_Intel/backtest"
-if _BACKTEST_PATH not in sys.path:
-    sys.path.insert(0, _BACKTEST_PATH)
-
 try:
-    from strategies.markov_regime import MarkovRegime  # noqa: E402
+    from app.core.orderbook_heatmap.markov.backtest_modules.markov_regime import MarkovRegime
     _IMPORTS_OK = True
     _IMPORT_ERROR = ""
 except ImportError as _e:
@@ -26,7 +21,7 @@ except ImportError as _e:
     _IMPORT_ERROR = str(_e)
 
 
-def check_imports() -> tuple[bool, str]:
+def check_imports() -> Tuple[bool, str]:
     """Gibt (ok, fehlermeldung) zurück."""
     return _IMPORTS_OK, _IMPORT_ERROR
 
@@ -45,7 +40,7 @@ def run_hmm_regime(
         max_signal_bars: Maximale Anzahl zurückgegebener Signal-Bars (letzte N Bars)
 
     Returns:
-        Dict mit Regime-Summary, Signalen, State-Verteilung und aktuellen Zustand
+        Dict mit Regime-Summary, Signalen, State-Verteilung und aktuellem Zustand
     """
     if not _IMPORTS_OK:
         raise ImportError(
@@ -71,7 +66,7 @@ def run_hmm_regime(
     try:
         df.index = pd.DatetimeIndex(pd.to_datetime(df["Timestamp"]))
     except Exception:
-        pass  # RangeIndex bleibt
+        pass
 
     n_bars = len(df)
 

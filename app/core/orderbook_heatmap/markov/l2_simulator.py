@@ -7,8 +7,6 @@ und führt die Markov-Monte-Carlo-Simulation durch.
 """
 from __future__ import annotations
 
-import sys
-import os
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -17,20 +15,16 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Backtest-Module in sys.path eintragen (relative Imports im Backtest-Code)
-_HEATMAP_PROB_PATH = "/home/josua/Block_Intel/backtest/heatmap_probability"
-if _HEATMAP_PROB_PATH not in sys.path:
-    sys.path.insert(0, _HEATMAP_PROB_PATH)
-
 try:
-    from models import HeatmapSnapshot, PriceLevel          # noqa: E402
-    from wall_filter import WallFilter                       # noqa: E402
-    from market_state import MarketStateEstimator, PriceZone # noqa: E402
-    from simulator import MarkovSimulator, TransitionMatrix  # noqa: E402
+    from app.core.orderbook_heatmap.markov.backtest_modules.models import HeatmapSnapshot, PriceLevel
+    from app.core.orderbook_heatmap.markov.backtest_modules.wall_filter import WallFilter
+    from app.core.orderbook_heatmap.markov.backtest_modules.market_state import MarketStateEstimator, PriceZone
+    from app.core.orderbook_heatmap.markov.backtest_modules.simulator import MarkovSimulator, TransitionMatrix
     _IMPORTS_OK = True
-except ImportError as _import_err:
+    _IMPORT_ERROR = ""
+except ImportError as _e:
     _IMPORTS_OK = False
-    _IMPORT_ERROR = str(_import_err)
+    _IMPORT_ERROR = str(_e)
 
 
 # ---------------------------------------------------------------------------
@@ -45,14 +39,6 @@ def _orderbook_to_snapshot(
     """
     Konvertiert ein Bitget-Orderbook-Dict (bids/asks als [[price_str, qty_str]])
     in ein HeatmapSnapshot-Objekt für den Markov-Simulator.
-
-    Args:
-        ob:        Bitget-Orderbook mit keys 'bids', 'asks', optional 'ts'
-        symbol:    Handels-Symbol (z.B. "ARB/USDT")
-        timestamp: Zeitstempel; falls None, wird utcnow() verwendet
-
-    Returns:
-        HeatmapSnapshot oder None wenn bids/asks leer sind
     """
     bids: List[List[str]] = ob.get("bids", [])
     asks: List[List[str]] = ob.get("asks", [])
@@ -62,7 +48,6 @@ def _orderbook_to_snapshot(
 
     ts = timestamp or datetime.now(timezone.utc)
 
-    # Bids → PriceLevels
     price_levels: List[PriceLevel] = []
     for entry in bids:
         try:
@@ -75,7 +60,6 @@ def _orderbook_to_snapshot(
         except (ValueError, IndexError):
             continue
 
-    # Asks → PriceLevels
     for entry in asks:
         try:
             price = float(entry[0])
@@ -114,17 +98,11 @@ def _compute_price_fan(
     paths: list,
     percentiles: List[int] = [5, 25, 50, 75, 95],
 ) -> Dict[str, List[float]]:
-    """
-    Berechnet Perzentil-Pfade (Fan) aus allen Monte-Carlo-Simulationspfaden.
-
-    Für jeden Schritt t werden die Preis-Werte aller Pfade genommen und
-    das jeweilige Perzentil berechnet → ergibt einen "Fan" über die Zeit.
-    """
+    """Berechnet Perzentil-Pfade (Fan) aus allen Monte-Carlo-Simulationspfaden."""
     if not paths:
         return {f"p{p}": [] for p in percentiles}
 
     n_steps = len(paths[0].prices)
-    # Matrix: (n_paths, n_steps)
     price_matrix = np.array([p.prices for p in paths], dtype=np.float64)
 
     fan: Dict[str, List[float]] = {}
@@ -143,9 +121,7 @@ def _compute_price_fan(
 
 def check_imports() -> Tuple[bool, str]:
     """Gibt zurück ob die Backtest-Imports erfolgreich waren."""
-    if _IMPORTS_OK:
-        return True, "ok"
-    return False, _IMPORT_ERROR
+    return _IMPORTS_OK, _IMPORT_ERROR
 
 
 def run_l2_markov_simulation(
@@ -176,14 +152,10 @@ def run_l2_markov_simulation(
         entry_percentile:      Liquiditäts-Perzentil für Wall-Aktivierung
         exit_percentile:       Liquiditäts-Perzentil für Wall-Deaktivierung
         seed:                  Random Seed für Reproduzierbarkeit
-
-    Returns:
-        Dict mit transition_matrix, simulation-Statistiken, price_fan, active_walls
     """
     if not _IMPORTS_OK:
         raise ImportError(
-            f"Backtest-Module nicht importierbar: {_IMPORT_ERROR}. "
-            f"Pfad: {_HEATMAP_PROB_PATH}"
+            f"Backtest-Simulator-Module nicht importierbar: {_IMPORT_ERROR}"
         )
 
     # Konvertiere Bitget-Orderbooks → HeatmapSnapshots
@@ -245,7 +217,7 @@ def run_l2_markov_simulation(
     labels = list(tm_df.columns)
     matrix_values = tm_df.values.tolist()
 
-    # Aktive Walls aus letztem Snapshot extrahieren (nach Training)
+    # Aktive Walls aus letztem Snapshot extrahieren
     final_features = estimator.compute(initial_snap)
     active_walls = [
         {
