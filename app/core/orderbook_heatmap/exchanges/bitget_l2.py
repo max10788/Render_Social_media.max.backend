@@ -3,8 +3,8 @@ Bitget CEX Layer 2 Data Integration
 Holt Orderbook-Snapshots für L2-Token von Bitget's öffentlicher REST API.
 
 Unterstützte L2-Netzwerke und ihre nativen Token:
-- Polygon   → MATIC (POL)
-- Arbitrum  → ARB
+- Polygon   → POL (native), LINK, AAVE (major DeFi protocols on Polygon)
+- Arbitrum  → ARB (native), GMX, RDNT, PENDLE, GNS (Arbitrum-native DeFi)
 - Optimism  → OP
 - Immutable → IMX
 - Loopring  → LRC
@@ -24,10 +24,16 @@ logger = logging.getLogger(__name__)
 # Format: { "network": { "token": "BITGET_SYMBOL" } }
 L2_TOKEN_MAP: Dict[str, Dict[str, str]] = {
     "polygon": {
-        "POL": "POLUSDT",   # MATIC wurde auf POL migriert (Bitget unterstützt MATICUSDT nicht mehr)
+        "POL":  "POLUSDT",   # MATIC wurde auf POL migriert (Bitget unterstützt MATICUSDT nicht mehr)
+        "LINK": "LINKUSDT",  # Chainlink — major oracle on Polygon PoS
+        "AAVE": "AAVEUSDT",  # Aave v3 — primary lending protocol on Polygon
     },
     "arbitrum": {
-        "ARB": "ARBUSDT",
+        "ARB":   "ARBUSDT",   # Arbitrum native governance token
+        "GMX":   "GMXUSDT",   # GMX — Arbitrum-native perpetuals DEX
+        "RDNT":  "RDNTUSDT",  # Radiant Capital — Arbitrum-native lending
+        "PENDLE": "PENDLEUSDT", # Pendle Finance — yield trading, Arbitrum-first
+        "GNS":   "GNSUSDT",   # Gains Network — Arbitrum-native leveraged trading
     },
     "optimism": {
         "OP": "OPUSDT",
