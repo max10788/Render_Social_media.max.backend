@@ -1506,6 +1506,267 @@ async def markov_l2_simulate(
 
 
 # ===========================================================================
+# MARKOV L2 WEBSOCKET STREAM
+# ===========================================================================
+
+class MarkovStreamBuffer:
+    """
+    Thread-safe Rolling Buffer of raw Bitget orderbook snapshots.
+    Shared across concurrent WebSocket connections for the same (token, network).
+    """
+    def __init__(self, max_size: int = 120):
+        self._buffers: Dict[str, List[Dict]] = {}
+        self._locks: Dict[str, asyncio.Lock] = {}
+        self.max_size = max_size
+
+    def _key(self, token: str, network: str) -> str:
+        return f"{token.upper()}:{network.lower()}"
+
+    def _ensure_key(self, key: str):
+        if key not in self._buffers:
+            self._buffers[key] = []
+            self._locks[key] = asyncio.Lock()
+
+    async def push(self, token: str, network: str, snapshot: Dict):
+        key = self._key(token, network)
+        self._ensure_key(key)
+        async with self._locks[key]:
+            self._buffers[key].append(snapshot)
+            if len(self._buffers[key]) > self.max_size:
+                self._buffers[key].pop(0)
+
+    async def get(self, token: str, network: str) -> List[Dict]:
+        key = self._key(token, network)
+        self._ensure_key(key)
+        async with self._locks[key]:
+            return list(self._buffers[key])
+
+    def size(self, token: str, network: str) -> int:
+        key = self._key(token, network)
+        return len(self._buffers.get(key, []))
+
+
+_markov_stream_buffer = MarkovStreamBuffer(max_size=120)
+
+
+async def collect_snapshots_task(
+    token: str,
+    network: str,
+    bitget_symbol: str,
+    interval_seconds: float,
+    limit: int,
+    stop_event: asyncio.Event,
+):
+    while not stop_event.is_set():
+        try:
+            ob = await _bitget_l2.get_orderbook(bitget_symbol, limit=limit)
+            if ob:
+                await _markov_stream_buffer.push(token, network, ob)
+                logger.debug(
+                    f"📦 Markov buffer [{token}/{network}]: "
+                    f"{_markov_stream_buffer.size(token, network)} snapshots"
+                )
+        except Exception as e:
+            logger.warning(f"⚠️ Snapshot collection error [{token}/{network}]: {e}")
+
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(stop_event.wait()),
+                timeout=interval_seconds,
+            )
+        except asyncio.TimeoutError:
+            pass
+
+
+async def simulate_and_stream_task(
+    websocket: WebSocket,
+    token: str,
+    network: str,
+    symbol: str,
+    n_paths: int,
+    n_steps: int,
+    volatility_multiplier: float,
+    wall_bounce_factor: float,
+    retrain_every: int,
+    min_snapshots: int,
+    stop_event: asyncio.Event,
+):
+    from app.core.orderbook_heatmap.markov.l2_simulator import run_l2_markov_simulation
+    loop = asyncio.get_event_loop()
+
+    # Wait until enough snapshots are collected
+    while not stop_event.is_set():
+        buf_size = _markov_stream_buffer.size(token, network)
+        if buf_size >= min_snapshots:
+            break
+        await websocket.send_json({
+            "type": "markov_collecting",
+            "token": token,
+            "network": network,
+            "snapshots_collected": buf_size,
+            "snapshots_needed": min_snapshots,
+            "message": f"Collecting snapshots... {buf_size}/{min_snapshots}",
+        })
+        await asyncio.sleep(2)
+
+    if stop_event.is_set():
+        return
+
+    # Main loop: simulate + stream
+    while not stop_event.is_set():
+        try:
+            snapshots = await _markov_stream_buffer.get(token, network)
+
+            result = await loop.run_in_executor(
+                None,
+                lambda: run_l2_markov_simulation(
+                    snapshots=snapshots,
+                    symbol=symbol,
+                    n_paths=n_paths,
+                    n_steps=n_steps,
+                    volatility_multiplier=volatility_multiplier,
+                    wall_bounce_factor=wall_bounce_factor,
+                ),
+            )
+
+            if result:
+                await websocket.send_json({
+                    "type": "markov_update",
+                    "token": token,
+                    "network": network,
+                    **result,
+                    "buffer_size": len(snapshots),
+                    "timestamp": datetime.utcnow().isoformat(),
+                })
+                logger.info(
+                    f"📡 Markov stream sent [{token}/{network}] "
+                    f"fan_steps={len(result.get('price_fan', {}).get('p50', []))}"
+                )
+
+        except Exception as e:
+            logger.error(f"❌ Markov simulation error [{token}/{network}]: {e}", exc_info=True)
+            await websocket.send_json({
+                "type": "markov_error",
+                "token": token,
+                "network": network,
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(stop_event.wait()),
+                timeout=retrain_every,
+            )
+        except asyncio.TimeoutError:
+            pass
+
+
+@router.websocket("/markov/l2-stream")
+async def markov_l2_stream(
+    websocket: WebSocket,
+    token: str = Query("ARB"),
+    network: str = Query("arbitrum"),
+    retrain_every: int = Query(30, ge=10, le=300),
+    min_snapshots: int = Query(15, ge=5, le=80),
+    interval_seconds: float = Query(1.0, ge=0.5, le=5.0),
+    n_paths: int = Query(200, ge=50, le=1000),
+    n_steps: int = Query(50, ge=10, le=200),
+    volatility_multiplier: float = Query(1.0, ge=0.1, le=5.0),
+    wall_bounce_factor: float = Query(0.7, ge=0.1, le=1.0),
+    limit: int = Query(50, ge=5, le=150),
+):
+    token_upper = token.upper()
+    network_lower = network.lower()
+
+    if network_lower not in L2_TOKEN_MAP or token_upper not in L2_TOKEN_MAP[network_lower]:
+        await websocket.accept()
+        await websocket.send_json({
+            "type": "markov_error",
+            "error": f"Unknown token/network: {token_upper}/{network_lower}",
+            "valid_networks": list(L2_TOKEN_MAP.keys()),
+        })
+        await websocket.close(code=1008)
+        return
+
+    bitget_symbol = L2_TOKEN_MAP[network_lower][token_upper]
+    display_symbol = f"{token_upper}/USDT"
+
+    await websocket.accept()
+    logger.info(f"🔌 Markov WS connected: {token_upper}/{network_lower} retrain={retrain_every}s")
+
+    await websocket.send_json({
+        "type": "markov_connected",
+        "token": token_upper,
+        "network": network_lower,
+        "bitget_symbol": bitget_symbol,
+        "retrain_every": retrain_every,
+        "min_snapshots": min_snapshots,
+        "n_paths": n_paths,
+        "n_steps": n_steps,
+        "message": f"Connected. Collecting {min_snapshots} snapshots before first simulation...",
+    })
+
+    stop_event = asyncio.Event()
+
+    collector_task = asyncio.create_task(
+        collect_snapshots_task(
+            token=token_upper,
+            network=network_lower,
+            bitget_symbol=bitget_symbol,
+            interval_seconds=interval_seconds,
+            limit=limit,
+            stop_event=stop_event,
+        )
+    )
+
+    simulator_task = asyncio.create_task(
+        simulate_and_stream_task(
+            websocket=websocket,
+            token=token_upper,
+            network=network_lower,
+            symbol=display_symbol,
+            n_paths=n_paths,
+            n_steps=n_steps,
+            volatility_multiplier=volatility_multiplier,
+            wall_bounce_factor=wall_bounce_factor,
+            retrain_every=retrain_every,
+            min_snapshots=min_snapshots,
+            stop_event=stop_event,
+        )
+    )
+
+    try:
+        while True:
+            msg = await websocket.receive_text()
+            try:
+                cmd = json.loads(msg)
+                if cmd.get("action") == "ping":
+                    await websocket.send_json({"type": "pong"})
+                elif cmd.get("action") == "force_retrain":
+                    logger.info(f"🔄 Force retrain requested [{token_upper}/{network_lower}]")
+            except json.JSONDecodeError:
+                pass
+
+    except WebSocketDisconnect:
+        logger.info(f"🔌 Markov WS disconnected: {token_upper}/{network_lower}")
+    except Exception as e:
+        logger.error(f"❌ Markov WS error: {e}", exc_info=True)
+    finally:
+        stop_event.set()
+        collector_task.cancel()
+        simulator_task.cancel()
+        try:
+            await asyncio.gather(collector_task, simulator_task, return_exceptions=True)
+        except Exception:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# ===========================================================================
 # HMM MARKOV REGIME DETECTOR ENDPOINT
 # ===========================================================================
 
