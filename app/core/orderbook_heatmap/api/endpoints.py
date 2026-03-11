@@ -79,7 +79,7 @@ class StartHeatmapRequest(BaseModel):
     )
     price_bucket_size: float = Field(
         default=10.0,
-        ge=0.1,
+        ge=0.00001,
         description="Preis-Bucket-Größe"
     )
     time_window_seconds: int = Field(
