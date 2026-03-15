@@ -58,8 +58,10 @@ engine = create_engine(
     pool_recycle=database_config.pool_recycle,
     echo=os.getenv("DB_ECHO", "false").lower() == "true",
     connect_args={
+        "connect_timeout": 5,
         "options": f"-csearch_path={database_config.schema_name},public"
     } if database_config.ssl_mode == "disable" else {
+        "connect_timeout": 5,
         "options": f"-csearch_path={database_config.schema_name},public",
         "sslmode": database_config.ssl_mode
     }

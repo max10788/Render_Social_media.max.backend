@@ -219,7 +219,7 @@ def setup_database_on_startup():
         db_url = get_database_url()
         logger.info(f"📍 Database URL: {db_url.split('@')[1] if '@' in db_url else 'localhost'}")
         
-        engine = create_engine(db_url)
+        engine = create_engine(db_url, connect_args={"connect_timeout": 5})
         
         # Test connection
         with engine.connect() as conn:
