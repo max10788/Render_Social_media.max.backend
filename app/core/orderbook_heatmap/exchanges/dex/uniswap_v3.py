@@ -331,6 +331,13 @@ class UniswapV3Exchange(BaseDEX):
         price = sqrt_price ** 2
         return price
     
+    async def disconnect(self):
+        """Trennt Verbindung und schließt aiohttp Session"""
+        if self.session and not self.session.closed:
+            await self.session.close()
+            self.session = None
+        await super().disconnect()
+
     async def _handle_orderbook_update(self, data: Dict[str, Any]):
         """Nicht genutzt - DEX nutzt Polling statt WebSocket"""
         pass
